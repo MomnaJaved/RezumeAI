@@ -1,0 +1,15 @@
+# Match ranker: (resume, JD) pair -> continuous score (weak_score as target)
+seed: 42
+model_name: "distilroberta-base"  # or roberta-base for better accuracy
+max_length: 256
+num_epochs: 2
+batch_size: 8
+learning_rate: 2.0e-5
+weight_decay: 0.01
+warmup_ratio: 0.1
+eval_strategy: "epoch"
+output_dir: "artifacts/match_ranker"
+data:
+  train: "outputs/transformer_data/train.csv"
+  val: "outputs/transformer_data/val.csv"
+  test: "outputs/transformer_data/test.csv"

@@ -1,0 +1,10 @@
+# Training + inference (add to base requirements or use in a dedicated venv)
+-r requirements.txt
+torch>=2.0.0
+transformers>=4.30.0
+datasets>=2.14.0
+scipy>=1.10.0
+PyYAML>=6.0
+fastapi>=0.100.0
+uvicorn[standard]>=0.22.0
+sentence-transformers>=2.1.0

@@ -1,0 +1,18 @@
+# Role classifier: resume text -> role_label (multi-department or engineering-only)
+# Labels come from src/parsing/role_labels.py (USE_MULTI_DEPARTMENT = true by default)
+# Multi-department: frontend, backend, fullstack, devops, qa, data, design, product, marketing, hr, operations, other
+seed: 42
+model_name: "distilroberta-base"  # or distilroberta-base for faster training
+max_length: 256
+num_epochs: 1
+batch_size: 4
+learning_rate: 2.0e-5
+weight_decay: 0.01
+warmup_ratio: 0.1
+eval_steps: 100
+save_steps: 500
+output_dir: "artifacts/role_classifier"
+data:
+  train: "outputs/role_data/train.csv"
+  val: "outputs/role_data/val.csv"
+  test: "outputs/role_data/test.csv"
