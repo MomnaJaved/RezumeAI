@@ -20,7 +20,7 @@ See **[docs/HOW_TO_RUN.md](docs/HOW_TO_RUN.md)** for exact commands:
 - Create venv + install deps (`requirements.txt` + `requirements-train.txt`)
 - Prepare data (parse resumes, enrich candidates)
 - Build pairs and splits: `scripts/build_pairs_and_splits.py`
-- Run TF-IDF baseline: `scripts/05_tfidf_baseline.py`
+- Run TF-IDF baseline: `scripts/tfidf_baseline_ranker.py`
 - Train role classifier: `scripts/prepare_role_data.py` then `scripts/train_role_classifier.py`
 - Train match ranker: `scripts/train_match_ranker.py`
 - Evaluate: `scripts/evaluate_role_classifier.py`, `scripts/evaluate_rankings.py`

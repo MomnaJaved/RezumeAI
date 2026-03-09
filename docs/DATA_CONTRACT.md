@@ -63,7 +63,7 @@ For **role classification** we map `title` to a role label. Two modes (see `src/
 
 To train the **match ranker on recruiter decisions** (strong supervision), use a CSV of human labels.
 
-**File**: `data/labels/human_match_labels.csv` (or path given to `prepare_human_match_data.py`).
+**File**: `data/labels/human_match_labels.csv` (optional, only if you later reintroduce human labels).
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -73,7 +73,7 @@ To train the **match ranker on recruiter decisions** (strong supervision), use a
 
 - One row per (job_id, candidate_id) that a human has judged.
 - Run `scripts/prepare_human_match_data.py` to merge with job/candidate text and produce train/val/test (split by `candidate_id`, no leakage).
-- Then run `scripts/train_match_ranker_human_labels.py` to train the ranker on these labels (binary classification or regression depending on `label`).
+- Then run your own training script (not currently part of this repo) to train the ranker on these labels (binary classification or regression depending on `label`).
 
 Example rows (binary):
 

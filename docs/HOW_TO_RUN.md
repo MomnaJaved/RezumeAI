@@ -17,10 +17,10 @@ pip install -r requirements-train.txt
 
 ```bash
 # Parse resumes -> candidates.csv
-python scripts/02_parse_resumes.py
+python scripts/parse_resumes.py
 
 # Enrich candidates (title, skills, education, etc.) -> candidates_enriched.csv
-python scripts/10_rebuild_candidates_enriched.py
+python scripts/rebuild_candidates_enriched.py
 ```
 
 ## 3. Build pairs and splits (no leakage)
@@ -37,7 +37,7 @@ Output: `outputs/transformer_data/train.csv`, `val.csv`, `test.csv` (columns: jo
 ## 4. Run TF-IDF baseline
 
 ```bash
-python scripts/05_tfidf_baseline.py
+python scripts/tfidf_baseline_ranker.py
 ```
 
 Output: `outputs/rankings/tfidf_rankings.csv` (top-K candidates per job by cosine similarity).
@@ -62,29 +62,6 @@ python scripts/train_match_ranker.py --config config/train_match.yaml
 
 Optional: `--model roberta-base`, `--epochs 2`, `--output-dir artifacts/match_ranker`.  
 Model and tokenizer are saved under `artifacts/match_ranker/`.
-
-### 6b. Production-grade: train match ranker on human labels (Manatal-style)
-
-For a **strongly supervised** ranker (selected/rejected or fit score 1–5 from recruiters):
-
-1. **Create human labels CSV** with columns `job_id`, `candidate_id`, `label`.  
-   - Binary: `label` = `selected`, `rejected`, or `shortlisted`.  
-   - Graded: `label` = number (e.g. 1–5 or 0–100).  
-   See `data/labels/README.md` and `data/labels/human_match_labels.csv.example`.
-
-2. **Prepare data** (merge with job/candidate text, split by candidate_id):
-
-```bash
-python scripts/prepare_human_match_data.py --labels data/labels/human_match_labels.csv
-```
-
-3. **Train ranker** on human labels (binary classification or regression):
-
-```bash
-python scripts/train_match_ranker_human_labels.py --config config/train_match_human.yaml
-```
-
-Model is saved under `artifacts/match_ranker_human/`. Use this artifact in your API for production ranking when human labels are available.
 
 ## 7. Run evaluation
 
