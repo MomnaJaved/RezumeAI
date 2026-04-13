@@ -1,18 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import DashFrame from "../DashFrame";
-import {
-  deleteCandidateByExternalId,
-  fetchCandidates,
-  fetchCandidatesScoreboard,
-  type CandidateDto,
-} from "../api";
+import ResumePreviewModal from "../components/ResumePreviewModal";
+import { candidateListProfileScore } from "../candidateListScore";
+import { fetchCandidates, fetchCandidatesScoreboard, type CandidateDto } from "../api";
+import { useToast } from "../toast";
 
 export default function CandidatesPage() {
+  const navigate = useNavigate();
+  const toast = useToast();
   const [rows, setRows] = useState<CandidateDto[]>([]);
   const [loadingList, setLoadingList] = useState(true);
-  const [loadingScores, setLoadingScores] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [listFetchFailed, setListFetchFailed] = useState(false);
   const [q, setQ] = useState("");
   const [role, setRole] = useState<string>("all");
   const [exp, setExp] = useState<string>("all");
@@ -20,12 +19,13 @@ export default function CandidatesPage() {
   const [cert, setCert] = useState<string>("all");
   const [sortBy, setSortBy] = useState<string>("score_desc");
   const [page, setPage] = useState(1);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [resumePreview, setResumePreview] = useState<{ externalId: string; filename?: string } | null>(null);
+  const closeResumePreview = useCallback(() => setResumePreview(null), []);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      setErr(null);
+      setListFetchFailed(false);
       setLoadingList(true);
       let listOk = false;
       try {
@@ -35,15 +35,15 @@ export default function CandidatesPage() {
         listOk = true;
       } catch (e) {
         if (!cancelled) {
-          setErr((e as Error).message);
+          setListFetchFailed(true);
           setRows([]);
+          toast.error((e as Error).message);
         }
       } finally {
         if (!cancelled) setLoadingList(false);
       }
       if (cancelled || !listOk) return;
 
-      setLoadingScores(true);
       try {
         const scored = await fetchCandidatesScoreboard(500);
         if (cancelled) return;
@@ -58,18 +58,16 @@ export default function CandidatesPage() {
               avg_job_match_score: s.avg_job_match_score,
               competition_score: s.competition_score,
             };
-          })
+          }),
         );
       } catch {
-        /* keep list; scores fall back to heuristic in scoreFor() */
-      } finally {
-        if (!cancelled) setLoadingScores(false);
+        /* keep list; candidateListProfileScore uses heuristic until scores load */
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [toast]);
 
   const roles = useMemo(() => {
     const s = new Set(rows.map((r) => (r.role_label || "").trim()).filter(Boolean));
@@ -96,20 +94,7 @@ export default function CandidatesPage() {
   }
 
   function scoreFor(c: CandidateDto): number {
-    const v = c.competition_score;
-    if (v != null && !Number.isNaN(Number(v))) {
-      return Math.max(0, Math.min(100, Math.round(Number(v))));
-    }
-    // Fallback if API omits scores (older server).
-    const years = Math.min(20, Math.max(0, c.years_experience ?? 0));
-    const skillsCount = (c.skills || "")
-      .split(",")
-      .map((x) => x.trim())
-      .filter(Boolean).length;
-    const hasDegree = Boolean((c.highest_degree || "").trim());
-    const hasCerts = Boolean((c.certifications || "").trim());
-    const s = years * 4 + Math.min(skillsCount, 30) * 1.6 + (hasDegree ? 6 : 0) + (hasCerts ? 4 : 0);
-    return Math.max(0, Math.min(100, Math.round(s)));
+    return candidateListProfileScore(c);
   }
 
   const filtered = useMemo(() => {
@@ -151,21 +136,6 @@ export default function CandidatesPage() {
     if (page > totalPages) setPage(totalPages);
   }, [page, totalPages]);
 
-  async function handleDeleteCandidate(c: CandidateDto) {
-    const label = (c.full_name || "").trim() || c.external_id;
-    if (!window.confirm(`Delete candidate “${label}”? This cannot be undone.`)) return;
-    setDeletingId(c.id);
-    setErr(null);
-    try {
-      await deleteCandidateByExternalId(c.external_id);
-      setRows((prev) => prev.filter((x) => x.id !== c.id));
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setDeletingId(null);
-    }
-  }
-
   function initials(name: string): string {
     const parts = name
       .trim()
@@ -185,93 +155,87 @@ export default function CandidatesPage() {
   return (
     <DashFrame
       topExtra={
-        <div className="cand-top">
-          <div className="cand-count">
-            Candidates: {loadingList ? "…" : filtered.length}
-            {loadingScores ? (
-              <span className="muted" style={{ fontWeight: 400, marginLeft: "0.5rem", fontSize: "0.85rem" }}>
-                (updating scores…)
-              </span>
-            ) : null}
+        <div className="cand-toolbar">
+          <div className="cand-toolbar-row">
+            <div className="cand-count">Candidates: {loadingList ? "…" : filtered.length}</div>
+            <div className="cand-search">
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Search candidates by name, skills, email…"
+              />
+            </div>
+            <Link
+              to="/candidates/add"
+              className="cand-add-btn"
+              title="Add candidates from files or pasted text"
+              aria-label="Add candidates from files or pasted text"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+                <path d="M12 5v14M5 12h14" strokeLinecap="round" />
+              </svg>
+            </Link>
           </div>
-          <div className="cand-search">
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search candidates by name, skills, email…"
-            />
+          <div className="cand-toolbar-row">
+            <span className="cand-toolbar-label muted">Filter by</span>
+            <select value={cert} onChange={(e) => setCert(e.target.value)} aria-label="Certifications filter">
+              <option value="all">Certifications</option>
+              <option value="yes">Has certifications</option>
+              <option value="no">No certifications</option>
+            </select>
+            <select value={exp} onChange={(e) => setExp(e.target.value)} aria-label="Experience filter">
+              <option value="all">Experience</option>
+              <option value="<1">&lt; 1 year</option>
+              <option value="1-3">1–3 years</option>
+              <option value="3-5">3–5 years</option>
+              <option value="5+">5+ years</option>
+            </select>
+            <select value={role} onChange={(e) => setRole(e.target.value)} aria-label="Role filter">
+              {roles.map((r) => (
+                <option key={r} value={r}>
+                  {r === "all" ? "Roles" : r}
+                </option>
+              ))}
+            </select>
+            <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status filter">
+              {statuses.map((s) => (
+                <option key={s} value={s}>
+                  {s === "all" ? "Status" : statusLabel(s)}
+                </option>
+              ))}
+            </select>
+            <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort order">
+              <option value="score_desc">Sort by (score)</option>
+              <option value="name_asc">Name (A–Z)</option>
+              <option value="exp_desc">Experience (high→low)</option>
+              <option value="created_desc">Newest</option>
+            </select>
           </div>
         </div>
       }
     >
-      {err ? <p className="banner banner-error">{err}</p> : null}
-
-      <div className="cand-filters">
-        <span className="muted" style={{ alignSelf: "center" }}>
-          Filter By:
-        </span>
-        <select value={cert} onChange={(e) => setCert(e.target.value)}>
-          <option value="all">Certifications</option>
-          <option value="yes">Has certifications</option>
-          <option value="no">No certifications</option>
-        </select>
-        <select value={exp} onChange={(e) => setExp(e.target.value)}>
-          <option value="all">Experience</option>
-          <option value="<1">&lt; 1 year</option>
-          <option value="1-3">1–3 years</option>
-          <option value="3-5">3–5 years</option>
-          <option value="5+">5+ years</option>
-        </select>
-        <select value={role} onChange={(e) => setRole(e.target.value)}>
-          {roles.map((r) => (
-            <option key={r} value={r}>
-              {r === "all" ? "Roles" : r}
-            </option>
-          ))}
-        </select>
-        <select value={status} onChange={(e) => setStatus(e.target.value)}>
-          {statuses.map((s) => (
-            <option key={s} value={s}>
-              {s === "all" ? "Status" : statusLabel(s)}
-            </option>
-          ))}
-        </select>
-        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-          <option value="score_desc">Sort By (Score)</option>
-          <option value="name_asc">Name (A–Z)</option>
-          <option value="exp_desc">Experience (High→Low)</option>
-          <option value="created_desc">Newest</option>
-        </select>
-
-        <div style={{ marginLeft: "auto", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-          <Link to="/upload" className="dash-btn">
-            + Create Candidate
-          </Link>
-          <Link to="/ingest" className="dash-btn">
-            Bulk Ingest
-          </Link>
-        </div>
-      </div>
-
       {loadingList ? (
         <div className="dash-panel">
           <p className="muted" style={{ margin: 0 }}>
             Loading candidates…
           </p>
         </div>
-      ) : !err && rows.length === 0 ? (
+      ) : listFetchFailed ? (
         <div className="dash-panel">
           <p className="muted" style={{ margin: 0 }}>
-            No candidates in the database yet. <Link to="/upload">Upload a resume</Link> or use{" "}
-            <Link to="/ingest">Ingest</Link>. If you already added some, the API may be using a different database
-            (check <code className="muted">DATABASE_URL</code> in <code className="muted">.env</code>).
+            Could not load the candidate list. Check your connection and try again.
+          </p>
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="dash-panel">
+          <p className="muted" style={{ margin: 0 }}>
+            No candidates yet. Use <Link to="/candidates/add">Add candidate</Link> to upload résumés.
           </p>
         </div>
       ) : filtered.length === 0 ? (
         <div className="dash-panel">
           <p className="muted" style={{ margin: 0 }}>
-            No candidates match your filters. <Link to="/upload">Upload a resume</Link> or use{" "}
-            <Link to="/ingest">Ingest</Link>.
+            No candidates match your filters. <Link to="/upload">Upload resumes</Link> from the toolbar (+).
           </p>
         </div>
       ) : (
@@ -284,13 +248,12 @@ export default function CandidatesPage() {
                   <th style={{ width: "18%" }}>Role</th>
                   <th
                     style={{ width: "11%" }}
-                    title="Competition score: percentile rank vs other candidates on experience, skills, education & certs, combined with average resume–job match across all open jobs."
+                    title="Profile strength vs your candidate pool (same as dashboard candidate summary). Job-specific match % appears when ranking against a job."
                   >
                     Score
                   </th>
-                  <th style={{ width: "11%" }}>Experience</th>
-                  <th style={{ width: "10%" }}>Status</th>
-                  <th style={{ width: "10%", textAlign: "right" }}>Actions</th>
+                  <th style={{ width: "14%" }}>Experience</th>
+                  <th style={{ width: "12%" }}>Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -298,7 +261,20 @@ export default function CandidatesPage() {
                   const sc = scoreFor(c);
                   const st = (c.status || "new").toLowerCase();
                   return (
-                    <tr key={c.id}>
+                    <tr
+                      key={c.id}
+                      className="cand-row-nav"
+                      tabIndex={0}
+                      role="link"
+                      title="Open candidate profile"
+                      onClick={() => navigate(`/candidates/${c.id}`)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          navigate(`/candidates/${c.id}`);
+                        }
+                      }}
+                    >
                       <td>
                         <div className="cand-namecell">
                           <div className="cand-avatar" aria-hidden="true">
@@ -307,18 +283,16 @@ export default function CandidatesPage() {
                           <div className="cand-name-meta">
                             <div className="cand-name">{c.full_name || "—"}</div>
                             <div className="cand-sub">
-                              {c.filename ? (
-                                <a
-                                  href={`/api/v1/candidates/by-external/${encodeURIComponent(c.external_id)}/file`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  title="Open uploaded resume"
-                                >
-                                  View resume
-                                </a>
-                              ) : (
-                                c.external_id
-                              )}
+                              <button
+                                type="button"
+                                className="cand-view-resume"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setResumePreview({ externalId: c.external_id, filename: c.filename });
+                                }}
+                              >
+                                View resume
+                              </button>
                             </div>
                           </div>
                         </div>
@@ -346,17 +320,6 @@ export default function CandidatesPage() {
                       <td>{c.years_experience !== null && c.years_experience !== undefined ? `${c.years_experience} Years` : "—"}</td>
                       <td>
                         <span className={`cand-status ${st}`}>{statusLabel(c.status)}</span>
-                      </td>
-                      <td style={{ textAlign: "right", verticalAlign: "middle" }}>
-                        <button
-                          type="button"
-                          className="cand-delete-btn"
-                          disabled={deletingId === c.id}
-                          title="Remove candidate from database"
-                          onClick={() => void handleDeleteCandidate(c)}
-                        >
-                          {deletingId === c.id ? "…" : "Delete"}
-                        </button>
                       </td>
                     </tr>
                   );
@@ -400,6 +363,13 @@ export default function CandidatesPage() {
           </div>
         </>
       )}
+
+      <ResumePreviewModal
+        open={resumePreview !== null}
+        externalId={resumePreview?.externalId ?? ""}
+        filename={resumePreview?.filename}
+        onClose={closeResumePreview}
+      />
     </DashFrame>
   );
 }

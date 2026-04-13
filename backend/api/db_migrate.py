@@ -36,6 +36,7 @@ def ensure_extra_columns(engine: Engine) -> None:
             ("embedding_sbert", "BYTEA" if dialect == "postgresql" else "BLOB"),
             ("status", "VARCHAR(64) NOT NULL DEFAULT 'new'"),
             ("storage_path", "VARCHAR(2048) NOT NULL DEFAULT ''"),
+            ("contact_email", "VARCHAR(320) NOT NULL DEFAULT ''"),
         ]:
             if col not in existing_cand:
                 if dialect == "postgresql":

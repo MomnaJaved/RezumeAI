@@ -1,28 +1,26 @@
 import { useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { verifyEmailCode } from "../api";
+import { useToast } from "../toast";
 
 export default function VerifyEmailPage() {
   const nav = useNavigate();
+  const toast = useToast();
   const loc = useLocation();
   const params = useMemo(() => new URLSearchParams(loc.search), [loc.search]);
   const email = params.get("email") ?? "";
 
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [ok, setOk] = useState<string | null>(null);
 
   async function submit() {
     setBusy(true);
-    setErr(null);
-    setOk(null);
     try {
       await verifyEmailCode(email, code.trim());
-      setOk("Email verified successfully. Please log in.");
+      toast.success("Email verified. Redirecting to sign in…");
       nav(`/login?verified=1&email=${encodeURIComponent(email)}`);
     } catch (e) {
-      setErr((e as Error).message || "Verification failed");
+      toast.error((e as Error).message || "Verification failed");
     } finally {
       setBusy(false);
     }
@@ -32,8 +30,6 @@ export default function VerifyEmailPage() {
     <div style={{ maxWidth: "520px", margin: "0 auto" }}>
       <h1>Verify your email</h1>
       <p className="muted">Enter the 6-digit code sent to <strong>{email || "your email"}</strong>.</p>
-      {err ? <p className="banner banner-error">{err}</p> : null}
-      {ok ? <p className="banner banner-info">{ok}</p> : null}
       <div className="card">
         <label htmlFor="code">Verification code</label>
         <input

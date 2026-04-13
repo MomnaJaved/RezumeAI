@@ -7,6 +7,7 @@ import {
   type CandidateDto,
   type Job,
 } from "../api";
+import { useToast } from "../toast";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -19,18 +20,16 @@ async function copyToClipboard(text: string): Promise<void> {
 }
 
 export default function UploadPage() {
-  const [file, setFile] = useState<File | null>(null);
+  const toast = useToast();
+  const [files, setFiles] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [candidate, setCandidate] = useState<CandidateDto | null>(null);
   const [uploadMeta, setUploadMeta] = useState<{ status: string; textLen: number } | null>(null);
 
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobId, setJobId] = useState("");
   const [rankLoading, setRankLoading] = useState(false);
-  const [rankErr, setRankErr] = useState<string | null>(null);
   const [rankPreview, setRankPreview] = useState<
     Array<{
       rank_position: number;
@@ -49,41 +48,81 @@ export default function UploadPage() {
       .catch(() => setJobs([]));
   }, []);
 
-  const onFile = useCallback((f: File | null) => {
-    setFile(f);
-    setErr(null);
-    setMsg(null);
+  const resetOutcome = useCallback(() => {
     setCandidate(null);
     setUploadMeta(null);
     setRankPreview([]);
-    setRankErr(null);
   }, []);
+
+  const addFiles = useCallback(
+    (incoming: FileList | null) => {
+      if (!incoming?.length) return;
+      const next = Array.from(incoming);
+      setFiles((prev) => {
+        const seen = new Set(prev.map((f) => `${f.name}:${f.size}`));
+        const merged = [...prev];
+        for (const f of next) {
+          const k = `${f.name}:${f.size}`;
+          if (!seen.has(k)) {
+            seen.add(k);
+            merged.push(f);
+          }
+        }
+        return merged;
+      });
+      resetOutcome();
+    },
+    [resetOutcome],
+  );
+
+  const clearAll = useCallback(() => {
+    setFiles([]);
+    resetOutcome();
+  }, [resetOutcome]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragActive(false);
-      const f = e.dataTransfer.files?.[0];
-      if (f) onFile(f);
+      addFiles(e.dataTransfer.files);
     },
-    [onFile],
+    [addFiles],
   );
 
   async function submitUpload() {
-    if (!file) return;
+    if (!files.length) return;
     setLoading(true);
-    setErr(null);
-    setMsg(null);
-    setCandidate(null);
-    setUploadMeta(null);
-    setRankPreview([]);
+    resetOutcome();
+    const ok: Array<{ candidate: CandidateDto; status: string; textLen: number }> = [];
+    const failLines: string[] = [];
     try {
-      const r = await uploadResume(file);
-      setCandidate(r.candidate);
-      setUploadMeta({ status: r.status, textLen: r.text_len });
-      setMsg(r.status === "created" ? "Candidate created in the database." : "Existing candidate updated.");
-    } catch (e) {
-      setErr((e as Error).message);
+      for (const file of files) {
+        try {
+          const r = await uploadResume(file);
+          ok.push({ candidate: r.candidate, status: r.status, textLen: r.text_len });
+        } catch (e) {
+          failLines.push(`${file.name}: ${(e as Error).message}`);
+        }
+      }
+      if (ok.length) {
+        const last = ok[ok.length - 1];
+        setCandidate(last.candidate);
+        setUploadMeta({ status: last.status, textLen: last.textLen });
+      }
+      if (failLines.length === 0) {
+        if (files.length === 1 && ok[0]) {
+          toast.success(
+            ok[0].status === "created" ? "Candidate created in the database." : "Existing candidate updated.",
+          );
+        } else {
+          toast.success(`${ok.length} résumé(s) parsed and saved.`);
+        }
+      } else if (ok.length === 0) {
+        toast.error(failLines.join("\n"));
+      } else {
+        toast.success(`${ok.length} of ${files.length} saved. Last success shown below.`);
+        toast.error(failLines.join("\n"));
+      }
     } finally {
       setLoading(false);
     }
@@ -91,11 +130,10 @@ export default function UploadPage() {
 
   async function runRank(persist: boolean) {
     if (!jobId.trim()) {
-      setRankErr("Pick a job.");
+      toast.error("Pick a job.");
       return;
     }
     setRankLoading(true);
-    setRankErr(null);
     setRankPreview([]);
     try {
       const res = await rankFromDatabase(jobId.trim(), {
@@ -111,13 +149,13 @@ export default function UploadPage() {
           cross_encoder_score: row.cross_encoder_score,
         })),
       );
-      setMsg(
+      toast.success(
         persist
           ? `Saved database ranking for ${res.job_external_id} (${res.rankings.length} rows).`
           : `Preview: top ${res.rankings.length} candidates for ${res.job_external_id} (not saved).`,
       );
     } catch (e) {
-      setRankErr((e as Error).message);
+      toast.error((e as Error).message);
     } finally {
       setRankLoading(false);
     }
@@ -125,13 +163,13 @@ export default function UploadPage() {
 
   return (
     <div>
-      <h1>Upload resume</h1>
+      <h1>Add candidates</h1>
       <p className="muted">
-        Supported: <strong>PDF</strong>, <strong>DOCX</strong>, <strong>TXT</strong>, and common{" "}
-        <strong>images</strong> (PNG, JPEG, WebP, …). Scanned pages need{" "}
-        <a href="https://github.com/tesseract-ocr/tesseract">Tesseract</a> and{" "}
-        <code>pytesseract</code> on the server. Text is stored with PII placeholders; skills and role are
-        inferred automatically.
+        Upload <strong>one or many</strong> resumes in a single batch. Supported: <strong>PDF</strong>,{" "}
+        <strong>DOCX</strong>, <strong>TXT</strong>, and common <strong>images</strong> (PNG, JPEG, WebP, …).
+        Scanned pages need{" "}
+        <a href="https://github.com/tesseract-ocr/tesseract">Tesseract</a> and <code>pytesseract</code> on the
+        server. Text is stored with PII placeholders; skills and role are inferred automatically.
       </p>
 
       <div
@@ -145,49 +183,56 @@ export default function UploadPage() {
         onDrop={onDrop}
       >
         <p>
-          <strong>Drop a file here</strong> or choose below.
+          <strong>Drop resume files here</strong> or choose below (multiple files allowed).
         </p>
         <input
           type="file"
+          multiple
           className="upload-input"
           accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,.tif,.tiff,.webp,.bmp,application/pdf"
-          onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+          onChange={(e) => {
+            addFiles(e.target.files);
+            e.target.value = "";
+          }}
         />
       </div>
 
-      {file ? (
-        <div className="card file-pill">
-          <div>
-            <strong>{file.name}</strong>
-            <span className="muted"> · {formatBytes(file.size)} · {file.type || "unknown type"}</span>
-          </div>
-          <button type="button" className="linkish" onClick={() => onFile(null)}>
-            Clear
+      {files.length ? (
+        <div style={{ marginTop: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+          {files.map((f, i) => (
+            <div key={`${f.name}-${f.size}-${i}`} className="card file-pill">
+              <div>
+                <strong>{f.name}</strong>
+                <span className="muted"> · {formatBytes(f.size)} · {f.type || "unknown type"}</span>
+              </div>
+              <button
+                type="button"
+                className="linkish"
+                onClick={() => {
+                  setFiles((prev) => prev.filter((_, j) => j !== i));
+                  resetOutcome();
+                }}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+          <button type="button" className="linkish" style={{ alignSelf: "flex-start" }} onClick={clearAll}>
+            Clear all
           </button>
         </div>
       ) : null}
 
       <div style={{ marginTop: "1rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-        <button type="button" className="primary" disabled={loading || !file} onClick={() => void submitUpload()}>
+        <button type="button" className="primary" disabled={loading || !files.length} onClick={() => void submitUpload()}>
           {loading ? "Parsing…" : "Parse & save to database"}
         </button>
         <Link to="/jobs">View jobs</Link>
       </div>
 
-      {err ? (
-        <div className="banner banner-error" role="alert">
-          {err}
-        </div>
-      ) : null}
-      {msg && !err ? (
-        <div className="banner banner-info" role="status">
-          {msg}
-        </div>
-      ) : null}
-
       {candidate && uploadMeta ? (
         <section className="card" style={{ marginTop: "1.25rem" }}>
-          <h2 style={{ marginTop: 0 }}>Parsed candidate</h2>
+          <h2 style={{ marginTop: 0 }}>Last parsed candidate</h2>
           <dl className="field-grid">
             <dt>External ID</dt>
             <dd className="mono-row">
@@ -261,7 +306,6 @@ export default function UploadPage() {
             Save ranking to DB
           </button>
         </div>
-        {rankErr ? <p className="error">{rankErr}</p> : null}
         {rankPreview.length > 0 ? (
           <div style={{ marginTop: "1rem", overflow: "auto" }}>
             <table>

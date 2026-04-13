@@ -50,6 +50,7 @@ export type CandidateDto = {
   certifications?: string;
   education_lines?: string;
   status?: string;
+  contact_email?: string;
   created_at: string;
   /** Cohort-relative profile blend (0–100). */
   profile_percentile_score?: number | null;
@@ -70,6 +71,46 @@ export async function fetchCandidatesScoreboard(limit = 500): Promise<CandidateD
   const q = new URLSearchParams({ limit: String(limit) });
   const res = await authedFetch(`${base}/api/v1/candidates/scoreboard?${q}`);
   return parseJson<CandidateDto[]>(res);
+}
+
+/** Single candidate profile (fast; no competition scoring). */
+export async function fetchCandidate(candidateId: string): Promise<CandidateDto> {
+  const res = await authedFetch(`${base}/api/v1/candidates/${encodeURIComponent(candidateId)}`);
+  return parseJson<CandidateDto>(res);
+}
+
+/** Candidate profile + competition scores (expensive; same math as scoreboard). */
+export async function fetchCandidateWithScores(candidateId: string): Promise<CandidateDto> {
+  const res = await authedFetch(
+    `${base}/api/v1/candidates/${encodeURIComponent(candidateId)}/with-scores`,
+  );
+  return parseJson<CandidateDto>(res);
+}
+
+export type CandidateUpdatePayload = {
+  full_name?: string;
+  title?: string;
+  role_label?: string;
+  role_fine?: string;
+  skills?: string;
+  years_experience?: number | null;
+  highest_degree?: string;
+  certifications?: string;
+  education_lines?: string;
+  status?: string;
+  contact_email?: string;
+};
+
+export async function updateCandidate(
+  candidateId: string,
+  payload: CandidateUpdatePayload,
+): Promise<CandidateDto> {
+  const res = await authedFetch(`${base}/api/v1/candidates/${encodeURIComponent(candidateId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJson<CandidateDto>(res);
 }
 
 export type RankedCandidate = {
@@ -220,12 +261,17 @@ export type DashboardJobChart = {
 };
 
 export type DashboardCandidatePreview = {
+  id: string;
   external_id: string;
   full_name: string;
-  role: string;
+  /** Professional headline (matches Candidates table primary role line). */
+  title: string;
+  /** Fine role bucket; shown under title when set (same as Candidates page). */
+  role_fine: string;
   score: number;
   status: string;
   status_raw: string;
+  email: string;
 };
 
 export type DashboardWidgets = {
@@ -233,6 +279,8 @@ export type DashboardWidgets = {
   jobs_chart: DashboardJobChart;
   candidate_preview: DashboardCandidatePreview[];
   generated_at: string;
+  /** Reserved; always false — dashboard preview uses profile cohort scores only. */
+  needs_job_breadth_scores_refresh?: boolean;
 };
 
 export async function fetchDashboardWidgets(): Promise<DashboardWidgets> {
@@ -240,8 +288,17 @@ export async function fetchDashboardWidgets(): Promise<DashboardWidgets> {
   return parseJson(res);
 }
 
-/** Open stored resume PDF/file in a new tab (uses auth header via fetch + blob). */
-export async function openCandidateResumeInNewTab(externalId: string): Promise<void> {
+/** Same candidate preview scores as fetchDashboardWidgets() (legacy; optional tooling). */
+export async function fetchDashboardWidgetPreviewScores(): Promise<{
+  candidate_preview: DashboardCandidatePreview[];
+  generated_at: string;
+}> {
+  const res = await authedFetch(`${base}/api/v1/meta/dashboard/widgets/preview-scores`);
+  return parseJson(res);
+}
+
+/** Fetch stored resume bytes for in-app preview or download (uses auth header). */
+export async function fetchCandidateFileBlob(externalId: string): Promise<{ blob: Blob; contentType: string }> {
   const res = await authedFetch(
     `${base}/api/v1/candidates/by-external/${encodeURIComponent(externalId)}/file`,
   );
@@ -250,13 +307,8 @@ export async function openCandidateResumeInNewTab(externalId: string): Promise<v
     throw new Error(t || res.statusText);
   }
   const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const w = window.open(url, "_blank", "noopener,noreferrer");
-  if (!w) {
-    URL.revokeObjectURL(url);
-    throw new Error("Popup blocked — allow popups to view the file.");
-  }
-  window.setTimeout(() => URL.revokeObjectURL(url), 120_000);
+  const contentType = res.headers.get("Content-Type") || blob.type || "application/octet-stream";
+  return { blob, contentType };
 }
 
 export async function uploadResume(file: File): Promise<{

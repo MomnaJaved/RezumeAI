@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, load_only
 
 from api.models import Candidate, Job, JobCandidateRanking
 from api.services.candidate_competition_score import compute_competition_payloads_for_list
+from api.services.candidate_title_display import polish_candidate_title, polish_role_fine_display
 
 _log = logging.getLogger("rezume.api")
 
@@ -26,20 +27,6 @@ _PIPELINE_COLUMNS = (
     Candidate.status,
     Candidate.created_at,
 )
-# Preview table + profile percentiles among preview rows only (no cross-encoder).
-_PREVIEW_COLUMNS = (
-    Candidate.id,
-    Candidate.external_id,
-    Candidate.full_name,
-    Candidate.role_label,
-    Candidate.title,
-    Candidate.status,
-    Candidate.years_experience,
-    Candidate.skills,
-    Candidate.highest_degree,
-    Candidate.certifications,
-)
-
 _PIPELINE_STAGES: list[tuple[str, str]] = [
     ("new", "New Applicants"),
     ("screened", "Screened"),
@@ -84,6 +71,32 @@ def _status_label(status: str | None) -> str:
     if not s:
         return "New"
     return s[0].upper() + s[1:].lower() if len(s) > 1 else s.upper()
+
+
+def _preview_rows_for_cohort(
+    cohort: list[Candidate],
+    scores: dict[UUID, dict[str, float]],
+) -> list[dict[str, Any]]:
+    candidate_rows: list[dict[str, Any]] = []
+    for c in cohort[:_PREVIEW_ROWS]:
+        sc = scores.get(c.id, {})
+        # List/dashboard summary: cohort profile percentile only (matches GET /candidates/scoreboard field).
+        raw = sc.get("profile_percentile_score", sc.get("competition_score", 50.0))
+        comp = int(round(float(raw)))
+        candidate_rows.append(
+            {
+                "id": str(c.id),
+                "external_id": c.external_id,
+                "full_name": (c.full_name or c.external_id).strip() or c.external_id,
+                "title": polish_candidate_title((c.title or "").strip()),
+                "role_fine": polish_role_fine_display((getattr(c, "role_fine", None) or "").strip()),
+                "score": max(0, min(100, comp)),
+                "status": _status_label(c.status),
+                "status_raw": (c.status or "new").strip().lower(),
+                "email": (getattr(c, "contact_email", None) or "").strip(),
+            }
+        )
+    return candidate_rows
 
 
 def build_dashboard_widgets(db: Session) -> dict[str, Any]:
@@ -163,43 +176,49 @@ def build_dashboard_widgets(db: Session) -> dict[str, Any]:
             segments.append({"key": k, "label": lab, "count": n, "pct": pct, "color": col})
         pie = {"segments": segments, "total": total_jobs}
 
-    # --- Candidate preview: profile-only scores among these rows (no CE × jobs pass). ---
-    preview_raw = (
-        db.query(Candidate)
-        .options(load_only(*_PREVIEW_COLUMNS))
-        .order_by(Candidate.created_at.desc())
-        .limit(_PREVIEW_ROWS)
-        .all()
-    )
+    # --- Candidate preview: profile cohort percentiles only (same number as candidates list / profile chip).
+    try:
+        cohort = db.query(Candidate).order_by(Candidate.created_at.desc()).all()
+    except Exception as e:
+        _log.warning("dashboard_widgets cohort for scores: %s", e)
+        cohort = []
+
     scores: dict[UUID, dict[str, float]] = {}
     try:
-        scores = dict(
-            compute_competition_payloads_for_list(db, preview_raw, skip_job_breadth=True),
-        )
+        scores = dict(compute_competition_payloads_for_list(db, cohort, skip_job_breadth=True))
     except Exception as e:
         _log.warning("dashboard_widgets scores: %s", e)
 
-    candidate_rows: list[dict[str, Any]] = []
-    for c in preview_raw:
-        sc = scores.get(c.id, {})
-        comp = int(round(float(sc.get("competition_score", 50.0))))
-        role = (c.role_label or "").strip() or (c.title or "").strip() or "—"
-        if len(role) > 32:
-            role = role[:29] + "…"
-        candidate_rows.append(
-            {
-                "external_id": c.external_id,
-                "full_name": (c.full_name or c.external_id).strip() or c.external_id,
-                "role": role,
-                "score": max(0, min(100, comp)),
-                "status": _status_label(c.status),
-                "status_raw": (c.status or "new").strip().lower(),
-            }
-        )
+    candidate_rows = _preview_rows_for_cohort(cohort, scores)
 
     return {
         "pipeline": pipeline,
         "jobs_chart": pie,
         "candidate_preview": candidate_rows,
+        "generated_at": datetime.utcnow().isoformat(),
+        # Preview table intentionally does not wait on cross-encoder job breadth; list uses profile field.
+        "needs_job_breadth_scores_refresh": False,
+    }
+
+
+def build_dashboard_preview_job_breadth_scores(db: Session) -> dict[str, Any]:
+    """
+    Same candidate preview rows as GET /meta/dashboard/widgets (profile cohort scores for the table).
+    Kept for API compatibility; does not run the cross-encoder job-breadth pass.
+    """
+    try:
+        cohort = db.query(Candidate).order_by(Candidate.created_at.desc()).all()
+    except Exception as e:
+        _log.warning("dashboard_preview_job_breadth cohort: %s", e)
+        cohort = []
+
+    scores: dict[UUID, dict[str, float]] = {}
+    try:
+        scores = dict(compute_competition_payloads_for_list(db, cohort, skip_job_breadth=True))
+    except Exception as e:
+        _log.warning("dashboard_preview_job_breadth scores: %s", e)
+
+    return {
+        "candidate_preview": _preview_rows_for_cohort(cohort, scores),
         "generated_at": datetime.utcnow().isoformat(),
     }

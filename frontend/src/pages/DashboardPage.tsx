@@ -1,11 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import {
-  fetchDashboard,
-  fetchDashboardWidgets,
-  type DashboardData,
-  type DashboardWidgets,
-} from "../api";
+import { fetchDashboard, fetchDashboardWidgets, type DashboardData, type DashboardWidgets } from "../api";
 import ActivityNotificationList from "../components/ActivityNotificationList";
 import {
   DashboardApplicantTracker,
@@ -14,36 +9,57 @@ import {
 } from "../components/DashboardWidgets";
 import DashFrame from "../DashFrame";
 import { useActivityNotifications } from "../hooks/useActivityNotifications";
+import { useToast } from "../toast";
 
 function fmt(n: number): string {
   return new Intl.NumberFormat().format(n);
 }
 
 export default function DashboardPage() {
+  const toast = useToast();
+  const lastPollErr = useRef<string | null>(null);
   const [data, setData] = useState<DashboardData | null>(null);
   const [widgets, setWidgets] = useState<DashboardWidgets | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [widgetsErr, setWidgetsErr] = useState<string | null>(null);
 
   useEffect(() => {
     fetchDashboard()
       .then(setData)
-      .catch((e: Error) => setErr(e.message));
-  }, []);
+      .catch((e: Error) => toast.error(e.message));
+  }, [toast]);
 
   useEffect(() => {
+    let cancelled = false;
     fetchDashboardWidgets()
-      .then(setWidgets)
-      .catch((e: Error) => setWidgetsErr(e.message));
+      .then((w) => {
+        if (cancelled) return;
+        setWidgets(w);
+      })
+      .catch((e: Error) => {
+        if (!cancelled) {
+          setWidgetsErr(e.message);
+          toast.error(e.message);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const overview = data?.overview;
   const { items: notifications, pollErr: notificationsPollErr } = useActivityNotifications(data?.notifications);
 
+  useEffect(() => {
+    if (notificationsPollErr && notificationsPollErr !== lastPollErr.current) {
+      lastPollErr.current = notificationsPollErr;
+      toast.error(notificationsPollErr);
+    }
+    if (!notificationsPollErr) lastPollErr.current = null;
+  }, [notificationsPollErr, toast]);
+
   return (
     <DashFrame>
       <h1 className="dash-title">Build Your Talent pipeline</h1>
-      {err ? <p className="banner banner-error">{err}</p> : null}
 
       <section className="dash-lower">
         <div className="dash-panel">
@@ -79,16 +95,13 @@ export default function DashboardPage() {
         <div className="dash-panel dash-panel-notifications">
           <h2>Notifications</h2>
           <p className="dash-live-hint muted">
-            Live updates{notificationsPollErr ? ` (refresh error: ${notificationsPollErr})` : ""}.{" "}
-            <Link to="/inbox">Open full inbox</Link>
+            Live updates. <Link to="/inbox">Open full inbox</Link>
           </p>
           <div className="dash-notifications-scroll">
             <ActivityNotificationList items={notifications} />
           </div>
         </div>
       </section>
-
-      {widgetsErr ? <p className="banner banner-error">{widgetsErr}</p> : null}
 
       {widgets ? (
         <section className="dash-widgets">

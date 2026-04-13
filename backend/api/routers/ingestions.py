@@ -113,6 +113,8 @@ def _process_one_ingestion(ingestion_id: UUID, engine: Engine) -> None:
             existing.highest_degree = parsed.get("highest_degree") or ""
             existing.education_lines = parsed.get("education_lines") or ""
             existing.certifications = parsed.get("certifications") or ""
+            if parsed.get("contact_email"):
+                existing.contact_email = parsed["contact_email"]
             if not getattr(existing, "status", ""):
                 existing.status = "new"
             cand = existing
@@ -131,6 +133,7 @@ def _process_one_ingestion(ingestion_id: UUID, engine: Engine) -> None:
                 highest_degree=parsed.get("highest_degree") or "",
                 education_lines=parsed.get("education_lines") or "",
                 certifications=parsed.get("certifications") or "",
+                contact_email=parsed.get("contact_email") or "",
                 status="new",
             )
             db.add(cand)

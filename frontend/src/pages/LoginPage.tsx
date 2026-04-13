@@ -1,12 +1,14 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { loginUser } from "../api";
 import AuthMarketingShell from "../AuthMarketingShell";
 import { useAuth } from "../auth";
+import { useToast } from "../toast";
 
 export default function LoginPage() {
   const nav = useNavigate();
   const loc = useLocation();
+  const toast = useToast();
   const { login } = useAuth();
   const params = useMemo(() => new URLSearchParams(loc.search), [loc.search]);
   const registered = params.get("registered") === "1";
@@ -16,18 +18,31 @@ export default function LoginPage() {
   const [email, setEmail] = useState(prefillEmail);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const regShown = useRef(false);
+  const verShown = useRef(false);
+
+  useEffect(() => {
+    if (registered && !regShown.current) {
+      regShown.current = true;
+      toast.info("Account created. Sign in below.");
+    }
+  }, [registered, toast]);
+  useEffect(() => {
+    if (verified && !verShown.current) {
+      verShown.current = true;
+      toast.success("Email verified. Sign in below.");
+    }
+  }, [verified, toast]);
 
   async function submit() {
     setBusy(true);
-    setErr(null);
     try {
       const r = await loginUser(email, password);
       login(r.access_token, email.trim().toLowerCase());
       const to = (loc.state as { from?: string } | null)?.from ?? "/dashboard";
       nav(to);
     } catch (e) {
-      setErr((e as Error).message || "Login failed");
+      toast.error((e as Error).message || "Login failed");
     } finally {
       setBusy(false);
     }
@@ -40,14 +55,6 @@ export default function LoginPage() {
       <p className="landing-auth-switch">
         Don’t have an account? <Link to="/register">Create one</Link>
       </p>
-      {registered ? (
-        <p className="banner banner-info landing-auth-banner">Account created successfully. Please log in.</p>
-      ) : null}
-      {verified ? (
-        <p className="banner banner-info landing-auth-banner">Email verified successfully. Please log in.</p>
-      ) : null}
-      {err ? <p className="banner banner-error landing-auth-banner">{err}</p> : null}
-
       <div className="landing-auth-fields">
         <label htmlFor="email">Email</label>
         <input

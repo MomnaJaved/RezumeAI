@@ -11,7 +11,7 @@ from api.database import get_db
 from api.models import Candidate, Job, ResumeIngestion
 from api.paths import repo_root
 from api.services.activity_feed import build_activity_notifications
-from api.services.dashboard_widgets import build_dashboard_widgets
+from api.services.dashboard_widgets import build_dashboard_preview_job_breadth_scores, build_dashboard_widgets
 
 router = APIRouter(prefix="/meta", tags=["meta"])
 
@@ -50,8 +50,17 @@ def quick_stats(db: Session = Depends(get_db)):
 
 @router.get("/dashboard/widgets")
 def dashboard_widgets(db: Session = Depends(get_db)):
-    """Applicant pipeline, jobs breakdown, and candidate preview for the home dashboard."""
+    """
+    Applicant pipeline, jobs breakdown, and candidate preview for the home dashboard.
+    Candidate summary scores are cohort profile percentiles (same field as the candidates list).
+    """
     return build_dashboard_widgets(db)
+
+
+@router.get("/dashboard/widgets/preview-scores")
+def dashboard_widgets_preview_scores(db: Session = Depends(get_db)):
+    """Same candidate preview scores as GET /meta/dashboard/widgets (legacy alias)."""
+    return build_dashboard_preview_job_breadth_scores(db)
 
 
 @router.get("/activity")

@@ -13,14 +13,162 @@ DEGREE_PATTERNS = [
 ]
 DEGREE_RANK = ["phd", "master", "bachelor", "intermediate", "matric"]
 
-RE_EDU_LINE = re.compile(r"^(.*\b(university|college|institute|school)\b.*)$", re.IGNORECASE)
+RE_EDU_LINE = re.compile(
+    r"^(.*(?:\b(university|college|institute|school|academy|polytechnic|conservatory|univ\.?)\b"
+    r"|(?:^|\s)(?:MIT|CMU|NYU|USC|GT|UIUC)(?:\s|,|$))).*$",
+    re.IGNORECASE,
+)
+
+# Lines that leaked in from other resume sections (whole-line filter).
+_RE_EDU_LEAK = re.compile(
+    r"\b(work experience|employment history|professional experience|career history|"
+    r"^skills\s*:|\bskills\s+and\b|\btechnical skills\b)\b",
+    re.IGNORECASE,
+)
+_RE_CERT_LEAK = re.compile(
+    r"\b(work experience|employment history|education\s*:|\beducation\s+background\b)\b",
+    re.IGNORECASE,
+)
+
+
+def _split_resume_bullet_line(line: str, max_chunk: int) -> list[str]:
+    """Split an overlong or multi-bullet line into separate entries."""
+    s = re.sub(r"\s+", " ", line).strip()
+    if not s or len(s) < 2:
+        return []
+    if len(s) <= max_chunk:
+        return [s]
+    parts = re.split(r"\s*[•·▪▫●○]\s+|;\s+(?=[A-Za-z])|(?<=\d{4})\s{2,}(?=[A-Z])", s)
+    out: list[str] = []
+    for p in parts:
+        p = p.strip()
+        if len(p) < 10:
+            continue
+        if len(p) > max_chunk:
+            p = p[: max_chunk - 1].rsplit(" ", 1)[0] + "…"
+        out.append(p)
+    return out if out else [s[:max_chunk]]
+
+
+def _refine_education_lines(lines: list[str]) -> list[str]:
+    refined: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        for part in _split_resume_bullet_line(line, 200):
+            if _RE_EDU_LEAK.search(part) and len(part) > 80:
+                continue
+            if part in seen:
+                continue
+            seen.add(part)
+            refined.append(part)
+    return refined[:14]
+
+
+def _refine_certification_lines(lines: list[str]) -> list[str]:
+    refined: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        for part in _split_resume_bullet_line(line, 180):
+            if _RE_CERT_LEAK.search(part) and len(part) > 70:
+                continue
+            if part in seen:
+                continue
+            seen.add(part)
+            refined.append(part)
+    return refined[:16]
+
+
+def _line_has_degree_token(line: str) -> bool:
+    low = line.lower()
+    for p in DEGREE_PATTERNS:
+        if re.search(p, low, re.IGNORECASE):
+            return True
+    return bool(re.search(r"\b(g\.?pa|major|minor|graduat|diploma|dipl\.)\b", low))
+
+
+def _line_has_institution(line: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(university|college|institute|school|academy|univ\.?|polytechnic|conservatory)\b",
+            line,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _merge_adjacent_education_lines(lines: list[str]) -> list[str]:
+    """Join split PDF lines, e.g. degree line then school name on the next line."""
+    if len(lines) < 2:
+        return lines
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        a = lines[i]
+        b = lines[i + 1] if i + 1 < len(lines) else ""
+        if b:
+            inst_a = _line_has_institution(a)
+            inst_b = _line_has_institution(b)
+            deg_a = _line_has_degree_token(a)
+            deg_b = _line_has_degree_token(b)
+            if (inst_a and deg_b and not deg_a) or (inst_b and deg_a and not deg_b):
+                left, right = (a, b) if inst_a and deg_b else (b, a)
+                left_n = re.sub(r"\s+", " ", left).strip()
+                right_n = re.sub(r"\s+", " ", right).strip()
+                merged = f"{left_n} — {right_n}"
+                out.append(merged)
+                i += 2
+                continue
+        out.append(a)
+        i += 1
+    return out
+
+
+def _lines_after_heading(lines: list[str], header_re: re.Pattern, allowed_repeat_heads: frozenset[str]) -> list[str]:
+    """Collect body lines after a section header until another major section starts."""
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        if not header_re.match(line):
+            continue
+        j = i + 1
+        while j < len(lines):
+            nxt = lines[j]
+            sm = RE_SECTION_HEADING.match(nxt)
+            if sm:
+                h = sm.group("h").lower()
+                if h not in allowed_repeat_heads:
+                    break
+            if len(nxt) > 500:
+                break
+            out.append(nxt)
+            j += 1
+            if len(out) >= 24:
+                break
+        break
+    return out
+
 
 def extract_education(text: str) -> Dict:
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    t_struct = preprocess_resume_text_for_structure(text)
+    lines = [l.strip() for l in t_struct.splitlines() if l.strip()]
+    section_lines = _lines_after_heading(
+        lines,
+        RE_EDU_HEADER,
+        frozenset({"education", "academic", "qualifications"}),
+    )
     edu_lines = [l for l in lines if RE_EDU_LINE.search(l)]
+    merged: list[str] = []
+    seen: set[str] = set()
+    for l in section_lines + edu_lines:
+        s = re.sub(r"\s+", " ", l).strip()
+        if not s or s in seen or len(s) > 480:
+            continue
+        seen.add(s)
+        merged.append(s)
+    merged = _merge_adjacent_education_lines(merged)
+    merged = _refine_education_lines(merged)
     found = set()
 
-    t = text.lower()
+    t = t_struct.lower()
     for p in DEGREE_PATTERNS:
         if re.search(p, t, re.IGNORECASE):
             # map to rank bucket
@@ -43,7 +191,7 @@ def extract_education(text: str) -> Dict:
 
     return {
         "highest_degree": highest,
-        "education_lines": " | ".join(edu_lines[:8])  # keep short
+        "education_lines": " | ".join(merged[:12]) if merged else "",
     }
 
 # ---------- CERTIFICATIONS ----------
@@ -51,11 +199,30 @@ RE_CERT = re.compile(r"\b(certification|certified|certificate)\b", re.IGNORECASE
 RE_CERT_LINE = re.compile(r"^(.*\b(certification|certified|certificate)\b.*)$", re.IGNORECASE)
 
 def extract_certifications(text: str) -> str:
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    cert_lines = [l for l in lines if RE_CERT_LINE.search(l)]
-    # light cleanup
-    cert_lines = [re.sub(r"\s+", " ", l) for l in cert_lines]
-    return " | ".join(cert_lines[:10])
+    t_struct = preprocess_resume_text_for_structure(text)
+    lines = [l.strip() for l in t_struct.splitlines() if l.strip()]
+    section_lines = _lines_after_heading(
+        lines,
+        RE_CERT_HEADER,
+        frozenset({"certifications", "certification"}),
+    )
+    cert_lines = [
+        l
+        for l in lines
+        if RE_CERT_LINE.search(l)
+        or RE_CERT_VENDOR_LINE.search(l)
+        or _standalone_cert_candidate(l)
+    ]
+    merged: list[str] = []
+    seen: set[str] = set()
+    for l in section_lines + cert_lines:
+        s = re.sub(r"\s+", " ", l).strip()
+        if not s or s in seen or len(s) > 400:
+            continue
+        seen.add(s)
+        merged.append(s)
+    merged = _refine_certification_lines(merged)
+    return " | ".join(merged[:14]) if merged else ""
 
 # ---------- YEARS OF EXPERIENCE ----------
 # Goal: estimate WORK experience only (avoid counting education date ranges).
@@ -156,9 +323,66 @@ _BREAK_EXPERIENCE_HEADING = re.compile(
     r"(?<!\n)[\s\u00a0]+(?=EXPERIENCE\b|Experience\b(?=\s+[A-Z]))"
 )
 _BREAK_EDU_ETC = re.compile(
-    r"(?<!\n)[\s\u00a0]+(?=(?:education|educational background|academic background)\b)",
+    r"(?<!\n)[\s\u00a0]+(?=(?:education|educational background|academic background|qualifications)\b)",
     re.IGNORECASE,
 )
+_BREAK_CERT = re.compile(
+    r"(?<!\n)[\s\u00a0]+(?=(?:certifications?|professional certifications?|licenses?|credentials?)\b)",
+    re.IGNORECASE,
+)
+
+RE_EDU_HEADER = re.compile(
+    r"^\s*(?:[\u2022\u2023\u25CF\u25CB●○·*•\-]|\d{1,2}[.)]\s*)?\s*"
+    r"(education|educational background|academic background|academic qualifications|qualifications)\b\s*:?\s*$",
+    re.IGNORECASE,
+)
+RE_CERT_HEADER = re.compile(
+    r"^\s*(?:[\u2022\u2023\u25CF\u25CB●○·*•\-]|\d{1,2}[.)]\s*)?\s*"
+    r"(certifications?|professional certifications?|licenses?|credentials?)\b\s*:?\s*$",
+    re.IGNORECASE,
+)
+# Lines that look like a named credential without the word "certificate"
+RE_CERT_VENDOR_LINE = re.compile(
+    r"\b(aws|azure|gcp|google cloud)\b.{0,80}\b(associate|professional|specialty|practitioner|foundations|expert|developer)\b",
+    re.IGNORECASE,
+)
+RE_STANDALONE_NAMED_CERT = re.compile(
+    r"\b("
+    r"PMP|CAPM|PRINCE2|PSM\s*(?:I{1,3}|\d)|PSPO|CSM|CSPO|"
+    r"CISSP|CISA|CISM|SSCP|CRISC|CEH|"
+    r"CCNA|CCNP|CCIE|"
+    r"CKA|CKS|CKAD|"
+    r"RHCSA|RHCE|LFCS|"
+    r"ITIL\s*(?:v?\d|Foundation|Practitioner)?|"
+    r"CompTIA\s+(?:Security|Network|A)\+|"
+    r"AWS\s+Certified|Google\s+Professional|Microsoft\s+Certified"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _standalone_cert_candidate(line: str) -> bool:
+    if len(line) > 160 or len(line) < 2:
+        return False
+    if not RE_STANDALONE_NAMED_CERT.search(line):
+        return False
+    if _RE_CERT_LEAK.search(line) and len(line) > 50:
+        return False
+    if re.search(
+        r"\b(engineer|developer|manager|director|analyst|scientist|architect|consultant)\b",
+        line,
+        re.I,
+    ) and len(line) > 55:
+        return False
+    if re.search(r"\b(certified|certification|credential|exam|badge|license)\b", line, re.I):
+        return True
+    return len(line) <= 52
+
+
+def preprocess_resume_text_for_structure(text: str) -> str:
+    """Newlines + breaks before major sections (experience, education, certifications)."""
+    t = _preprocess_resume_text_for_years(text)
+    return _BREAK_CERT.sub("\n", t)
 
 
 def _preprocess_resume_text_for_years(text: str) -> str:

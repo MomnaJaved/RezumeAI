@@ -19,7 +19,7 @@ const ITEMS: SearchItem[] = [
   { id: "inbox", label: "Inbox", path: "/inbox", match: "inbox notifications messages activity" },
   { id: "matching", label: "Matching", path: "/matching", match: "matching rank screening shortlist job match" },
   { id: "upload", label: "Upload resume", path: "/upload", match: "upload resume cv document candidate file" },
-  { id: "ingest", label: "Ingest", path: "/ingest", match: "ingest bulk import batch" },
+  { id: "add-candidate", label: "Add candidate", path: "/candidates/add", match: "add candidate new resume upload bulk import paste cv" },
   { id: "playground", label: "Playground", path: "/playground", match: "playground ml api try experiment" },
 ];
 

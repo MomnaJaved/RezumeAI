@@ -5,7 +5,9 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
+
+from api.services.candidate_title_display import polish_candidate_title, polish_role_fine_display
 
 
 # --- ML ---
@@ -102,6 +104,23 @@ class CandidateCreate(BaseModel):
     certifications: str = ""
     education_lines: str = ""
     status: str = "new"
+    contact_email: str = ""
+
+
+class CandidateUpdate(BaseModel):
+    """Partial update; omit fields to leave unchanged."""
+
+    full_name: Optional[str] = None
+    title: Optional[str] = None
+    role_label: Optional[str] = None
+    role_fine: Optional[str] = None
+    skills: Optional[str] = None
+    years_experience: Optional[float] = None
+    highest_degree: Optional[str] = None
+    certifications: Optional[str] = None
+    education_lines: Optional[str] = None
+    status: Optional[str] = None
+    contact_email: Optional[str] = None
 
 
 class CandidateRead(BaseModel):
@@ -121,7 +140,20 @@ class CandidateRead(BaseModel):
     certifications: str
     education_lines: str
     status: str
+    contact_email: str = ""
     created_at: datetime
+
+    @field_serializer("title")
+    def _ser_title(self, v: str) -> str:
+        return polish_candidate_title(v)
+
+    @field_serializer("role_label")
+    def _ser_role_label(self, v: str) -> str:
+        return polish_candidate_title(v)
+
+    @field_serializer("role_fine")
+    def _ser_role_fine(self, v: str) -> str:
+        return polish_role_fine_display(v)
 
 
 class CandidateReadWithScores(CandidateRead):

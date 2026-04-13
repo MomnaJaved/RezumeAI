@@ -55,6 +55,8 @@ class Candidate(Base):
     certifications: Mapped[str] = mapped_column(Text, default="")
     education_lines: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(64), default="new")
+    # First email found in resume text at ingest (not in PII-stripped raw_text).
+    contact_email: Mapped[str] = mapped_column(String(320), default="")
     # Semantic embedding (SBERT) of candidate text for fast shortlist (stored as raw float32 bytes).
     # Shape typically (384,) for all-MiniLM-L6-v2.
     embedding_sbert: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)

@@ -221,7 +221,7 @@ def compute_competition_payloads_for_list(
     """
     Like compute_competition_payloads but can skip the cross-encoder job-breadth pass.
 
-    - skip_job_breadth=True: profile percentiles only (fast; use for dashboard, etc.).
+    - skip_job_breadth=True: profile percentiles only (fast; optional tooling).
     - skip_job_breadth=None: honor REZUME_COMPETITION_SKIP_JOB_FIT env.
     """
     skip = skip_job_breadth if skip_job_breadth is not None else skip_job_breadth_for_list()

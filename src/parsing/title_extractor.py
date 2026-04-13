@@ -2,9 +2,25 @@ from __future__ import annotations
 import re
 
 ROLE_KEYWORDS = {
-    "engineer","developer","designer","analyst","scientist","manager",
-    "specialist","consultant","officer","executive","lead",
-    "intern","associate","architect","tester","qa","sqa"
+    "engineer",
+    "developer",
+    "designer",
+    "analyst",
+    "scientist",
+    "manager",
+    "specialist",
+    "consultant",
+    "officer",
+    "executive",
+    "lead",
+    "intern",
+    "associate",
+    "architect",
+    "tester",
+    "qa",
+    "sqa",
+    "media",
+    "marketing",
 }
 
 RE_EMAIL = re.compile(r"(email|@|linkedin|github|www|http)", re.IGNORECASE)

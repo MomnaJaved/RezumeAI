@@ -10,10 +10,12 @@ from src.inference.service import classify_role
 from src.parsing.skill_mining import extract_skill_candidates
 from src.parsing.feature_extractors import extract_certifications, extract_education, estimate_years_experience
 from src.parsing.text_extractors import extract_text_any
-from src.parsing.name_extractor import extract_name_from_raw
+from src.parsing.name_extractor import extract_name_from_raw, guess_name_from_filename_stem
 from src.parsing.title_extractor import extract_title_from_raw
 from src.parsing.role_fine import infer_role_fine
-from src.preprocessing.pii import strip_pii
+from src.preprocessing.pii import extract_primary_email, strip_pii, strip_pii_keep_newlines
+
+from api.services.candidate_title_display import polish_candidate_title
 
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"}
@@ -43,21 +45,30 @@ def _safe_filename(name: str) -> str:
 def _build_role_input(raw_clean: str, title: str, skills: str) -> str:
     """
     Help role classifier by front-loading strong signals within the 256-token budget.
+    When no explicit title line exists, lead with skills so the model can infer frontend/backend/fullstack.
     """
     head = raw_clean.splitlines()[:60]
     head_txt = "\n".join(head)
-    parts = []
-    if title.strip():
-        parts.append(f"Title: {title.strip()}")
-    if skills.strip():
-        parts.append(f"Skills: {skills.strip()}")
+    parts: list[str] = []
+    t = (title or "").strip()
+    sk = (skills or "").strip()
+    if t:
+        parts.append(f"Title: {t}")
+        if sk:
+            parts.append(f"Skills: {sk}")
+    else:
+        if sk:
+            parts.append(f"Skills: {sk}")
+            parts.append(f"Key skills: {sk[:400]}")
+        parts.append("Title: (not stated; infer technical role from skills and experience.)")
     parts.append(head_txt)
     return "\n".join(parts).strip()
 
 
 def parse_upload(filename: str, content: bytes) -> dict:
     """
-    Returns dict: external_id, raw_text (PII-stripped), skills str, title, role_label,
+    Returns dict: external_id, contact_email (first in text, if any), raw_text (PII-stripped),
+    skills str, title, role_label,
     full_name hint from filename, original filename, text_len.
     Raises ValueError with user-facing message on failure.
     """
@@ -93,21 +104,29 @@ def parse_upload(filename: str, content: bytes) -> dict:
 
     # Keep a clean-but-not-stripped copy for name heuristics.
     raw_clean = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
+    contact_email = extract_primary_email(raw_clean)
     stripped = strip_pii(raw_clean)
+    pii_safe_structural = strip_pii_keep_newlines(raw_clean)
     skills_list = extract_skill_candidates(stripped)[:80]
     skills = ", ".join(skills_list)
     # Title extraction needs real line breaks; use raw_clean (strip_pii() collapses whitespace).
-    title = extract_title_from_raw(raw_clean)
-    role_in = _build_role_input(raw_clean, title if title != "unknown" else "", skills)
+    raw_title = extract_title_from_raw(raw_clean)
+    if raw_title != "unknown":
+        polished = polish_candidate_title(raw_title)
+        title = polished if polished else raw_title
+    else:
+        title = ""
+    role_in = _build_role_input(raw_clean, title, skills)
     role_out = classify_role(role_in, strip_pii_input=True, return_probs=False)
     role_label = str(role_out.get("label", ""))
-    role_fine = infer_role_fine(title if title != "unknown" else "", skills, raw_hint=raw_clean[:5000])
+    role_fine = infer_role_fine(title, skills, raw_hint=raw_clean[:5000])
 
-    stem = Path(filename).stem.replace("_", " ").strip()
+    stem = Path(filename).stem
     guessed = extract_name_from_raw(raw_clean)
+    from_filename = guess_name_from_filename_stem(stem)
 
-    edu = extract_education(stripped)
-    certs = extract_certifications(stripped)
+    edu = extract_education(pii_safe_structural)
+    certs = extract_certifications(pii_safe_structural)
     # Years must use newline-preserving text: strip_pii() collapses whitespace to one line,
     # which breaks section detection and makes edu hints match the entire resume.
     years = estimate_years_experience(raw_clean)
@@ -123,12 +142,13 @@ def parse_upload(filename: str, content: bytes) -> dict:
 
     return {
         "external_id": ext_id,
+        "contact_email": contact_email,
         "raw_text": stripped,
         "skills": skills,
-        "title": title if title != "unknown" else "",
+        "title": title,
         "role_label": role_label,
         "role_fine": role_fine,
-        "full_name": guessed or stem or "candidate",
+        "full_name": guessed or from_filename or "Candidate",
         "filename": filename,
         "storage_path": str(store_path) if store_path else "",
         "text_len": len(stripped),

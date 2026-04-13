@@ -51,6 +51,15 @@ RE_TITLE_PHRASE = re.compile(
     re.IGNORECASE,
 )
 
+# "Finance Analyst", "Business Analyst", etc. — two-word job titles often mistaken for names.
+RE_DOMAIN_ROLE_TITLE = re.compile(
+    r"\b("
+    r"finance|financial|business|data|product|marketing|credit|investment|tax|budget|revenue|operations|"
+    r"information|technical|staff|project|program|account|sales|customer|supply|quality|risk|policy|hr|it"
+    r")\s+(analyst|associate|consultant|specialist|coordinator|administrator)\b",
+    re.IGNORECASE,
+)
+
 # Lines that are clearly not a name row.
 RE_BAD_LINE_HINT = re.compile(
     r"\b(resume|curriculum vitae|\bcv\b|page\s+\d|confidential|table of contents|"
@@ -231,6 +240,8 @@ def _looks_like_job_title(s: str) -> bool:
     low = s.lower().strip()
     if not low:
         return True
+    if RE_DOMAIN_ROLE_TITLE.search(low):
+        return True
     if RE_TITLE_PHRASE.search(low):
         m = RE_TITLE_PHRASE.search(low)
         if m and len(m.group(0)) >= min(len(low) * 0.65, len(low) - 2):
@@ -242,6 +253,62 @@ def _looks_like_job_title(s: str) -> bool:
     if role_hits >= 1 and len(words) >= 4:
         return True
     return False
+
+
+_TAIL_FILENAME_WORDS = frozenset(
+    {
+        "resume",
+        "cv",
+        "curriculum",
+        "final",
+        "draft",
+        "updated",
+        "new",
+        "v1",
+        "v2",
+        "v3",
+        "pdf",
+        "docx",
+        "doc",
+        "txt",
+        "untitled",
+        "document",
+        "file",
+        "profile",
+        "copy",
+    }
+)
+
+
+def guess_name_from_filename_stem(stem: str) -> str:
+    """
+    If the file stem looks like 'First_Last' or 'Jane Doe' (not 'Finance_Analyst_Resume'), return a display name.
+    Otherwise return "" so callers can fall back to a neutral label.
+    """
+    stem = (stem or "").strip()
+    if not stem or len(stem) > 56:
+        return ""
+    low_all = stem.lower()
+    if re.match(r"^(resume|cv|curriculum|résumé)\b", low_all) or re.search(r"\b(linkedin|profile|untitled)\b", low_all):
+        return ""
+    if re.match(r"^[\d\s._-]+$", low_all):
+        return ""
+
+    raw = re.sub(r"[_-]+", " ", stem)
+    parts = [p for p in raw.split() if p]
+    if parts and parts[0].isdigit():
+        return ""
+    while parts and parts[-1].lower().rstrip("0123456789.") in _TAIL_FILENAME_WORDS:
+        parts.pop()
+    if len(parts) < 2:
+        return ""
+    cand = " ".join(parts)
+    if _looks_like_job_title(cand) or _looks_like_skill_topic_or_company(cand):
+        return ""
+    val = _normalize_name_parts(cand)
+    if val and not _looks_like_job_title(val):
+        return val
+    return ""
 
 
 def extract_name_from_raw(raw_text: str, *, max_lines: int = 40) -> str:

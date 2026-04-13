@@ -2,26 +2,24 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { registerUser } from "../api";
 import AuthMarketingShell from "../AuthMarketingShell";
+import { useToast } from "../toast";
 
 export default function RegisterPage() {
   const nav = useNavigate();
+  const toast = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [ok, setOk] = useState<string | null>(null);
 
   async function submit() {
     setBusy(true);
-    setErr(null);
-    setOk(null);
     try {
       await registerUser(email, password);
       const e = email.trim().toLowerCase();
-      setOk("Verification code sent. Check your email.");
+      toast.success("Verification code sent. Check your email.");
       nav(`/verify-email?email=${encodeURIComponent(e)}`);
     } catch (e) {
-      setErr((e as Error).message || "Registration failed");
+      toast.error((e as Error).message || "Registration failed");
     } finally {
       setBusy(false);
     }
@@ -34,9 +32,6 @@ export default function RegisterPage() {
       <p className="landing-auth-switch">
         Already have an account? <Link to="/login">Sign in</Link>
       </p>
-      {err ? <p className="banner banner-error landing-auth-banner">{err}</p> : null}
-      {ok ? <p className="banner banner-info landing-auth-banner">{ok}</p> : null}
-
       <div className="landing-auth-fields">
         <label htmlFor="email">Email</label>
         <input

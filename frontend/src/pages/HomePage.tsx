@@ -101,7 +101,7 @@ function IconBiasFree() {
 const WHY_ITEMS = [
   { title: "Saves Time", Icon: IconSavesTime, blurb: "Automate first-pass review so you focus on finalists." },
   { title: "Smart Matching", Icon: IconSmartMatching, blurb: "Semantic understanding beyond keyword overlap." },
-  { title: "Multi-Platform Access", Icon: IconMultiPlatform, blurb: "Web uploads, bulk ingest, and extension-ready flows." },
+  { title: "Multi-Platform Access", Icon: IconMultiPlatform, blurb: "Web uploads, bulk résumé import, and extension-ready flows." },
   { title: "Accurate Rankings", Icon: IconAccurateRankings, blurb: "Embeddings plus reranking for hiring-style scores." },
   { title: "Bias-free Scoring", Icon: IconBiasFree, blurb: "Designed for fair, explainable candidate signals." },
 ] as const;
@@ -241,8 +241,8 @@ export default function HomePage() {
             <h2 className="landing-section-title landing-section-title-fade">Features</h2>
             <div className="landing-how-grid">
               <div className="landing-how-card">
-                <h3>Resume ingestion</h3>
-                <p>Upload PDF/DOCX/TXT or bulk ingest extracted text. PII is stripped before storage.</p>
+                <h3>Add résumés</h3>
+                <p>Upload PDF/DOCX/TXT or bring in extracted text in bulk. PII is stripped before storage.</p>
               </div>
               <div className="landing-how-card">
                 <h3>Skills + experience signals</h3>

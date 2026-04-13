@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import mimetypes
 from pathlib import Path
 from uuid import UUID
 
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 from api.database import get_db
 from api.dependencies import require_user_if_auth_enabled
 from api.models import Candidate
-from api.schemas import CandidateCreate, CandidateRead, CandidateReadWithScores
+from api.schemas import CandidateCreate, CandidateRead, CandidateReadWithScores, CandidateUpdate
 from api.services.candidate_competition_score import compute_competition_payloads_for_list
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
@@ -74,9 +75,59 @@ def download_candidate_file(
     p = Path((getattr(c, "storage_path", "") or "").strip())
     if not p or not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="Resume file not found")
-    # Try to download with the original filename.
     filename = (c.filename or p.name).split("/")[-1]
-    return FileResponse(path=str(p), filename=filename, media_type="application/octet-stream")
+    media_type, _ = mimetypes.guess_type(filename)
+    if not media_type:
+        media_type = "application/octet-stream"
+    return FileResponse(
+        path=str(p),
+        filename=filename,
+        media_type=media_type,
+        content_disposition_type="inline",
+    )
+
+
+@router.get("/{candidate_uuid}/with-scores", response_model=CandidateReadWithScores)
+def get_candidate_with_scores(candidate_uuid: UUID, db: Session = Depends(get_db)):
+    """Full candidate row plus competition scores (same computation as GET /candidates/scoreboard)."""
+    c = db.query(Candidate).filter(Candidate.id == candidate_uuid).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    cohort = db.query(Candidate).order_by(Candidate.created_at.desc()).all()
+    scores_by_id = compute_competition_payloads_for_list(db, cohort)
+    base = CandidateRead.model_validate(c)
+    extra = scores_by_id.get(c.id)
+    if not extra:
+        extra = {
+            "profile_percentile_score": 50.0,
+            "avg_job_match_score": 0.0,
+            "competition_score": 50.0,
+        }
+    return CandidateReadWithScores(
+        **base.model_dump(),
+        profile_percentile_score=extra["profile_percentile_score"],
+        avg_job_match_score=extra["avg_job_match_score"],
+        competition_score=extra["competition_score"],
+    )
+
+
+@router.patch("/{candidate_uuid}", response_model=CandidateRead)
+def patch_candidate(candidate_uuid: UUID, body: CandidateUpdate, db: Session = Depends(get_db)):
+    c = db.query(Candidate).filter(Candidate.id == candidate_uuid).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    upd = body.model_dump(exclude_unset=True)
+    if "status" in upd and upd["status"] is not None:
+        upd["status"] = str(upd["status"]).strip()[:64] or "new"
+    if "role_fine" in upd and upd["role_fine"] is not None:
+        upd["role_fine"] = str(upd["role_fine"]).strip()[:64] or "unknown"
+    if "contact_email" in upd and upd["contact_email"] is not None:
+        upd["contact_email"] = str(upd["contact_email"]).strip()[:320]
+    for key, val in upd.items():
+        setattr(c, key, val)
+    db.commit()
+    db.refresh(c)
+    return c
 
 
 @router.get("/{candidate_uuid}", response_model=CandidateRead)
@@ -106,6 +157,7 @@ def create_candidate(body: CandidateCreate, db: Session = Depends(get_db)):
         certifications=body.certifications,
         education_lines=body.education_lines,
         status=(body.status or "new")[:64],
+        contact_email=(body.contact_email or "").strip()[:320],
     )
     db.add(cand)
     db.commit()

@@ -93,6 +93,8 @@ def upload_resume(
         existing.highest_degree = parsed.get("highest_degree") or ""
         existing.education_lines = parsed.get("education_lines") or ""
         existing.certifications = parsed.get("certifications") or ""
+        if parsed.get("contact_email"):
+            existing.contact_email = parsed["contact_email"]
         # Keep existing.status unless it's empty (back-compat).
         if not getattr(existing, "status", ""):
             existing.status = "new"
@@ -115,6 +117,7 @@ def upload_resume(
             highest_degree=parsed.get("highest_degree") or "",
             education_lines=parsed.get("education_lines") or "",
             certifications=parsed.get("certifications") or "",
+            contact_email=parsed.get("contact_email") or "",
             status="new",
         )
         db.add(cand)

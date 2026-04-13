@@ -1,9 +1,13 @@
-import { Link, NavLink } from "react-router-dom";
+import { Link, NavLink, useLocation } from "react-router-dom";
 import React, { useEffect, useRef, useState } from "react";
 import DashGlobalSearch from "./DashGlobalSearch";
 import { useAuth } from "./auth";
 
-function Icon({ name }: { name: "dashboard" | "candidates" | "clients" | "jobs" | "reports" | "settings" | "inbox" | "matching" }) {
+function Icon({
+  name,
+}: {
+  name: "dashboard" | "candidates" | "addCandidate" | "clients" | "jobs" | "reports" | "settings" | "inbox" | "matching";
+}) {
   const common = {
     width: 18,
     height: 18,
@@ -31,6 +35,14 @@ function Icon({ name }: { name: "dashboard" | "candidates" | "clients" | "jobs" 
           <circle cx="9" cy="7" r="4" />
           <path d="M22 21v-2a3 3 0 0 0-2-2.83" />
           <path d="M18 3a4 4 0 0 1 0 8" />
+        </svg>
+      );
+    case "addCandidate":
+      return (
+        <svg {...common}>
+          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+          <circle cx="9" cy="7" r="4" />
+          <path d="M19 8v6M22 11h-6" strokeLinecap="round" />
         </svg>
       );
     case "clients":
@@ -142,6 +154,9 @@ function DashOverflowMenu() {
 }
 
 export default function DashFrame({ topExtra, children }: { topExtra?: React.ReactNode; children: React.ReactNode }) {
+  const loc = useLocation();
+  const hideGlobalSearch = loc.pathname === "/candidates" || loc.pathname.startsWith("/candidates/");
+
   return (
     <div className="dash">
       <aside className="dash-sidebar">
@@ -149,8 +164,11 @@ export default function DashFrame({ topExtra, children }: { topExtra?: React.Rea
           <NavLink to="/dashboard" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
             <Icon name="dashboard" /> Dashboard
           </NavLink>
-          <NavLink to="/candidates" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
+          <NavLink end to="/candidates" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
             <Icon name="candidates" /> Candidates
+          </NavLink>
+          <NavLink to="/candidates/add" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
+            <Icon name="addCandidate" /> Add candidate
           </NavLink>
           <NavLink to="/clients" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
             <Icon name="clients" /> Clients
@@ -173,15 +191,19 @@ export default function DashFrame({ topExtra, children }: { topExtra?: React.Rea
         </nav>
       </aside>
 
-      <div className="dash-main">
+      <div className={topExtra ? "dash-main dash-main--toolbar" : "dash-main"}>
         <header className="dash-topbar">
           <Link to="/dashboard" className="dash-topbar-brand">
             <span className="landing-logo" aria-hidden="true" />
             <span>Rezume AI</span>
           </Link>
-          <div className="dash-topbar-search">
-            <DashGlobalSearch />
-          </div>
+          {hideGlobalSearch ? (
+            <div className="dash-topbar-search" aria-hidden="true" />
+          ) : (
+            <div className="dash-topbar-search">
+              <DashGlobalSearch />
+            </div>
+          )}
           <div className="dash-topbar-actions">
             <DashOverflowMenu />
           </div>

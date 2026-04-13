@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.parsing.name_extractor import extract_name_from_raw
+from src.parsing.name_extractor import extract_name_from_raw, guess_name_from_filename_stem
 
 
 def test_name_label_colon():
@@ -78,3 +78,17 @@ Ali Janjua
 QA Engineer
 """
     assert extract_name_from_raw(txt) == "Ali Janjua"
+
+
+def test_rejects_finance_analyst_as_name():
+    assert extract_name_from_raw("Finance Analyst\nSkills: Excel\n") == ""
+
+
+def test_guess_name_from_filename_stem_two_words():
+    assert guess_name_from_filename_stem("Jane_Doe") == "Jane Doe"
+    assert guess_name_from_filename_stem("Jane_Doe_Resume") == "Jane Doe"
+
+
+def test_guess_name_from_filename_rejects_resume_stem():
+    assert guess_name_from_filename_stem("My_Resume_Final") == ""
+    assert guess_name_from_filename_stem("1775595018794_19DF") == ""

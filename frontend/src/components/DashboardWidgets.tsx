@@ -1,6 +1,5 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import type { DashboardCandidatePreview, DashboardJobChart, DashboardPipelineStage } from "../api";
-import { openCandidateResumeInNewTab } from "../api";
 
 function pieSlicePath(cx: number, cy: number, r: number, start: number, end: number): string {
   const sweep = end - start;
@@ -115,42 +114,26 @@ function statusClass(raw: string): string {
   return "dash-status-default";
 }
 
-function IconEye() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
-      <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx="12" cy="12" r="3" />
-    </svg>
-  );
-}
-
-function IconMail() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
-      <rect x="3" y="5" width="18" height="14" rx="2" strokeLinejoin="round" />
-      <path d="M3 7l9 6 9-6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
+/** Same mapping as CandidatesPage `displayRoleFine`. */
+function displayRoleFine(v: string | undefined): string {
+  const x = (v || "").trim().toLowerCase();
+  if (x === "intern" || x === "mobile") return "software";
+  return (v || "").trim();
 }
 
 export function DashboardCandidateSummary({ rows }: { rows: DashboardCandidatePreview[] }) {
-  async function onView(ext: string) {
-    try {
-      await openCandidateResumeInNewTab(ext);
-    } catch (e) {
-      window.alert((e as Error).message || "Could not open resume (file may be missing).");
-    }
-  }
+  const navigate = useNavigate();
 
-  function onMessage(name: string) {
-    const subject = encodeURIComponent(`Rezume AI — ${name}`);
-    window.location.href = `mailto:?subject=${subject}`;
+  function goRow(id: string) {
+    navigate(`/candidates/${id}`);
   }
 
   return (
     <section className="dash-widget dash-widget-table">
       <header className="dash-widget-head">
-        <h2>Candidate Summary</h2>
+        <div>
+          <h2>Candidate Summary</h2>
+        </div>
         <Link to="/candidates" className="dash-widget-btn">
           See all candidates →
         </Link>
@@ -161,43 +144,42 @@ export function DashboardCandidateSummary({ rows }: { rows: DashboardCandidatePr
             <tr>
               <th>Name</th>
               <th>Role</th>
-              <th>Score</th>
+              <th title="Profile strength vs your candidate pool (same as the candidates list). Job-specific match % appears when ranking against a job.">
+                Score
+              </th>
               <th>Status</th>
-              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.external_id}>
+              <tr
+                key={r.external_id}
+                className="dash-summary-row-click"
+                tabIndex={0}
+                role="link"
+                title="Open candidate profile"
+                onClick={() => goRow(r.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    goRow(r.id);
+                  }
+                }}
+              >
                 <td className="dash-td-name">{r.full_name}</td>
-                <td>{r.role}</td>
+                <td>
+                  <div style={{ fontWeight: 700, color: "rgba(255,255,255,0.92)" }}>{r.title || "—"}</div>
+                  {(r.role_fine || "").trim() && (r.role_fine || "").trim().toLowerCase() !== "unknown" ? (
+                    <div className="muted" style={{ fontSize: "0.85rem", marginTop: "0.15rem" }}>
+                      {displayRoleFine(r.role_fine)}
+                    </div>
+                  ) : null}
+                </td>
                 <td>
                   <span className={`dash-score ${scoreClass(r.score)}`}>{r.score}%</span>
                 </td>
                 <td>
                   <span className={`dash-status-pill ${statusClass(r.status_raw)}`}>{r.status}</span>
-                </td>
-                <td>
-                  <div className="dash-table-actions">
-                    <button
-                      type="button"
-                      className="dash-icon-action"
-                      title="View resume"
-                      aria-label={`View resume for ${r.full_name}`}
-                      onClick={() => void onView(r.external_id)}
-                    >
-                      <IconEye />
-                    </button>
-                    <button
-                      type="button"
-                      className="dash-icon-action"
-                      title="Message (email)"
-                      aria-label={`Draft email about ${r.full_name}`}
-                      onClick={() => onMessage(r.full_name)}
-                    >
-                      <IconMail />
-                    </button>
-                  </div>
                 </td>
               </tr>
             ))}

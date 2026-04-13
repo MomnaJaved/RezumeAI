@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import DashFrame from "../DashFrame";
 import {
   fetchIngestionBatchStatus,
   ingestBulkResumes,
-  ingestResumeText,
   deleteCandidateByExternalId,
   type IngestionBatchStatus,
-  type IngestionItem,
 } from "../api";
+import { useToast } from "../toast";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -15,35 +15,27 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function statusColor(s: string): string {
-  if (s === "done") return "#166534";
-  if (s === "failed") return "#991b1b";
-  if (s === "processing") return "#1d4ed8";
-  return "#475569";
+function rowStatusClass(s: string): string {
+  if (s === "done") return "add-cand-row-status add-cand-row-status--done";
+  if (s === "failed") return "add-cand-row-status add-cand-row-status--failed";
+  if (s === "processing") return "add-cand-row-status add-cand-row-status--processing";
+  return "add-cand-row-status add-cand-row-status--muted";
 }
 
 export default function IngestPage() {
-  // Bulk
+  const toast = useToast();
   const [files, setFiles] = useState<File[]>([]);
   const [bulkBusy, setBulkBusy] = useState(false);
-  const [bulkErr, setBulkErr] = useState<string | null>(null);
   const [batchId, setBatchId] = useState<string>("");
   const [status, setStatus] = useState<IngestionBatchStatus | null>(null);
   const [polling, setPolling] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState<Record<string, boolean>>({});
   const [deleteNote, setDeleteNote] = useState<Record<string, string>>({});
 
-  // Text ingest
-  const [text, setText] = useState("");
-  const [textBusy, setTextBusy] = useState(false);
-  const [textErr, setTextErr] = useState<string | null>(null);
-  const [textOk, setTextOk] = useState<string | null>(null);
-
   const totalBytes = useMemo(() => files.reduce((a, f) => a + f.size, 0), [files]);
 
   const onFiles = useCallback((incoming: FileList | null) => {
     if (!incoming) return;
-    // Append (don’t replace) so users can pick in multiple rounds.
     const picked = Array.from(incoming);
     setFiles((prev) => {
       const seen = new Set(prev.map((f) => `${f.name}::${f.size}::${f.lastModified}`));
@@ -54,23 +46,21 @@ export default function IngestPage() {
       }
       return merged;
     });
-    setBulkErr(null);
   }, []);
 
   async function startBulk() {
     if (!files.length) return;
     setBulkBusy(true);
-    setBulkErr(null);
     setStatus(null);
     try {
       const res = await ingestBulkResumes(files);
       setBatchId(res.batch_id);
-      // Load status once immediately.
       const st = await fetchIngestionBatchStatus(res.batch_id);
       setStatus(st);
       setPolling(true);
+      toast.success("Upload received. Processing…");
     } catch (e) {
-      setBulkErr((e as Error).message);
+      toast.error((e as Error).message);
     } finally {
       setBulkBusy(false);
     }
@@ -78,7 +68,6 @@ export default function IngestPage() {
 
   async function uploadSample() {
     setBulkBusy(true);
-    setBulkErr(null);
     setStatus(null);
     try {
       const sample = new File(
@@ -93,8 +82,9 @@ export default function IngestPage() {
       const st = await fetchIngestionBatchStatus(res.batch_id);
       setStatus(st);
       setPolling(true);
+      toast.success("Sample queued.");
     } catch (e) {
-      setBulkErr((e as Error).message);
+      toast.error((e as Error).message);
     } finally {
       setBulkBusy(false);
     }
@@ -112,9 +102,12 @@ export default function IngestPage() {
     setDeleteNote((n) => ({ ...n, [externalId]: "" }));
     try {
       await deleteCandidateByExternalId(externalId);
-      setDeleteNote((n) => ({ ...n, [externalId]: "Deleted" }));
+      setDeleteNote((n) => ({ ...n, [externalId]: "Removed" }));
+      toast.success("Candidate removed.");
     } catch (e) {
-      setDeleteNote((n) => ({ ...n, [externalId]: (e as Error).message || "Delete failed" }));
+      const m = (e as Error).message || "Remove failed";
+      setDeleteNote((n) => ({ ...n, [externalId]: m }));
+      toast.error(m);
     } finally {
       setDeleteBusy((b) => ({ ...b, [externalId]: false }));
     }
@@ -129,202 +122,160 @@ export default function IngestPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [polling, batchId]);
 
-  async function submitText() {
-    if (text.trim().length < 20) {
-      setTextErr("Paste at least ~20 characters.");
-      return;
-    }
-    setTextBusy(true);
-    setTextErr(null);
-    setTextOk(null);
-    try {
-      const ing: IngestionItem = await ingestResumeText({
-        text: text.trim(),
-        source: "extension",
-        filename: "pasted.txt",
-        batch_id: batchId || undefined,
-      });
-      setTextOk(`Queued: ${ing.id} (batch ${ing.batch_id})`);
-      setBatchId(ing.batch_id);
-      setPolling(true);
-      void pollOnce(ing.batch_id);
-      setText("");
-    } catch (e) {
-      setTextErr((e as Error).message);
-    } finally {
-      setTextBusy(false);
-    }
-  }
-
   return (
-    <div>
-      <h1>Resume ingestion (bulk / phone OCR / extension)</h1>
-      <p className="muted">
-        This page calls the async ingestion APIs: bulk upload uses <code>/api/v1/ingestions/bulk</code> and paste-text
-        uses <code>/api/v1/ingestions/text</code>. Polling shows processing progress.
-      </p>
-
-      <section className="card">
-        <h2 style={{ marginTop: 0 }}>Bulk upload</h2>
-        <p className="muted">
-          Upload multiple PDFs/DOCX/TXT or images. For phone scanning, you can choose images from camera/gallery.
-        </p>
-        <input
-          type="file"
-          multiple
-          accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,.tif,.tiff,.webp,.bmp,application/pdf,image/*"
-          onClick={(e) => {
-            // Allow selecting the same file again in the picker.
-            (e.currentTarget as HTMLInputElement).value = "";
-          }}
-          onChange={(e) => onFiles(e.target.files)}
-          disabled={bulkBusy}
-        />
-        <div style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-          <button type="button" className="primary" disabled={bulkBusy || files.length === 0} onClick={() => void startBulk()}>
-            {bulkBusy ? "Uploading…" : `Upload ${files.length || ""} file(s)`}
-          </button>
-          <button type="button" disabled={bulkBusy} onClick={() => void uploadSample()}>
-            Upload sample (debug)
-          </button>
-          <button type="button" disabled={bulkBusy || files.length === 0} onClick={() => setFiles([])}>
-            Clear
-          </button>
-          <Link to="/upload">Single upload (legacy)</Link>
+    <DashFrame
+      topExtra={
+        <div className="cand-detail-breadcrumb">
+          <Link to="/candidates" className="dash-widget-link">
+            ← Candidates
+          </Link>
         </div>
+      }
+    >
+      <div className="add-candidate-pro">
+        <header className="add-candidate-pro-head">
+          <h1 className="add-candidate-pro-title">Add candidates</h1>
+          <p className="add-candidate-pro-sub">PDF, Word, plain text, or images · up to multiple files per batch</p>
+        </header>
 
-        {files.length ? (
-          <div className="card" style={{ marginTop: "0.75rem" }}>
-            <div className="muted">
-              Total: <strong>{files.length}</strong> files · <strong>{formatBytes(totalBytes)}</strong>
+        <section className="add-candidate-pro-card">
+          <div className="add-candidate-pro-drop">
+            <input
+              type="file"
+              className="add-candidate-pro-file"
+              multiple
+              accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,.tif,.tiff,.webp,.bmp,application/pdf,image/*"
+              onClick={(e) => {
+                (e.currentTarget as HTMLInputElement).value = "";
+              }}
+              onChange={(e) => onFiles(e.target.files)}
+              disabled={bulkBusy}
+              id="add-cand-files"
+            />
+            <label htmlFor="add-cand-files" className="add-candidate-pro-label">
+              <span className="add-candidate-pro-label-title">Choose files</span>
+              <span className="add-candidate-pro-label-hint">or drag into the list after selecting from the file picker</span>
+            </label>
+          </div>
+
+          {files.length > 0 ? (
+            <div className="add-candidate-pro-list">
+              <div className="add-candidate-pro-meta">
+                <span>{files.length} file(s)</span>
+                <span className="muted">{formatBytes(totalBytes)}</span>
+              </div>
+              <ul>
+                {files.slice(0, 20).map((f) => (
+                  <li key={`${f.name}-${f.size}`}>{f.name}</li>
+                ))}
+              </ul>
+              {files.length > 20 ? <p className="muted add-candidate-pro-more">+{files.length - 20} more</p> : null}
             </div>
-            <ul style={{ margin: "0.5rem 0 0", paddingLeft: "1.2rem" }}>
-              {files.slice(0, 12).map((f) => (
-                <li key={`${f.name}-${f.size}`}>{f.name}</li>
-              ))}
-              {files.length > 12 ? <li className="muted">…and {files.length - 12} more</li> : null}
-            </ul>
-          </div>
-        ) : null}
+          ) : null}
 
-        {bulkErr ? (
-          <div className="banner banner-error" role="alert" style={{ marginTop: "0.75rem" }}>
-            {bulkErr}
+          <div className="add-candidate-pro-actions">
+            <button type="button" className="dash-btn" disabled={bulkBusy || files.length === 0} onClick={() => void startBulk()}>
+              {bulkBusy ? "Uploading…" : "Upload & process"}
+            </button>
+            <button type="button" className="small-btn add-candidate-pro-ghost" disabled={bulkBusy} onClick={() => void uploadSample()}>
+              Demo file
+            </button>
+            <button type="button" className="small-btn add-candidate-pro-ghost" disabled={bulkBusy || files.length === 0} onClick={() => setFiles([])}>
+              Clear
+            </button>
+            <Link to="/upload" className="add-candidate-pro-link">
+              Classic single-file upload
+            </Link>
           </div>
-        ) : null}
-      </section>
+        </section>
 
-      <section className="card">
-        <h2 style={{ marginTop: 0 }}>Paste text (Chrome extension / LinkedIn / OCR text)</h2>
-        <textarea
-          rows={8}
-          placeholder="Paste resume text or a copied LinkedIn profile here…"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          disabled={textBusy}
-        />
-        <div style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-          <button type="button" className="primary" disabled={textBusy || text.trim().length < 20} onClick={() => void submitText()}>
-            {textBusy ? "Submitting…" : "Queue ingest"}
-          </button>
-          <button type="button" disabled={textBusy || !text} onClick={() => setText("")}>
-            Clear
-          </button>
-        </div>
-        {textErr ? (
-          <div className="banner banner-error" role="alert" style={{ marginTop: "0.75rem" }}>
-            {textErr}
+        <section className="add-candidate-pro-card add-candidate-pro-card--tight">
+          <div className="add-candidate-pro-row">
+            <label htmlFor="batch-id" className="add-candidate-pro-field-label">
+              Batch ID
+            </label>
+            <input
+              id="batch-id"
+              className="add-candidate-pro-input"
+              value={batchId}
+              placeholder="Optional"
+              onChange={(e) => setBatchId(e.target.value)}
+            />
+            <button type="button" className="small-btn" disabled={!batchId.trim()} onClick={() => void pollOnce(batchId.trim())}>
+              Refresh
+            </button>
+            <button type="button" className="small-btn" disabled={!batchId.trim()} onClick={() => setPolling((p) => !p)}>
+              {polling ? "Pause" : "Live"}
+            </button>
           </div>
-        ) : null}
-        {textOk ? (
-          <div className="banner banner-info" role="status" style={{ marginTop: "0.75rem" }}>
-            {textOk}
-          </div>
-        ) : null}
-      </section>
 
-      <section className="card">
-        <h2 style={{ marginTop: 0 }}>Batch status</h2>
-        <div className="mono-row" style={{ marginBottom: "0.5rem" }}>
-          <label htmlFor="batch-id" style={{ marginBottom: 0 }}>
-            Batch ID
-          </label>
-          <input
-            id="batch-id"
-            value={batchId}
-            placeholder="paste batch_id here…"
-            onChange={(e) => setBatchId(e.target.value)}
-          />
-          <button type="button" disabled={!batchId.trim()} onClick={() => void pollOnce(batchId.trim())}>
-            Refresh
-          </button>
-          <button type="button" disabled={!batchId.trim()} onClick={() => setPolling((p) => !p)}>
-            {polling ? "Stop polling" : "Start polling"}
-          </button>
-        </div>
-
-        {status ? (
-          <>
-            <p className="muted" style={{ marginTop: 0 }}>
-              Total: <strong>{status.total}</strong> · queued {status.queued} · processing {status.processing} · done{" "}
-              {status.done} · failed {status.failed}
-            </p>
-            <div style={{ overflow: "auto" }}>
-              <table>
-                <thead>
-                  <tr>
-                    <th>File</th>
-                    <th>Status</th>
-                    <th>Candidate ID</th>
-                    <th>Actions</th>
-                    <th>Error</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {status.items.map((it) => (
-                    <tr key={it.id}>
-                      <td style={{ maxWidth: "18rem", wordBreak: "break-word" }}>{it.filename || "—"}</td>
-                      <td style={{ color: statusColor(it.status), fontWeight: 600 }}>{it.status}</td>
-                      <td className="muted" style={{ maxWidth: "10rem", wordBreak: "break-all" }}>
-                        {it.candidate_external_id || "—"}
-                      </td>
-                      <td style={{ minWidth: "10rem" }}>
-                        {it.candidate_external_id && it.status === "done" ? (
-                          <>
-                            <button
-                              type="button"
-                              disabled={!!deleteBusy[it.candidate_external_id]}
-                              onClick={() => void deleteCandidate(it.candidate_external_id)}
-                            >
-                              Delete candidate
-                            </button>
-                            {deleteNote[it.candidate_external_id] ? (
-                              <div
-                                className={deleteNote[it.candidate_external_id] === "Deleted" ? "muted" : "error"}
-                                style={{ fontSize: "0.75rem", marginTop: "0.25rem", wordBreak: "break-word" }}
-                              >
-                                {deleteNote[it.candidate_external_id]}
-                              </div>
-                            ) : null}
-                          </>
-                        ) : (
-                          <span className="muted">—</span>
-                        )}
-                      </td>
-                      <td className="error" style={{ maxWidth: "18rem", wordBreak: "break-word" }}>
-                        {it.error || ""}
-                      </td>
+          {status ? (
+            <>
+              <div className="add-candidate-pro-stats muted">
+                <span>{status.total} total</span>
+                <span>{status.queued} queued</span>
+                <span>{status.processing} active</span>
+                <span>{status.done} done</span>
+                <span>{status.failed} failed</span>
+              </div>
+              <div className="dash-table-wrap">
+                <table className="dash-summary-table add-candidate-table">
+                  <thead>
+                    <tr>
+                      <th>File</th>
+                      <th>Status</th>
+                      <th>ID</th>
+                      <th />
+                      <th>Error</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        ) : (
-          <p className="muted">Upload a batch (or paste a batch id) to see status here.</p>
-        )}
-      </section>
-    </div>
+                  </thead>
+                  <tbody>
+                    {status.items.map((it) => (
+                      <tr key={it.id}>
+                        <td className="add-candidate-cell-file">{it.filename || "—"}</td>
+                        <td>
+                          <span className={rowStatusClass(it.status)}>{it.status}</span>
+                        </td>
+                        <td className="muted add-candidate-cell-id">{it.candidate_external_id || "—"}</td>
+                        <td className="add-candidate-cell-actions">
+                          {it.candidate_external_id && it.status === "done" ? (
+                            <>
+                              <button
+                                type="button"
+                                className="small-btn"
+                                disabled={!!deleteBusy[it.candidate_external_id]}
+                                onClick={() => void deleteCandidate(it.candidate_external_id)}
+                              >
+                                Remove
+                              </button>
+                              {deleteNote[it.candidate_external_id] ? (
+                                <div
+                                  className={
+                                    deleteNote[it.candidate_external_id] === "Removed"
+                                      ? "muted add-cand-note"
+                                      : "add-cand-note add-cand-note--err"
+                                  }
+                                >
+                                  {deleteNote[it.candidate_external_id]}
+                                </div>
+                              ) : null}
+                            </>
+                          ) : (
+                            <span className="muted">—</span>
+                          )}
+                        </td>
+                        <td className="add-candidate-cell-err">{it.error || ""}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
+            <p className="muted add-candidate-pro-empty">Status appears after you upload.</p>
+          )}
+        </section>
+      </div>
+    </DashFrame>
   );
 }
-

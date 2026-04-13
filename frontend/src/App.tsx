@@ -1,4 +1,4 @@
-import { Link, Route, Routes, useLocation } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import HomePage from "./pages/HomePage";
 import JobsPage from "./pages/JobsPage";
 import JobDetailPage from "./pages/JobDetailPage";
@@ -6,6 +6,7 @@ import PlaygroundPage from "./pages/PlaygroundPage";
 import IngestPage from "./pages/IngestPage";
 import UploadPage from "./pages/UploadPage";
 import CandidatesPage from "./pages/CandidatesPage";
+import CandidateDetailPage from "./pages/CandidateDetailPage";
 import PlaceholderPage from "./pages/PlaceholderPage";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
@@ -49,7 +50,7 @@ export default function App() {
                 <Link to="/jobs">Jobs</Link>
                 <Link to="/playground">Playground</Link>
                 <Link to="/upload">Upload resume</Link>
-                <Link to="/ingest">Ingest</Link>
+                <Link to="/candidates/add">Add candidate</Link>
                 <span className="muted" style={{ marginLeft: "0.5rem" }}>
                   {email ?? "signed in"}
                 </span>
@@ -85,6 +86,22 @@ export default function App() {
             element={
               <RequireAuth>
                 <JobsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/candidates/add"
+            element={
+              <RequireAuth>
+                <IngestPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/candidates/:candidateId"
+            element={
+              <RequireAuth>
+                <CandidateDetailPage />
               </RequireAuth>
             }
           />
@@ -164,7 +181,7 @@ export default function App() {
             path="/ingest"
             element={
               <RequireAuth>
-                <IngestPage />
+                <Navigate to="/candidates/add" replace />
               </RequireAuth>
             }
           />

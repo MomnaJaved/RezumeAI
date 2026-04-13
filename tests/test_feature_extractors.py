@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.parsing.feature_extractors import estimate_years_experience
+from src.parsing.feature_extractors import estimate_years_experience, extract_education, extract_certifications
 
 
 def test_estimate_years_experience_ignores_education_ranges():
@@ -144,4 +144,66 @@ EDUCATION
 def test_working_experience_heading():
     txt = "PROFILE SUMMARY WORKING EXPERIENCE ACME 2019-2023 EDUCATION BS 2015-2019"
     assert estimate_years_experience(txt, current_year=2026) == 4.0
+
+
+def test_extract_education_section_lines():
+    txt = """
+WORK EXPERIENCE
+Dev Corp 2020-2022
+
+Education
+BS Computer Science, 2016 – 2020
+State University
+
+Certifications
+AWS Certified Developer
+"""
+    d = extract_education(txt)
+    lines = d.get("education_lines") or ""
+    assert "State University" in lines or "Computer Science" in lines
+    assert d.get("highest_degree") == "bachelor"
+
+
+def test_extract_certifications_section():
+    txt = """
+Education
+BS CS — Some Institute
+
+Certifications
+AWS Certified Solutions Architect – Associate
+Scrum Master certification
+"""
+    c = extract_certifications(txt)
+    assert "AWS" in c
+    assert "Scrum" in c or "certification" in c.lower()
+
+
+def test_extract_education_merges_degree_then_school():
+    txt = """
+Education
+BS Computer Science, 2016 – 2020
+State University
+
+Certifications
+PMP
+"""
+    d = extract_education(txt)
+    lines = d.get("education_lines") or ""
+    assert "State University" in lines
+    assert "Computer Science" in lines or "BS" in lines
+
+
+def test_extract_certifications_named_credential_line():
+    txt = """
+Work Experience
+ACME Corp — Network Engineer
+2019-2023
+
+Certifications
+PMP
+ITIL v4 Foundation
+"""
+    c = extract_certifications(txt)
+    assert "PMP" in c
+    assert "ITIL" in c
 

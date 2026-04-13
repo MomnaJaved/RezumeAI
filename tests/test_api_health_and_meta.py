@@ -43,3 +43,13 @@ def test_meta_dashboard_widgets_shape(client):
     assert "pipeline" in data and isinstance(data["pipeline"], list)
     assert "jobs_chart" in data and "segments" in data["jobs_chart"]
     assert "candidate_preview" in data and isinstance(data["candidate_preview"], list)
+    assert "needs_job_breadth_scores_refresh" in data
+    assert isinstance(data["needs_job_breadth_scores_refresh"], bool)
+
+
+def test_meta_dashboard_widgets_preview_scores_shape(client):
+    r = client.get("/api/v1/meta/dashboard/widgets/preview-scores")
+    assert r.status_code == 200
+    data = r.json()
+    assert "candidate_preview" in data and isinstance(data["candidate_preview"], list)
+    assert "generated_at" in data
