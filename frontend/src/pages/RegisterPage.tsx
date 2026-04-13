@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { registerUser } from "../api";
+import AuthMarketingShell from "../AuthMarketingShell";
 
 export default function RegisterPage() {
   const nav = useNavigate();
@@ -27,14 +28,16 @@ export default function RegisterPage() {
   }
 
   return (
-    <div style={{ maxWidth: "520px", margin: "0 auto" }}>
-      <h1>Register</h1>
-      <p className="muted">
-        Already have an account? <Link to="/login">Login</Link>
+    <AuthMarketingShell navRight={<Link to="/login">Login</Link>}>
+      <h1 className="landing-auth-title">Create your account</h1>
+      <p className="landing-auth-lead">Start screening and ranking candidates with Rezume AI.</p>
+      <p className="landing-auth-switch">
+        Already have an account? <Link to="/login">Sign in</Link>
       </p>
-      {err ? <p className="banner banner-error">{err}</p> : null}
-      {ok ? <p className="banner banner-info">{ok}</p> : null}
-      <div className="card">
+      {err ? <p className="banner banner-error landing-auth-banner">{err}</p> : null}
+      {ok ? <p className="banner banner-info landing-auth-banner">{ok}</p> : null}
+
+      <div className="landing-auth-fields">
         <label htmlFor="email">Email</label>
         <input
           id="email"
@@ -44,7 +47,6 @@ export default function RegisterPage() {
           onChange={(e) => setEmail(e.target.value)}
           placeholder="you@example.com"
         />
-        <div style={{ height: "0.75rem" }} />
         <label htmlFor="pw">Password</label>
         <input
           id="pw"
@@ -54,21 +56,21 @@ export default function RegisterPage() {
           onChange={(e) => setPassword(e.target.value)}
           placeholder="At least 6 characters"
         />
-        <div style={{ marginTop: "0.9rem", display: "flex", gap: "0.5rem", alignItems: "center" }}>
-          <button
-            type="button"
-            className="primary"
-            disabled={busy || !email.trim() || password.length < 6}
-            onClick={() => void submit()}
-          >
-            {busy ? "Creating…" : "Create account"}
-          </button>
-          <Link className="muted" to="/">
-            Back to home
-          </Link>
-        </div>
       </div>
-    </div>
+
+      <div className="landing-auth-actions">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || !email.trim() || password.length < 6}
+          onClick={() => void submit()}
+        >
+          {busy ? "Creating…" : "Create account"}
+        </button>
+        <Link to="/" className="btn btn-ghost landing-auth-back">
+          Back to home
+        </Link>
+      </div>
+    </AuthMarketingShell>
   );
 }
-

@@ -1,5 +1,7 @@
 import { Link, NavLink } from "react-router-dom";
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
+import DashGlobalSearch from "./DashGlobalSearch";
+import { useAuth } from "./auth";
 
 function Icon({ name }: { name: "dashboard" | "candidates" | "clients" | "jobs" | "reports" | "settings" | "inbox" | "matching" }) {
   const common = {
@@ -82,22 +84,67 @@ function Icon({ name }: { name: "dashboard" | "candidates" | "clients" | "jobs" 
   }
 }
 
-export default function DashFrame({
-  title,
-  right,
-  children,
-}: {
-  title?: React.ReactNode;
-  right?: React.ReactNode;
-  children: React.ReactNode;
-}) {
+function DashOverflowMenu() {
+  const { email, logout } = useAuth();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e: MouseEvent) {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  return (
+    <div className="dash-menu-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className="dash-menu-trigger"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        aria-label="Open menu"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+          <circle cx="12" cy="6" r="1.85" />
+          <circle cx="12" cy="12" r="1.85" />
+          <circle cx="12" cy="18" r="1.85" />
+        </svg>
+      </button>
+      {open ? (
+        <div className="dash-menu-dropdown" role="menu">
+          {email ? (
+            <div className="dash-menu-email" role="presentation">
+              {email}
+            </div>
+          ) : null}
+          <Link to="/settings" className="dash-menu-link" role="menuitem" onClick={() => setOpen(false)}>
+            Settings
+          </Link>
+          <button
+            type="button"
+            className="dash-menu-logout"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              logout();
+            }}
+          >
+            Log out
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export default function DashFrame({ topExtra, children }: { topExtra?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="dash">
       <aside className="dash-sidebar">
-        <div className="dash-brand">
-          <span className="landing-logo" aria-hidden="true" />
-          <span>Rezume AI</span>
-        </div>
         <nav className="dash-nav">
           <NavLink to="/dashboard" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
             <Icon name="dashboard" /> Dashboard
@@ -128,26 +175,20 @@ export default function DashFrame({
 
       <div className="dash-main">
         <header className="dash-topbar">
-          <div className="dash-search">{title ?? <input placeholder="Search…" />}</div>
-          <div className="dash-actions">
-            {right ?? (
-              <>
-                <Link className="dash-icon-btn" to="/upload" title="Create candidate">
-                  +
-                </Link>
-                <Link className="dash-icon-btn" to="/ingest" title="Notifications">
-                  •
-                </Link>
-                <Link className="dash-icon-btn" to="/settings" title="Account">
-                  ○
-                </Link>
-              </>
-            )}
+          <Link to="/dashboard" className="dash-topbar-brand">
+            <span className="landing-logo" aria-hidden="true" />
+            <span>Rezume AI</span>
+          </Link>
+          <div className="dash-topbar-search">
+            <DashGlobalSearch />
+          </div>
+          <div className="dash-topbar-actions">
+            <DashOverflowMenu />
           </div>
         </header>
+        {topExtra ? <div className="dash-toolbar">{topExtra}</div> : null}
         <div className="dash-content">{children}</div>
       </div>
     </div>
   );
 }
-

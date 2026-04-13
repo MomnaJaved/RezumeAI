@@ -167,6 +167,14 @@ export async function healthCheck(): Promise<{ status: string }> {
   return parseJson(res);
 }
 
+export type ActivityNotification = {
+  id: string;
+  kind: string;
+  message: string;
+  at: string;
+  href?: string;
+};
+
 export type DashboardData = {
   overview: {
     candidates_total: number;
@@ -176,12 +184,19 @@ export type DashboardData = {
     ingestions_processing: number;
     ingestions_done_24h: number;
   };
-  notifications: Array<{ kind: string; message: string; at: string }>;
+  notifications: ActivityNotification[];
 };
 
 export async function fetchDashboard(): Promise<DashboardData> {
   const res = await authedFetch(`${base}/api/v1/meta/dashboard`);
   return parseJson(res);
+}
+
+/** Poll for live activity (ingestions, new candidates, rankings, shortlist actions). */
+export async function fetchActivityNotifications(): Promise<ActivityNotification[]> {
+  const res = await authedFetch(`${base}/api/v1/meta/activity`);
+  const j = await parseJson<{ notifications: ActivityNotification[] }>(res);
+  return j.notifications;
 }
 
 export async function uploadResume(file: File): Promise<{

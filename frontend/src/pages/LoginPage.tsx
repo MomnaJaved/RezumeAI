@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { loginUser } from "../api";
+import AuthMarketingShell from "../AuthMarketingShell";
 import { useAuth } from "../auth";
 
 export default function LoginPage() {
@@ -33,15 +34,21 @@ export default function LoginPage() {
   }
 
   return (
-    <div style={{ maxWidth: "520px", margin: "0 auto" }}>
-      <h1>Login</h1>
-      <p className="muted">
-        Don’t have an account? <Link to="/register">Register</Link>
+    <AuthMarketingShell navRight={<Link to="/register">Register</Link>}>
+      <h1 className="landing-auth-title">Welcome back</h1>
+      <p className="landing-auth-lead">Sign in to continue to your hiring workspace.</p>
+      <p className="landing-auth-switch">
+        Don’t have an account? <Link to="/register">Create one</Link>
       </p>
-      {registered ? <p className="banner banner-info">Account created successfully. Please log in.</p> : null}
-      {verified ? <p className="banner banner-info">Email verified successfully. Please log in.</p> : null}
-      {err ? <p className="banner banner-error">{err}</p> : null}
-      <div className="card">
+      {registered ? (
+        <p className="banner banner-info landing-auth-banner">Account created successfully. Please log in.</p>
+      ) : null}
+      {verified ? (
+        <p className="banner banner-info landing-auth-banner">Email verified successfully. Please log in.</p>
+      ) : null}
+      {err ? <p className="banner banner-error landing-auth-banner">{err}</p> : null}
+
+      <div className="landing-auth-fields">
         <label htmlFor="email">Email</label>
         <input
           id="email"
@@ -51,7 +58,6 @@ export default function LoginPage() {
           onChange={(e) => setEmail(e.target.value)}
           placeholder="you@example.com"
         />
-        <div style={{ height: "0.75rem" }} />
         <label htmlFor="pw">Password</label>
         <input
           id="pw"
@@ -61,21 +67,21 @@ export default function LoginPage() {
           onChange={(e) => setPassword(e.target.value)}
           placeholder="••••••••"
         />
-        <div style={{ marginTop: "0.9rem", display: "flex", gap: "0.5rem", alignItems: "center" }}>
-          <button
-            type="button"
-            className="primary"
-            disabled={busy || !email.trim() || password.length < 6}
-            onClick={() => void submit()}
-          >
-            {busy ? "Signing in…" : "Sign in"}
-          </button>
-          <Link className="muted" to="/">
-            Back to home
-          </Link>
-        </div>
       </div>
-    </div>
+
+      <div className="landing-auth-actions">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || !email.trim() || password.length < 6}
+          onClick={() => void submit()}
+        >
+          {busy ? "Signing in…" : "Sign in"}
+        </button>
+        <Link to="/" className="btn btn-ghost landing-auth-back">
+          Back to home
+        </Link>
+      </div>
+    </AuthMarketingShell>
   );
 }
-

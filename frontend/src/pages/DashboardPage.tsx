@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { fetchDashboard, type DashboardData } from "../api";
+import ActivityNotificationList from "../components/ActivityNotificationList";
 import DashFrame from "../DashFrame";
+import { useActivityNotifications } from "../hooks/useActivityNotifications";
 
 function fmt(n: number): string {
   return new Intl.NumberFormat().format(n);
@@ -18,7 +20,7 @@ export default function DashboardPage() {
   }, []);
 
   const overview = data?.overview;
-  const notifications = useMemo(() => data?.notifications ?? [], [data]);
+  const { items: notifications, pollErr: notificationsPollErr } = useActivityNotifications(data?.notifications);
 
   return (
     <DashFrame>
@@ -109,17 +111,11 @@ export default function DashboardPage() {
 
         <div className="dash-panel">
           <h2>Notifications</h2>
-          {notifications.length === 0 ? (
-            <p className="muted">No recent activity yet.</p>
-          ) : (
-            <ul className="dash-notes">
-              {notifications.map((n, idx) => (
-                <li key={`${n.kind}-${idx}`}>
-                  <span className="bullet">›</span> {n.message}
-                </li>
-              ))}
-            </ul>
-          )}
+          <p className="dash-live-hint muted">
+            Live updates{notificationsPollErr ? ` (refresh error: ${notificationsPollErr})` : ""}.{" "}
+            <Link to="/inbox">Open full inbox</Link>
+          </p>
+          <ActivityNotificationList items={notifications} />
         </div>
       </section>
     </DashFrame>

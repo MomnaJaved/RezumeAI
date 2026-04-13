@@ -184,7 +184,7 @@ export default function CandidatesPage() {
 
   return (
     <DashFrame
-      title={
+      topExtra={
         <div className="cand-top">
           <div className="cand-count">
             Candidates: {loadingList ? "…" : filtered.length}

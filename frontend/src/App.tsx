@@ -11,12 +11,14 @@ import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
 import DashboardPage from "./pages/DashboardPage";
 import VerifyEmailPage from "./pages/VerifyEmailPage";
+import InboxPage from "./pages/InboxPage";
 import RequireAuth from "./RequireAuth";
 import { useAuth } from "./auth";
 
 export default function App() {
   const loc = useLocation();
   const isHome = loc.pathname === "/";
+  const isAuthMarketing = loc.pathname === "/login" || loc.pathname === "/register";
   const isDashRoute =
     loc.pathname.startsWith("/dashboard") ||
     loc.pathname.startsWith("/candidates") ||
@@ -25,12 +27,18 @@ export default function App() {
     loc.pathname.startsWith("/settings") ||
     loc.pathname.startsWith("/inbox") ||
     loc.pathname.startsWith("/matching");
-  const isFullBleed = isHome || isDashRoute;
+  const isFullBleed = isHome || isAuthMarketing || isDashRoute;
+  const usesDashChrome =
+    loc.pathname.startsWith("/dashboard") ||
+    loc.pathname.startsWith("/candidates") ||
+    loc.pathname.startsWith("/inbox");
   const { token, email, logout } = useAuth();
 
+  const hideAppHeader = isHome || isAuthMarketing || usesDashChrome;
+
   return (
-    <div className={isHome ? "app-shell app-shell-home" : "app-shell"}>
-      {isHome ? null : (
+    <div className={isHome || isAuthMarketing ? "app-shell app-shell-home" : "app-shell"}>
+      {hideAppHeader ? null : (
         <header className="app-header">
           <strong>Rezume AI</strong>
           <nav>
@@ -116,7 +124,7 @@ export default function App() {
             path="/inbox"
             element={
               <RequireAuth>
-                <PlaceholderPage title="Inbox" note="Inbox is coming next (notifications + ingestion status stream)." />
+                <InboxPage />
               </RequireAuth>
             }
           />

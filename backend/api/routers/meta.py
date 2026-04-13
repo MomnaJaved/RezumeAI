@@ -4,13 +4,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from api.config import get_settings
 from api.database import get_db
 from api.models import Candidate, Job, ResumeIngestion
 from api.paths import repo_root
+from api.services.activity_feed import build_activity_notifications
 
 router = APIRouter(prefix="/meta", tags=["meta"])
 
@@ -47,6 +47,12 @@ def quick_stats(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/activity")
+def activity_feed(db: Session = Depends(get_db)):
+    """Lightweight poll endpoint for live notifications (same items as dashboard feed)."""
+    return {"notifications": build_activity_notifications(db, limit=60)}
+
+
 @router.get("/dashboard")
 def dashboard(db: Session = Depends(get_db)):
     """
@@ -63,7 +69,6 @@ def dashboard(db: Session = Depends(get_db)):
     ingestions_queued = 0
     ingestions_processing = 0
     ingestions_done_24h = 0
-    ingestion_notes: list[dict] = []
     try:
         ingestions_queued = db.query(ResumeIngestion).filter(ResumeIngestion.status == "queued").count()
         ingestions_processing = db.query(ResumeIngestion).filter(ResumeIngestion.status == "processing").count()
@@ -73,29 +78,10 @@ def dashboard(db: Session = Depends(get_db)):
             .filter(ResumeIngestion.updated_at >= since_24h)
             .count()
         )
-        latest_ing = db.query(ResumeIngestion).order_by(desc(ResumeIngestion.updated_at)).limit(6).all()
-        ingestion_notes = [
-            {
-                "kind": "ingestion",
-                "message": f'{r.filename or "resume"} → {r.status}',
-                "at": (r.updated_at or r.created_at).isoformat(),
-            }
-            for r in latest_ing
-        ]
     except Exception:
         pass
 
-    latest_jobs = db.query(Job).order_by(desc(Job.created_at)).limit(3).all()
-    job_notes = [
-        {
-            "kind": "job",
-            "message": f'Job created: {j.title or j.external_id}',
-            "at": j.created_at.isoformat(),
-        }
-        for j in latest_jobs
-    ]
-
-    notifications = (ingestion_notes + job_notes)[:8]
+    notifications = build_activity_notifications(db, limit=60)
     return {
         "overview": {
             "candidates_total": candidates_total,

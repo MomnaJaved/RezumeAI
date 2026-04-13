@@ -19,3 +19,18 @@ def test_meta_stats_empty_db(client):
     r = client.get("/api/v1/meta/stats")
     assert r.status_code == 200
     assert r.json()["candidates_total"] == 0
+
+
+def test_meta_activity_empty_db(client):
+    r = client.get("/api/v1/meta/activity")
+    assert r.status_code == 200
+    data = r.json()
+    assert "notifications" in data
+    assert data["notifications"] == []
+
+
+def test_meta_dashboard_notifications_shape(client):
+    r = client.get("/api/v1/meta/dashboard")
+    assert r.status_code == 200
+    notes = r.json().get("notifications")
+    assert isinstance(notes, list)
