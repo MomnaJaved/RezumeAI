@@ -11,6 +11,7 @@ from api.database import get_db
 from api.models import Candidate, Job, ResumeIngestion
 from api.paths import repo_root
 from api.services.activity_feed import build_activity_notifications
+from api.services.dashboard_widgets import build_dashboard_widgets
 
 router = APIRouter(prefix="/meta", tags=["meta"])
 
@@ -45,6 +46,12 @@ def quick_stats(db: Session = Depends(get_db)):
         "candidates_total": db.query(Candidate).count(),
         "jobs_total": db.query(Job).count(),
     }
+
+
+@router.get("/dashboard/widgets")
+def dashboard_widgets(db: Session = Depends(get_db)):
+    """Applicant pipeline, jobs breakdown, and candidate preview for the home dashboard."""
+    return build_dashboard_widgets(db)
 
 
 @router.get("/activity")

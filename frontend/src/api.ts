@@ -199,6 +199,66 @@ export async function fetchActivityNotifications(): Promise<ActivityNotification
   return j.notifications;
 }
 
+export type DashboardPipelineStage = {
+  key: string;
+  label: string;
+  count: number;
+  people: Array<{ initials: string; external_id: string; name: string }>;
+};
+
+export type DashboardPieSegment = {
+  key: string;
+  label: string;
+  count: number;
+  pct: number;
+  color: string;
+};
+
+export type DashboardJobChart = {
+  segments: DashboardPieSegment[];
+  total: number;
+};
+
+export type DashboardCandidatePreview = {
+  external_id: string;
+  full_name: string;
+  role: string;
+  score: number;
+  status: string;
+  status_raw: string;
+};
+
+export type DashboardWidgets = {
+  pipeline: DashboardPipelineStage[];
+  jobs_chart: DashboardJobChart;
+  candidate_preview: DashboardCandidatePreview[];
+  generated_at: string;
+};
+
+export async function fetchDashboardWidgets(): Promise<DashboardWidgets> {
+  const res = await authedFetch(`${base}/api/v1/meta/dashboard/widgets`);
+  return parseJson(res);
+}
+
+/** Open stored resume PDF/file in a new tab (uses auth header via fetch + blob). */
+export async function openCandidateResumeInNewTab(externalId: string): Promise<void> {
+  const res = await authedFetch(
+    `${base}/api/v1/candidates/by-external/${encodeURIComponent(externalId)}/file`,
+  );
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(t || res.statusText);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const w = window.open(url, "_blank", "noopener,noreferrer");
+  if (!w) {
+    URL.revokeObjectURL(url);
+    throw new Error("Popup blocked — allow popups to view the file.");
+  }
+  window.setTimeout(() => URL.revokeObjectURL(url), 120_000);
+}
+
 export async function uploadResume(file: File): Promise<{
   status: string;
   text_len: number;

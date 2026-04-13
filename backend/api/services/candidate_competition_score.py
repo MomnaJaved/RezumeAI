@@ -215,9 +215,17 @@ def skip_job_breadth_for_list() -> bool:
 def compute_competition_payloads_for_list(
     db: Session,
     candidates: list[Candidate],
+    *,
+    skip_job_breadth: bool | None = None,
 ) -> Mapping[UUID, dict[str, float]]:
-    """Like compute_competition_payloads but can skip expensive CE pass via env."""
-    if skip_job_breadth_for_list():
+    """
+    Like compute_competition_payloads but can skip the cross-encoder job-breadth pass.
+
+    - skip_job_breadth=True: profile percentiles only (fast; use for dashboard, etc.).
+    - skip_job_breadth=None: honor REZUME_COMPETITION_SKIP_JOB_FIT env.
+    """
+    skip = skip_job_breadth if skip_job_breadth is not None else skip_job_breadth_for_list()
+    if skip:
         profile = compute_profile_scores_0_100(candidates)
         return {
             c.id: {

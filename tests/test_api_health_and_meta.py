@@ -34,3 +34,12 @@ def test_meta_dashboard_notifications_shape(client):
     assert r.status_code == 200
     notes = r.json().get("notifications")
     assert isinstance(notes, list)
+
+
+def test_meta_dashboard_widgets_shape(client):
+    r = client.get("/api/v1/meta/dashboard/widgets")
+    assert r.status_code == 200
+    data = r.json()
+    assert "pipeline" in data and isinstance(data["pipeline"], list)
+    assert "jobs_chart" in data and "segments" in data["jobs_chart"]
+    assert "candidate_preview" in data and isinstance(data["candidate_preview"], list)
