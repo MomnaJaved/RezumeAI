@@ -21,13 +21,13 @@ from transformers import (
     TrainingArguments,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from src.parsing.role_labels import ROLE_LABELS
 
 DATA_DIR = ROOT / "outputs" / "role_data"
-CONFIG_PATH = ROOT / "config" / "train_role.yaml"
+CONFIG_PATH = ROOT / "training" / "config" / "train_role.yaml"
 OUT_DIR = ROOT / "artifacts" / "role_classifier"
 
 # Use role_labels schema (multi-department or engineering-only per role_labels.USE_MULTI_DEPARTMENT)

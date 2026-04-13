@@ -20,10 +20,10 @@ from transformers import (
     TrainingArguments,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-CONFIG_PATH = ROOT / "config" / "train_match.yaml"
+CONFIG_PATH = ROOT / "training" / "config" / "train_match.yaml"
 DATA_DIR = ROOT / "outputs" / "transformer_data"
 OUT_DIR = ROOT / "artifacts" / "match_ranker"
 

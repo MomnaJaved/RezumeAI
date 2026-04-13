@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 EMB_DIR = ROOT / "outputs" / "sbert_embeddings"
@@ -22,7 +22,7 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_PATH = OUT_DIR / "sbert_rankings.csv"
 
 
-def main(top_k: int = 50) -> None:
+def main(top_k: int = 100) -> None:
     jobs_emb_path = EMB_DIR / "jobs.npy"
     jobs_ids_path = EMB_DIR / "jobs_ids.npy"
     cands_emb_path = EMB_DIR / "candidates.npy"

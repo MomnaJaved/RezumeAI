@@ -1,0 +1,167 @@
+import { Link, Route, Routes, useLocation } from "react-router-dom";
+import HomePage from "./pages/HomePage";
+import JobsPage from "./pages/JobsPage";
+import JobDetailPage from "./pages/JobDetailPage";
+import PlaygroundPage from "./pages/PlaygroundPage";
+import IngestPage from "./pages/IngestPage";
+import UploadPage from "./pages/UploadPage";
+import CandidatesPage from "./pages/CandidatesPage";
+import PlaceholderPage from "./pages/PlaceholderPage";
+import LoginPage from "./pages/LoginPage";
+import RegisterPage from "./pages/RegisterPage";
+import DashboardPage from "./pages/DashboardPage";
+import VerifyEmailPage from "./pages/VerifyEmailPage";
+import RequireAuth from "./RequireAuth";
+import { useAuth } from "./auth";
+
+export default function App() {
+  const loc = useLocation();
+  const isHome = loc.pathname === "/";
+  const isDashRoute =
+    loc.pathname.startsWith("/dashboard") ||
+    loc.pathname.startsWith("/candidates") ||
+    loc.pathname.startsWith("/clients") ||
+    loc.pathname.startsWith("/reports") ||
+    loc.pathname.startsWith("/settings") ||
+    loc.pathname.startsWith("/inbox") ||
+    loc.pathname.startsWith("/matching");
+  const isFullBleed = isHome || isDashRoute;
+  const { token, email, logout } = useAuth();
+
+  return (
+    <div className={isHome ? "app-shell app-shell-home" : "app-shell"}>
+      {isHome ? null : (
+        <header className="app-header">
+          <strong>Rezume AI</strong>
+          <nav>
+            <Link to="/">Home</Link>
+            {token ? (
+              <>
+                <Link to="/dashboard">Dashboard</Link>
+                <Link to="/jobs">Jobs</Link>
+                <Link to="/playground">Playground</Link>
+                <Link to="/upload">Upload resume</Link>
+                <Link to="/ingest">Ingest</Link>
+                <span className="muted" style={{ marginLeft: "0.5rem" }}>
+                  {email ?? "signed in"}
+                </span>
+                <button type="button" className="small-btn" onClick={() => logout()}>
+                  Logout
+                </button>
+              </>
+            ) : (
+              <>
+                <Link to="/login">Login</Link>
+                <Link to="/register">Register</Link>
+              </>
+            )}
+          </nav>
+        </header>
+      )}
+      <main className={isFullBleed ? "" : "layout"}>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
+          <Route
+            path="/dashboard"
+            element={
+              <RequireAuth>
+                <DashboardPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/jobs"
+            element={
+              <RequireAuth>
+                <JobsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/candidates"
+            element={
+              <RequireAuth>
+                <CandidatesPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/clients"
+            element={
+              <RequireAuth>
+                <PlaceholderPage title="Clients" note="Clients are not stored yet in this demo. (We can add a Client model + CRUD next.)" />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/reports"
+            element={
+              <RequireAuth>
+                <PlaceholderPage title="Reports" note="Reports dashboard is coming next. (We can add match reports, bias/fairness checks, and exports.)" />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <RequireAuth>
+                <PlaceholderPage title="Settings" note="Settings page coming next (profile, auth, and API keys)." />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/inbox"
+            element={
+              <RequireAuth>
+                <PlaceholderPage title="Inbox" note="Inbox is coming next (notifications + ingestion status stream)." />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/matching"
+            element={
+              <RequireAuth>
+                <PlaceholderPage title="Matching" note="Matching hub is coming next (pick job + rank + save + feedback in one flow)." />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/jobs/:externalId"
+            element={
+              <RequireAuth>
+                <JobDetailPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/playground"
+            element={
+              <RequireAuth>
+                <PlaygroundPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/upload"
+            element={
+              <RequireAuth>
+                <UploadPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/ingest"
+            element={
+              <RequireAuth>
+                <IngestPage />
+              </RequireAuth>
+            }
+          />
+        </Routes>
+      </main>
+    </div>
+  );
+}

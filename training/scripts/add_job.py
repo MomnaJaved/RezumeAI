@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 IN_DIR = ROOT / "data" / "raw" / "jobs_inbox"
 IN_DIR.mkdir(parents=True, exist_ok=True)
 

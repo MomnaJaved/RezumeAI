@@ -8,6 +8,12 @@ __pycache__/
 *.pyd
 
 # -------------------------
+# Node (frontend)
+# -------------------------
+frontend/node_modules/
+frontend/dist/
+
+# -------------------------
 # OS / IDE
 # -------------------------
 .DS_Store
@@ -22,6 +28,12 @@ outputs/
 transformer_data/
 data/splits/
 data/
+
+# Local SQLite (dev without Docker Postgres)
+rezume_dev.db
+
+# Runtime logs
+logs/
 
 # -------------------------
 # Optional: Large files

@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 import hashlib
-from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
@@ -15,8 +14,6 @@ from tqdm import tqdm
 from src.parsing.text_extractors import extract_text_any
 from src.parsing.skill_mining import build_global_vocab, skills_for_resume
 
-
-ROOT = Path(__file__).resolve().parents[1]
 IN_DIR = ROOT / "data" / "raw" / "resumes_extracted"
 OUT_DIR = ROOT / "outputs" / "parsing"
 OUT_DIR.mkdir(parents=True, exist_ok=True)

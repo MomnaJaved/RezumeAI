@@ -1,0 +1,6 @@
+John Doe
+Python developer
+Skills: python, fastapi, pandas, postgres
+Experience: 3 years
+Projects: built APIs, ETL pipelines, dashboards.
+Summary: motivated engineer looking for backend roles.

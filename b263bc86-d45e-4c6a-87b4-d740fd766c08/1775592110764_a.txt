@@ -1,0 +1,4 @@
+John Doe
+Python developer
+Skills: python, fastapi
+Experience: 3 years

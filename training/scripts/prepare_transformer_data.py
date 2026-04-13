@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 PAIRS_PATH = ROOT / "outputs" / "pairs" / "job_candidate_pairs.csv"
 JOBS_PATH = ROOT / "data" / "processed" / "jobs_enriched.csv"

@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 import sys
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from src.parsing.role_inference import infer_title_from_skills

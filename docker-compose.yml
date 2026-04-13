@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rezume
+      POSTGRES_PASSWORD: rezume
+      POSTGRES_DB: rezumeai
+    ports:
+      - "5432:5432"
+    volumes:
+      - rezume_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rezume -d rezumeai"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  rezume_pg_data:

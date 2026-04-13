@@ -10,32 +10,31 @@ import docx
 
 def extract_text_pdf(pdf_path: Path) -> str:
     """
-    Try pdfplumber first (good for most text PDFs).
-    If it yields too little text, fall back to PyMuPDF (fitz).
+    PyMuPDF (fitz) first — usually faster on text-based PDFs.
+    If text is still short, try pdfplumber (sometimes better on odd layouts).
     """
     text = ""
     try:
-        with pdfplumber.open(str(pdf_path)) as pdf:
-            parts = []
-            for page in pdf.pages:
-                t = page.extract_text() or ""
-                if t:
-                    parts.append(t)
-            text = "\n".join(parts).strip()
+        doc = fitz.open(str(pdf_path))
+        parts = []
+        for page in doc:
+            parts.append(page.get_text("text"))
+        doc.close()
+        text = "\n".join(parts).strip()
     except Exception:
         text = ""
 
-    # fallback if empty/very small (likely scanned or extraction failed)
     if len(text) < 200:
         try:
-            doc = fitz.open(str(pdf_path))
-            parts = []
-            for page in doc:
-                parts.append(page.get_text("text"))
-            doc.close()
-            text2 = "\n".join(parts).strip()
-            if len(text2) > len(text):
-                text = text2
+            with pdfplumber.open(str(pdf_path)) as pdf:
+                parts = []
+                for page in pdf.pages:
+                    t = page.extract_text() or ""
+                    if t:
+                        parts.append(t)
+                text2 = "\n".join(parts).strip()
+                if len(text2) > len(text):
+                    text = text2
         except Exception:
             pass
 
@@ -58,6 +57,26 @@ def extract_text_txt(txt_path: Path) -> str:
         return ""
 
 
+def extract_text_image(image_path: Path) -> str:
+    """
+    OCR for scanned resumes (PNG/JPEG/TIFF/WebP). Requires Pillow + pytesseract
+    and the Tesseract binary installed on the system.
+    """
+    try:
+        import pytesseract
+        from PIL import Image
+    except ImportError:
+        return ""
+
+    try:
+        im = Image.open(str(image_path))
+        if im.mode not in ("RGB", "L"):
+            im = im.convert("RGB")
+        return (pytesseract.image_to_string(im) or "").strip()
+    except Exception:
+        return ""
+
+
 def extract_text_any(path: Path) -> str:
     ext = path.suffix.lower()
     if ext == ".pdf":
@@ -66,4 +85,6 @@ def extract_text_any(path: Path) -> str:
         return extract_text_docx(path)
     if ext == ".txt":
         return extract_text_txt(path)
+    if ext in (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"):
+        return extract_text_image(path)
     return ""

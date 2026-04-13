@@ -12,7 +12,7 @@ from transformers import (
     TrainingArguments,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT / "outputs" / "transformer_data"
 MODEL_DIR = ROOT / "models" / "transformer" / "ranker_roberta"
 MODEL_DIR.mkdir(parents=True, exist_ok=True)

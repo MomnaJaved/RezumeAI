@@ -1,33 +1,99 @@
 # Rezume AI
 
-AI-based resume screening and candidate ranking system (resume parsing, JD matching, ranking, role classification).
+AI-based resume screening and candidate ranking (parsing, JD matching, SBERT + cross-encoder ranking, role classification).
 
-## Pipeline
+**Screening (hiring-style):** Prefer **`POST /api/v1/jobs/{id}/rank-database-candidates`** (and **Save DB ranking** in the UI). It scores everyone in the database with the **cross-encoder**, so good candidates are not excluded by the offline SBERT shortlist. The cross-encoder is trained on your pair-level match signal, not on SBERT cosine—use its **rank order** as the main automated prior, then add human review. True hiring quality still needs **human relevance labels** to retrain or calibrate beyond silver (`weak_score`) targets.
 
-1. Ingest job descriptions + resumes
-2. Parse resumes → structured `candidates.csv` + `skills_vocab.csv`
-3. Enrich candidates (title, skills, education) → `candidates_enriched.csv`
-4. Build (resume, JD, weak_score) pairs and **train/val/test splits without leakage** (by `candidate_id`)
-5. **Baseline**: TF-IDF + cosine similarity match score
-6. **Role classifier**: Fine-tune RoBERTa for frontend / backend / fullstack
-7. **Match ranker**: Fine-tune cross-encoder (RoBERTa) for resume–JD score
-8. **Inference**: NestJS-callable FastAPI server (`/classify_role`, `/match_score`)
+## Repository layout
 
-## How to Run
+| Folder | Role |
+|--------|------|
+| **`backend/api/`** | FastAPI REST API, PostgreSQL/SQLite, resume uploads |
+| **`frontend/`** | React UI |
+| **`training/scripts/`** | Pipelines, training, evaluation, DB sync |
+| **`training/config/`** | Training YAML configs |
+| **`src/`** | Shared library (parsing, inference, skills) |
 
-See **[docs/HOW_TO_RUN.md](docs/HOW_TO_RUN.md)** for exact commands:
+Details: **[docs/REPO_LAYOUT.md](docs/REPO_LAYOUT.md)**
 
-- Create venv + install deps (`requirements.txt` + `requirements-train.txt`)
-- Prepare data (parse resumes, enrich candidates)
-- Build pairs and splits: `scripts/build_pairs_and_splits.py`
-- Run TF-IDF baseline: `scripts/tfidf_baseline_ranker.py`
-- Train role classifier: `scripts/prepare_role_data.py` then `scripts/train_role_classifier.py`
-- Train match ranker: `scripts/train_match_ranker.py`
-- Evaluate: `scripts/evaluate_role_classifier.py`, `scripts/evaluate_rankings.py`
-- Start inference server: `python api/inference_server.py`
+## Pipeline (offline)
+
+1. Ingest job descriptions + resumes  
+2. Parse resumes → `candidates.csv` + skills  
+3. Enrich candidates → `candidates_enriched.csv`  
+4. Build pairs + **leak-free splits** (by `candidate_id`)  
+5. **Baseline**: TF-IDF + cosine  
+6. **Role classifier** + **Match ranker** (cross-encoder)  
+7. **API**: `backend/api` + optional **`frontend/`**
+
+## How to run
+
+See **[docs/HOW_TO_RUN.md](docs/HOW_TO_RUN.md)** (paths use `training/scripts/` and `training/config/`).
+
+**API (from repo root):**
+
+```bash
+source .venv/bin/activate
+export PYTHONPATH="${PWD}/backend:${PYTHONPATH}"
+uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Or: **`./run_api.sh`** (uses `.venv` if present).
+
+**Frontend:**
+
+```bash
+cd frontend && npm install && npm run dev
+```
+
+## Evaluation (FYP metrics)
+
+```bash
+pip install -r requirements-train.txt
+export PYTHONPATH="${PWD}:${PYTHONPATH}"
+python training/evaluation/evaluate_ranker.py --mock
+python training/evaluation/evaluate_classifier.py --mock
+```
+
+Full detail: **[docs/EVALUATION.md](docs/EVALUATION.md)**  
+Outputs land in **`outputs/evaluation/`** (JSON + CSV).
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+export PYTHONPATH="${PWD}/backend:${PWD}:${PYTHONPATH}"
+pytest tests/ -v
+pytest tests/ --cov=api --cov=src --cov-report=term-missing
+```
+
+See **[docs/TESTING.md](docs/TESTING.md)**.
+
+## Main API endpoints (prefix `/api/v1` unless legacy)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/health` | Liveness |
+| GET | `/meta/models` | Model version labels + artifact presence |
+| GET | `/meta/stats` | Candidate/job counts |
+| POST | `/auth/register`, `/auth/login` | JWT (optional `REQUIRE_AUTH` for uploads) |
+| POST | `/uploads/resume` | Parse + store candidate |
+| POST | `/jobs/.../rank-database-candidates` | Cross-encoder on DB pool |
+| POST | `/jobs/.../rank-and-save` | SBERT shortlist + cross-encoder + save |
+| GET | `/jobs/.../rankings` | Saved rankings (with explanation when stored) |
+| POST | `/feedback/ranking-selection` | Log human select/shortlist/reject for retraining |
+
+Legacy unprefixed routes: `/classify_role`, `/match_score`, `/rank_candidates_for_job`.
 
 ## Docs
 
-- [Data contract](docs/DATA_CONTRACT.md) — JSON/CSV schema for resumes, JDs, pairs, splits, **human labels**
-- [Repo audit & design](docs/REPO_AUDIT.md) — what exists, what was fixed, design choices
-- [Models and supervision](docs/MODELS_AND_SUPERVISION.md) — why two models (role + match), BERT/RoBERTa, weak vs **human-label (production)** training
+- [Repository layout](docs/REPO_LAYOUT.md)  
+- [Backend API & database](docs/BACKEND_AND_DATABASE.md)  
+- [How to run pipelines](docs/HOW_TO_RUN.md)  
+- [Data contract](docs/DATA_CONTRACT.md)  
+- [Repo audit & design](docs/REPO_AUDIT.md)  
+- [Models and supervision](docs/MODELS_AND_SUPERVISION.md)  
+- [Evaluation](docs/EVALUATION.md)  
+- [Testing](docs/TESTING.md)  
+- [Deployment](docs/DEPLOYMENT.md)  
+- [Bias & fairness](docs/BIAS_AND_FAIRNESS.md)  

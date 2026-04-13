@@ -17,10 +17,10 @@ pip install -r requirements-train.txt
 
 ```bash
 # Parse resumes -> candidates.csv
-python scripts/parse_resumes.py
+python training/scripts/parse_resumes.py
 
 # Enrich candidates (title, skills, education, etc.) -> candidates_enriched.csv
-python scripts/rebuild_candidates_enriched.py
+python training/scripts/rebuild_candidates_enriched.py
 ```
 
 ## 3. Build pairs and splits (no leakage)
@@ -28,7 +28,7 @@ python scripts/rebuild_candidates_enriched.py
 Splits by `candidate_id` so each resume appears in only one of train/val/test.
 
 ```bash
-python scripts/build_pairs_and_splits.py --train 0.8 --val 0.1 --seed 42
+python training/scripts/build_pairs_and_splits.py --train 0.8 --val 0.1 --seed 42
 # Optional: --sample-per-job 2000 to subsample pairs per job for faster training
 ```
 
@@ -37,7 +37,7 @@ Output: `outputs/transformer_data/train.csv`, `val.csv`, `test.csv` (columns: jo
 ## 4. Run TF-IDF baseline
 
 ```bash
-python scripts/tfidf_baseline_ranker.py
+python training/scripts/tfidf_baseline_ranker.py
 ```
 
 Output: `outputs/rankings/tfidf_rankings.csv` (top-K candidates per job by cosine similarity).
@@ -45,8 +45,8 @@ Output: `outputs/rankings/tfidf_rankings.csv` (top-K candidates per job by cosin
 ## 5. Prepare role data and train role classifier
 
 ```bash
-python scripts/prepare_role_data.py
-python scripts/train_role_classifier.py --config config/train_role.yaml
+python training/scripts/prepare_role_data.py
+python training/scripts/train_role_classifier.py --config training/config/train_role.yaml
 ```
 
 Optional: `--model distilroberta-base`, `--epochs 3`, `--output-dir artifacts/role_classifier`.  
@@ -57,7 +57,7 @@ Model and tokenizer are saved under `artifacts/role_classifier/`.
 Uses the same leak-free splits from step 3. Labels = **weak_score** (heuristic), not human decisions.
 
 ```bash
-python scripts/train_match_ranker.py --config config/train_match.yaml
+python training/scripts/train_match_ranker.py --config training/config/train_match.yaml
 ```
 
 Optional: `--model roberta-base`, `--epochs 2`, `--output-dir artifacts/match_ranker`.  
@@ -68,20 +68,23 @@ Model and tokenizer are saved under `artifacts/match_ranker/`.
 **Role classifier** (accuracy, macro-F1, confusion matrix):
 
 ```bash
-python scripts/evaluate_role_classifier.py
+python training/scripts/evaluate_role_classifier.py
 ```
 
 **Match / ranking** (Spearman, NDCG@10, Recall@10 on test set):
 
 ```bash
-python scripts/evaluate_rankings.py
+python training/scripts/evaluate_rankings.py
 ```
 
-## 8. Start inference server (for NestJS)
+## 8. Start API server (FastAPI)
+
+From the **repository root** (so `.env` is found):
 
 ```bash
-python api/inference_server.py
-# Or: uvicorn api.inference_server:app --host 0.0.0.0 --port 8000
+export PYTHONPATH="${PWD}/backend:${PYTHONPATH}"
+uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+# Or: ./run_api.sh --reload
 ```
 
 - **Health**: `GET http://localhost:8000/health`
@@ -94,10 +97,35 @@ python api/inference_server.py
 
 NestJS can call these endpoints via HTTP client (e.g. axios or fetch).
 
+## 8b. Resume ingestion (bulk upload / extension / phone OCR)
+
+These endpoints are **async**: they return immediately with a `batch_id` (bulk) or `id` (single text),
+then you poll status.
+
+- **Bulk upload (many files)**: `POST /api/v1/ingestions/bulk` (multipart form field name: `files`)
+- **Text ingest (extension / OCR text)**: `POST /api/v1/ingestions/text` (JSON)
+- **Poll batch**: `GET /api/v1/ingestions/batch/{batch_id}`
+
+Example (bulk upload via curl):
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/ingestions/bulk" \
+  -F "files=@/path/to/resume1.pdf" \
+  -F "files=@/path/to/resume2.docx"
+```
+
+Example (extension text ingest):
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/ingestions/text" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Copied profile/resume text here","source":"extension","filename":"linkedin.txt"}'
+```
+
 ## 9. Safety checks (optional)
 
 ```bash
-python scripts/safety_checks.py
+python training/scripts/safety_checks.py
 ```
 
 Checks for PII in training data and prints a short recommendation. Run after building pairs/role data.
@@ -109,13 +137,13 @@ Checks for PII in training data and prints a short recommendation. Run after bui
 | Step | Command |
 |------|--------|
 | Venv + deps | `pip install -r requirements.txt && pip install -r requirements-train.txt` |
-| Parse resumes | `python scripts/02_parse_resumes.py` |
-| Enrich candidates | `python scripts/10_rebuild_candidates_enriched.py` |
-| Pairs + splits | `python scripts/build_pairs_and_splits.py` |
-| TF-IDF baseline | `python scripts/05_tfidf_baseline.py` |
-| Role data | `python scripts/prepare_role_data.py` |
-| Train role | `python scripts/train_role_classifier.py` |
-| Train match | `python scripts/train_match_ranker.py` |
-| Eval role | `python scripts/evaluate_role_classifier.py` |
-| Eval ranking | `python scripts/evaluate_rankings.py` |
-| Inference server | `python api/inference_server.py` |
+| Parse resumes | `python training/scripts/parse_resumes.py` |
+| Enrich candidates | `python training/scripts/rebuild_candidates_enriched.py` |
+| Pairs + splits | `python training/scripts/build_pairs_and_splits.py` |
+| TF-IDF baseline | `python training/scripts/tfidf_baseline_ranker.py` |
+| Role data | `python training/scripts/prepare_role_data.py` |
+| Train role | `python training/scripts/train_role_classifier.py` |
+| Train match | `python training/scripts/train_match_ranker.py` |
+| Eval role | `python training/scripts/evaluate_role_classifier.py` |
+| Eval ranking | `python training/scripts/evaluate_rankings.py` |
+| API server | `PYTHONPATH=backend uvicorn api.main:app` or `./run_api.sh` |

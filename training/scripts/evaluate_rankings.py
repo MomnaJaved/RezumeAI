@@ -1,6 +1,8 @@
 """
 Evaluate match/ranking: Spearman with weak_score, NDCG@10, Recall@10.
 Simulates "one JD vs many resumes" per job on test set.
+
+Prefer the FYP bundle (JSON/CSV + MAP/Precision@K): training/evaluation/evaluate_ranker.py
 """
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ import torch
 from scipy.stats import spearmanr
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 TEST_CSV = ROOT / "outputs" / "transformer_data" / "test.csv"

@@ -1,6 +1,16 @@
 """
 PII stripping for resume/JD text before training and inference.
 Ensures PII is not used as features and reduces privacy/fairness risk.
+
+Bias / fairness notes (FYP):
+- Emails, phones, and URLs are removed so the model is less likely to latch onto
+  contact strings or social profiles as spurious shortcuts.
+- We do **not** aggressively strip pronouns or narrative gender markers from free
+  text, because that can mangle grammar and job-description wording; mitigating
+  demographic bias should combine **structured fields** (skills, experience),
+  **diverse training data**, and **human review**—not regex-only “fairness.”
+- For stronger controls, pair this module with rule-based hiring workflows and
+  periodic audits of false positives/negatives by demographic slice (when labels exist).
 """
 from __future__ import annotations
 
