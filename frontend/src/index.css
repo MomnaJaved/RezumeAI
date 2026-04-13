@@ -844,6 +844,11 @@ label {
   grid-template-columns: 1fr 1fr;
   gap: 1rem;
   margin-top: 0.75rem;
+  align-items: stretch;
+}
+
+.dash-lower > .dash-panel {
+  min-height: 0;
 }
 
 .dash-panel {
@@ -960,6 +965,41 @@ label {
 .dash-inbox-panel {
   max-width: 52rem;
   margin: 0 auto;
+}
+
+/* Dashboard notifications: same row height as Overview; list scrolls inside (no growing the panel). */
+.dash-panel-notifications {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.dash-notifications-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  margin-right: -0.15rem;
+  padding-right: 0.35rem;
+  -webkit-overflow-scrolling: touch;
+}
+
+.dash-notifications-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.dash-notifications-scroll::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+}
+
+.dash-notifications-scroll::-webkit-scrollbar-thumb {
+  background: rgba(56, 189, 248, 0.35);
+  border-radius: 6px;
+}
+
+.dash-notifications-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(56, 189, 248, 0.5);
 }
 
 @media (max-width: 980px) {

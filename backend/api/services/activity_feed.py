@@ -6,7 +6,7 @@ Sources: ingestions, new jobs, new candidates, ranking runs, human feedback (sho
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import desc, func
@@ -43,21 +43,22 @@ def build_activity_notifications(db: Session, limit: int = 80) -> list[dict[str,
     Return newest-first activity items. Each has id, kind, message, at, optional href.
     """
     items: list[dict[str, Any]] = []
+    recent_cutoff = datetime.utcnow() - timedelta(days=14)
 
     try:
         for r in db.query(ResumeIngestion).order_by(desc(ResumeIngestion.updated_at)).limit(20).all():
             ts = r.updated_at or r.created_at
             fn = (r.filename or "resume").strip() or "resume"
             if r.status == "done":
-                msg = f"Resume ingested: {fn}"
+                msg = f"Resume uploaded: {fn}"
                 if (r.candidate_external_id or "").strip():
-                    msg += f" → candidate {r.candidate_external_id.strip()}"
+                    msg += f" — added to pool (candidate {r.candidate_external_id.strip()})"
                 else:
-                    msg += " — added to pool"
+                    msg += " — added to candidate pool"
                 items.append(
                     {
                         "id": f"ingestion-{r.id}",
-                        "kind": "ingestion",
+                        "kind": "upload",
                         "message": msg,
                         "at": _iso(ts),
                         "href": "/candidates",
@@ -65,14 +66,34 @@ def build_activity_notifications(db: Session, limit: int = 80) -> list[dict[str,
                 )
             elif r.status == "failed":
                 err = (r.error or "").strip()[:120]
-                msg = f"Ingestion failed: {fn}"
+                msg = f"Resume upload failed: {fn}"
                 if err:
                     msg += f" ({err})"
                 items.append(
                     {
                         "id": f"ingestion-fail-{r.id}",
-                        "kind": "ingestion",
+                        "kind": "upload",
                         "message": msg,
+                        "at": _iso(ts),
+                        "href": "/ingest",
+                    }
+                )
+            elif r.status == "queued":
+                items.append(
+                    {
+                        "id": f"ingestion-queued-{r.id}",
+                        "kind": "upload",
+                        "message": f"Resume upload queued: {fn}",
+                        "at": _iso(ts),
+                        "href": "/ingest",
+                    }
+                )
+            elif r.status == "processing":
+                items.append(
+                    {
+                        "id": f"ingestion-processing-{r.id}",
+                        "kind": "upload",
+                        "message": f"Resume upload processing: {fn}",
                         "at": _iso(ts),
                         "href": "/ingest",
                     }
@@ -81,8 +102,8 @@ def build_activity_notifications(db: Session, limit: int = 80) -> list[dict[str,
                 items.append(
                     {
                         "id": f"ingestion-{r.status}-{r.id}",
-                        "kind": "ingestion",
-                        "message": f"{fn} — {r.status}",
+                        "kind": "upload",
+                        "message": f"Resume upload ({r.status}): {fn}",
                         "at": _iso(ts),
                         "href": "/ingest",
                     }
@@ -91,7 +112,13 @@ def build_activity_notifications(db: Session, limit: int = 80) -> list[dict[str,
         _log.debug("activity_feed ingestions skipped: %s", e)
 
     try:
-        for j in db.query(Job).order_by(desc(Job.created_at)).limit(8).all():
+        for j in (
+            db.query(Job)
+            .filter(Job.created_at >= recent_cutoff)
+            .order_by(desc(Job.created_at))
+            .limit(12)
+            .all()
+        ):
             label = (j.title or "").strip() or j.external_id
             items.append(
                 {
@@ -106,7 +133,13 @@ def build_activity_notifications(db: Session, limit: int = 80) -> list[dict[str,
         _log.debug("activity_feed jobs skipped: %s", e)
 
     try:
-        for c in db.query(Candidate).order_by(desc(Candidate.created_at)).limit(15).all():
+        for c in (
+            db.query(Candidate)
+            .filter(Candidate.created_at >= recent_cutoff)
+            .order_by(desc(Candidate.created_at))
+            .limit(20)
+            .all()
+        ):
             name = (c.full_name or "").strip() or c.external_id
             items.append(
                 {
@@ -172,7 +205,13 @@ def build_activity_notifications(db: Session, limit: int = 80) -> list[dict[str,
         _log.debug("activity_feed rankings skipped: %s", e)
 
     try:
-        for fb in db.query(HumanRankingFeedback).order_by(desc(HumanRankingFeedback.created_at)).limit(20).all():
+        for fb in (
+            db.query(HumanRankingFeedback)
+            .filter(HumanRankingFeedback.created_at >= recent_cutoff)
+            .order_by(desc(HumanRankingFeedback.created_at))
+            .limit(25)
+            .all()
+        ):
             job = db.query(Job).filter(Job.id == fb.job_id).first()
             cand = db.query(Candidate).filter(Candidate.id == fb.candidate_id).first()
             job_label = ""

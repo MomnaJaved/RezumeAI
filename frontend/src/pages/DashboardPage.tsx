@@ -109,13 +109,15 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="dash-panel">
+        <div className="dash-panel dash-panel-notifications">
           <h2>Notifications</h2>
           <p className="dash-live-hint muted">
             Live updates{notificationsPollErr ? ` (refresh error: ${notificationsPollErr})` : ""}.{" "}
             <Link to="/inbox">Open full inbox</Link>
           </p>
-          <ActivityNotificationList items={notifications} />
+          <div className="dash-notifications-scroll">
+            <ActivityNotificationList items={notifications} />
+          </div>
         </div>
       </section>
     </DashFrame>
