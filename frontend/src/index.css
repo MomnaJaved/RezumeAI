@@ -967,21 +967,30 @@ label {
   margin: 0 auto;
 }
 
-/* Dashboard notifications: same row height as Overview; list scrolls inside (no growing the panel). */
+/*
+ * Notifications: fixed list viewport (≈ overview column). Grid + flex alone often keeps
+ * min-height:auto on content, so the row grows — max-height forces inner scroll.
+ */
 .dash-panel-notifications {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 
 .dash-notifications-scroll {
   flex: 1 1 auto;
   min-height: 0;
+  /* Cap list area (~6 overview rows); overflow scrolls inside this box only */
+  max-height: min(16.5rem, 42vh);
   overflow-y: auto;
   overflow-x: hidden;
   margin-right: -0.15rem;
   padding-right: 0.35rem;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(56, 189, 248, 0.45) rgba(255, 255, 255, 0.08);
 }
 
 .dash-notifications-scroll::-webkit-scrollbar {
@@ -1034,6 +1043,10 @@ label {
   }
   .dash-lower {
     grid-template-columns: 1fr;
+  }
+
+  .dash-notifications-scroll {
+    max-height: min(15rem, 38vh);
   }
 }
 
