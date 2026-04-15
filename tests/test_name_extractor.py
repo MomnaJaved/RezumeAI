@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from src.parsing.name_extractor import extract_name_from_raw, guess_name_from_filename_stem
+from src.parsing.name_extractor import (
+    UNKNOWN_CANDIDATE,
+    extract_name_from_email,
+    extract_name_from_raw,
+    guess_name_from_filename_stem,
+    resolve_candidate_full_name,
+)
 
 
 def test_name_label_colon():
@@ -25,6 +31,20 @@ def test_pipe_title_before_name():
     # Line: chunk1 Senior Software Engineer (title), chunk2 Maria Garcia, chunk3 email
     out = extract_name_from_raw(txt)
     assert out == "Maria Garcia"
+
+def test_comma_last_first_format():
+    assert extract_name_from_raw("DOE, JANE\nSoftware Engineer\n") == "Jane Doe"
+
+
+def test_all_caps_name_is_normalized():
+    assert extract_name_from_raw("ALI JANJUA | QA Engineer | ali@email.com\n") == "Ali Janjua"
+
+
+def test_header_contact_line_prefers_person_over_location():
+    txt = """Senior Software Engineer | John Smith | Karachi, Pakistan | john@email.com
+Summary
+"""
+    assert extract_name_from_raw(txt) == "John Smith"
 
 
 def test_dr_prefix():
@@ -83,6 +103,10 @@ QA Engineer
 def test_rejects_finance_analyst_as_name():
     assert extract_name_from_raw("Finance Analyst\nSkills: Excel\n") == ""
 
+def test_rejects_certification_line_as_name():
+    assert extract_name_from_raw("AWS Certified Solutions Architect\nSkills: Python\n") == ""
+    assert extract_name_from_raw("Certified Kubernetes Administrator\n") == ""
+
 
 def test_guess_name_from_filename_stem_two_words():
     assert guess_name_from_filename_stem("Jane_Doe") == "Jane Doe"
@@ -92,3 +116,38 @@ def test_guess_name_from_filename_stem_two_words():
 def test_guess_name_from_filename_rejects_resume_stem():
     assert guess_name_from_filename_stem("My_Resume_Final") == ""
     assert guess_name_from_filename_stem("1775595018794_19DF") == ""
+    assert guess_name_from_filename_stem("sample_resume") == ""
+
+
+def test_extract_name_from_email_two_tokens():
+    assert extract_name_from_email("ahmad.ali@gmail.com") == "Ahmad Ali"
+    assert extract_name_from_email("Jane-Doe@company.org") == "Jane Doe"
+
+
+def test_extract_name_from_email_rejects_single_token():
+    assert extract_name_from_email("admin@company.org") == ""
+
+
+def test_extract_name_from_email_rejects_skipped_prefix():
+    assert extract_name_from_email("support@company.org") == ""
+
+
+def test_resolve_candidate_full_name_order():
+    raw = "Sara Khan\nData Analyst\n"
+    name, src = resolve_candidate_full_name(raw, "other.person@x.com")
+    assert name == "Sara Khan"
+    assert src == "resume"
+
+
+def test_resolve_candidate_full_name_falls_back_to_email():
+    raw = "Machine Learning\nTensorFlow\nPyTorch\n"
+    name, src = resolve_candidate_full_name(raw, "maria.garcia@x.com")
+    assert name == "Maria Garcia"
+    assert src == "email"
+
+
+def test_resolve_candidate_full_name_unknown():
+    raw = "x\ny\n"
+    name, src = resolve_candidate_full_name(raw, "a@b.co")
+    assert name == UNKNOWN_CANDIDATE
+    assert src == "unknown"

@@ -66,33 +66,15 @@ export default function IngestPage() {
     }
   }
 
-  async function uploadSample() {
-    setBulkBusy(true);
-    setStatus(null);
-    try {
-      const sample = new File(
-        [
-          "John Doe\nBackend Engineer\nSkills: node.js, postgres, fastapi\nExperience: 2020-2024\nEducation: BS Computer Science\n",
-        ],
-        "sample_resume.txt",
-        { type: "text/plain" },
-      );
-      const res = await ingestBulkResumes([sample]);
-      setBatchId(res.batch_id);
-      const st = await fetchIngestionBatchStatus(res.batch_id);
-      setStatus(st);
-      setPolling(true);
-      toast.success("Sample queued.");
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setBulkBusy(false);
-    }
-  }
-
   async function pollOnce(id: string) {
+    const prev = status;
     const st = await fetchIngestionBatchStatus(id);
     setStatus(st);
+    if (prev) {
+      const newlyDone = Math.max(0, st.done - prev.done);
+      if (newlyDone === 1) toast.success("Candidate added to the pool successfully");
+      if (newlyDone > 1) toast.success(`${newlyDone} candidates added to the pool successfully`);
+    }
     if (st.failed + st.done >= st.total) setPolling(false);
   }
 
@@ -103,7 +85,7 @@ export default function IngestPage() {
     try {
       await deleteCandidateByExternalId(externalId);
       setDeleteNote((n) => ({ ...n, [externalId]: "Removed" }));
-      toast.success("Candidate removed.");
+      toast.success("Candidate has been deleted");
     } catch (e) {
       const m = (e as Error).message || "Remove failed";
       setDeleteNote((n) => ({ ...n, [externalId]: m }));
@@ -175,17 +157,8 @@ export default function IngestPage() {
 
           <div className="add-candidate-pro-actions">
             <button type="button" className="dash-btn" disabled={bulkBusy || files.length === 0} onClick={() => void startBulk()}>
-              {bulkBusy ? "Uploading…" : "Upload & process"}
+              {bulkBusy ? "Uploading…" : "Upload"}
             </button>
-            <button type="button" className="small-btn add-candidate-pro-ghost" disabled={bulkBusy} onClick={() => void uploadSample()}>
-              Demo file
-            </button>
-            <button type="button" className="small-btn add-candidate-pro-ghost" disabled={bulkBusy || files.length === 0} onClick={() => setFiles([])}>
-              Clear
-            </button>
-            <Link to="/upload" className="add-candidate-pro-link">
-              Classic single-file upload
-            </Link>
           </div>
         </section>
 
@@ -201,12 +174,6 @@ export default function IngestPage() {
               placeholder="Optional"
               onChange={(e) => setBatchId(e.target.value)}
             />
-            <button type="button" className="small-btn" disabled={!batchId.trim()} onClick={() => void pollOnce(batchId.trim())}>
-              Refresh
-            </button>
-            <button type="button" className="small-btn" disabled={!batchId.trim()} onClick={() => setPolling((p) => !p)}>
-              {polling ? "Pause" : "Live"}
-            </button>
           </div>
 
           {status ? (

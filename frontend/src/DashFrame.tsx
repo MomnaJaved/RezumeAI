@@ -167,9 +167,6 @@ export default function DashFrame({ topExtra, children }: { topExtra?: React.Rea
           <NavLink end to="/candidates" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
             <Icon name="candidates" /> Candidates
           </NavLink>
-          <NavLink to="/candidates/add" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="addCandidate" /> Add candidate
-          </NavLink>
           <NavLink to="/clients" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
             <Icon name="clients" /> Clients
           </NavLink>

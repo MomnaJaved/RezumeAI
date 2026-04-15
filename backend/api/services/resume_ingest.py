@@ -6,11 +6,13 @@ import os
 import tempfile
 from pathlib import Path
 
+from api.paths import repo_root
 from src.inference.service import classify_role
 from src.parsing.skill_mining import extract_skill_candidates
 from src.parsing.feature_extractors import extract_certifications, extract_education, estimate_years_experience
 from src.parsing.text_extractors import extract_text_any
-from src.parsing.name_extractor import extract_name_from_raw, guess_name_from_filename_stem
+from src.parsing.name_extractor import resolve_candidate_full_name
+from src.parsing.role_labels import ROLE_LABELS_MULTI, title_to_role_label
 from src.parsing.title_extractor import extract_title_from_raw
 from src.parsing.role_fine import infer_role_fine
 from src.preprocessing.pii import extract_primary_email, strip_pii, strip_pii_keep_newlines
@@ -31,10 +33,20 @@ def external_id_from_content(content: bytes) -> str:
 
 
 def _storage_root() -> Path:
-    root = Path(os.environ.get("REZUME_UPLOAD_DIR", "")).expanduser()
-    if str(root).strip():
-        return root
-    return Path.cwd() / "uploads" / "raw"
+    """
+    Base dir for persisted artifacts (uploads, attachments, batches).
+
+    Precedence:
+    - REZUME_STORAGE_ROOT: base dir for all runtime artifacts.
+    - REZUME_UPLOAD_DIR: legacy alias for REZUME_STORAGE_ROOT (back-compat).
+    - default: <repo>/backend/storage
+    """
+    base = Path(os.environ.get("REZUME_STORAGE_ROOT", "")).expanduser()
+    if not str(base).strip():
+        base = Path(os.environ.get("REZUME_UPLOAD_DIR", "")).expanduser()
+    if not str(base).strip():
+        base = repo_root() / "backend" / "storage"
+    return base
 
 
 def _safe_filename(name: str) -> str:
@@ -116,14 +128,22 @@ def parse_upload(filename: str, content: bytes) -> dict:
         title = polished if polished else raw_title
     else:
         title = ""
-    role_in = _build_role_input(raw_clean, title, skills)
-    role_out = classify_role(role_in, strip_pii_input=True, return_probs=False)
-    role_label = str(role_out.get("label", ""))
+
+    # Coarse role label for filtering/routing (multi-dept). Prefer title mapping; fall back to ML only if needed.
+    role_label = ""
+    if title.strip():
+        role_label = title_to_role_label(title, multi_department=True)
+    if not role_label:
+        role_in = _build_role_input(raw_clean, title, skills)
+        role_out = classify_role(role_in, strip_pii_input=True, return_probs=False)
+        role_label = str(role_out.get("label", "") or "")
+    role_label = role_label.strip().lower()
+    if role_label and role_label not in ROLE_LABELS_MULTI:
+        role_label = "other"
+
     role_fine = infer_role_fine(title, skills, raw_hint=raw_clean[:5000])
 
-    stem = Path(filename).stem
-    guessed = extract_name_from_raw(raw_clean)
-    from_filename = guess_name_from_filename_stem(stem)
+    full_name, _name_src = resolve_candidate_full_name(raw_clean, contact_email)
 
     edu = extract_education(pii_safe_structural)
     certs = extract_certifications(pii_safe_structural)
@@ -132,7 +152,7 @@ def parse_upload(filename: str, content: bytes) -> dict:
     years = estimate_years_experience(raw_clean)
 
     # Persist the original file so the UI can download it later.
-    store_dir = _storage_root()
+    store_dir = _storage_root() / "uploads" / "raw"
     store_dir.mkdir(parents=True, exist_ok=True)
     store_path = store_dir / f"{ext_id}__{_safe_filename(filename)}"
     try:
@@ -148,7 +168,7 @@ def parse_upload(filename: str, content: bytes) -> dict:
         "title": title,
         "role_label": role_label,
         "role_fine": role_fine,
-        "full_name": guessed or from_filename or "Candidate",
+        "full_name": full_name,
         "filename": filename,
         "storage_path": str(store_path) if store_path else "",
         "text_len": len(stripped),

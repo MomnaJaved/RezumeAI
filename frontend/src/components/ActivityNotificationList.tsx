@@ -33,7 +33,6 @@ export default function ActivityNotificationList({
         const meta = formatTime(n.at);
         const inner = (
           <>
-            <span className="dash-activity-kind">{n.kind}</span>
             <span className="dash-activity-msg">{n.message}</span>
             {meta ? <time className="dash-activity-time" dateTime={n.at}>{meta}</time> : null}
           </>

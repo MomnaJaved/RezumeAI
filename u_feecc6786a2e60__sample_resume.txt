@@ -1,5 +1,0 @@
-John Doe
-Backend Engineer
-Skills: node.js, postgres, fastapi
-Experience: 2020-2024
-Education: BS Computer Science

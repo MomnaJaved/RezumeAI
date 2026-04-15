@@ -145,7 +145,7 @@ def compute_avg_job_match_0_100(
     if n == 0:
         return [], 0
 
-    q = db.query(Job).order_by(Job.created_at.desc())
+    q = db.query(Job).filter(Job.status == "active").order_by(Job.created_at.desc())
     cap = _max_jobs_for_breadth()
     if cap is not None:
         q = q.limit(cap)

@@ -19,8 +19,12 @@ def ensure_extra_columns(engine: Engine) -> None:
     dialect = engine.dialect.name
     existing_rank = _cols(engine, "job_candidate_rankings")
     existing_cand = _cols(engine, "candidates")
+    existing_jobs = _cols(engine, "jobs")
+    existing_clients = _cols(engine, "clients")
+    existing_job_attachments = _cols(engine, "job_attachments")
     existing_ing = _cols(engine, "resume_ingestions")
     existing_users = _cols(engine, "users")
+    existing_events = _cols(engine, "activity_events")
 
     alters: list[str] = []
 
@@ -37,6 +41,8 @@ def ensure_extra_columns(engine: Engine) -> None:
             ("status", "VARCHAR(64) NOT NULL DEFAULT 'new'"),
             ("storage_path", "VARCHAR(2048) NOT NULL DEFAULT ''"),
             ("contact_email", "VARCHAR(320) NOT NULL DEFAULT ''"),
+            ("best_job_match_score", "FLOAT"),
+            ("best_job_external_id", "VARCHAR(64) NOT NULL DEFAULT ''"),
         ]:
             if col not in existing_cand:
                 if dialect == "postgresql":
@@ -71,6 +77,48 @@ def ensure_extra_columns(engine: Engine) -> None:
             else:
                 alters.append("ALTER TABLE job_candidate_rankings ADD COLUMN explanation_json TEXT")
 
+    if existing_jobs:
+        for col, ddl in [
+            ("status", "VARCHAR(24) NOT NULL DEFAULT 'active'"),
+            ("client_id", "UUID" if dialect == "postgresql" else "VARCHAR(36)"),
+            ("salary_range", "VARCHAR(128) NOT NULL DEFAULT ''"),
+            ("work_location", "VARCHAR(32) NOT NULL DEFAULT ''"),
+            ("job_type", "VARCHAR(32) NOT NULL DEFAULT ''"),
+            ("recruitment_urgency", "VARCHAR(16) NOT NULL DEFAULT ''"),
+            ("preferred_onboarding_date", "TIMESTAMP"),
+        ]:
+            if col not in existing_jobs:
+                if dialect == "postgresql":
+                    alters.append(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {ddl}")
+                else:
+                    alters.append(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
+
+    if existing_clients:
+        for col, ddl in [
+            ("status", "VARCHAR(24) NOT NULL DEFAULT 'active'"),
+            ("contact_person", "VARCHAR(256) NOT NULL DEFAULT ''"),
+            ("email", "VARCHAR(320) NOT NULL DEFAULT ''"),
+            ("company_name", "VARCHAR(256) NOT NULL DEFAULT ''"),
+        ]:
+            if col not in existing_clients:
+                if dialect == "postgresql":
+                    alters.append(f"ALTER TABLE clients ADD COLUMN IF NOT EXISTS {col} {ddl}")
+                else:
+                    alters.append(f"ALTER TABLE clients ADD COLUMN {col} {ddl}")
+
+    if existing_job_attachments:
+        # Back-compat columns if table existed in older DBs.
+        for col, ddl in [
+            ("content_type", "VARCHAR(128) NOT NULL DEFAULT 'application/octet-stream'"),
+            ("size_bytes", "INTEGER NOT NULL DEFAULT 0"),
+            ("storage_path", "VARCHAR(2048) NOT NULL DEFAULT ''"),
+        ]:
+            if col not in existing_job_attachments:
+                if dialect == "postgresql":
+                    alters.append(f"ALTER TABLE job_attachments ADD COLUMN IF NOT EXISTS {col} {ddl}")
+                else:
+                    alters.append(f"ALTER TABLE job_attachments ADD COLUMN {col} {ddl}")
+
     if existing_users:
         for col, ddl in [
             ("is_verified", "BOOLEAN NOT NULL DEFAULT 0" if dialect != "postgresql" else "BOOLEAN NOT NULL DEFAULT FALSE"),
@@ -102,3 +150,67 @@ def ensure_extra_columns(engine: Engine) -> None:
                 )
         except Exception:
             pass
+
+
+def ensure_indexes(engine: Engine) -> None:
+    """
+    Best-effort index creation for frequently filtered/sorted fields.
+    Safe to run repeatedly; uses IF NOT EXISTS where supported.
+    """
+    dialect = engine.dialect.name
+    stmts: list[str] = []
+
+    # Candidates
+    stmts.extend(
+        [
+            "CREATE INDEX IF NOT EXISTS idx_candidates_created_at ON candidates (created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_candidates_status ON candidates (status)",
+            "CREATE INDEX IF NOT EXISTS idx_candidates_role_label ON candidates (role_label)",
+        ]
+    )
+
+    # Jobs
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_jobs_client_id ON jobs (client_id)")
+
+    # Clients
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_clients_status ON clients (status)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_clients_created_at ON clients (created_at)")
+
+    # Ingestions
+    stmts.extend(
+        [
+            "CREATE INDEX IF NOT EXISTS idx_ingestions_status ON resume_ingestions (status)",
+            "CREATE INDEX IF NOT EXISTS idx_ingestions_updated_at ON resume_ingestions (updated_at)",
+            "CREATE INDEX IF NOT EXISTS idx_ingestions_batch_id ON resume_ingestions (batch_id)",
+        ]
+    )
+
+    # Rankings already have job_id/candidate_id indexes via ORM; keep as-is.
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_job_attachments_job_id ON job_attachments (job_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_job_attachments_created_at ON job_attachments (created_at)")
+
+    # SBERT shortlist cache
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_sbert_scores_job_id ON job_candidate_sbert_scores (job_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_sbert_scores_candidate_id ON job_candidate_sbert_scores (candidate_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_sbert_scores_updated_at ON job_candidate_sbert_scores (updated_at)")
+
+    # User shortlist
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_shortlist_job_id ON job_shortlisted_candidates (job_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_shortlist_candidate_id ON job_shortlisted_candidates (candidate_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_shortlist_created_at ON job_shortlisted_candidates (created_at)")
+
+    # Applicant tracking (single source of truth)
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_job_applicants_job_id ON job_applicants (job_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_job_applicants_candidate_id ON job_applicants (candidate_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_job_applicants_status ON job_applicants (status)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_job_applicants_updated_at ON job_applicants (updated_at)")
+
+    with engine.begin() as conn:
+        for stmt in stmts:
+            try:
+                conn.execute(text(stmt))
+            except Exception:
+                # SQLite/Postgres both support IF NOT EXISTS for CREATE INDEX; ignore any edge failures.
+                continue

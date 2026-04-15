@@ -2,17 +2,23 @@ import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import HomePage from "./pages/HomePage";
 import JobsPage from "./pages/JobsPage";
 import JobDetailPage from "./pages/JobDetailPage";
+import AddJobPage from "./pages/AddJobPage";
 import PlaygroundPage from "./pages/PlaygroundPage";
 import IngestPage from "./pages/IngestPage";
 import UploadPage from "./pages/UploadPage";
 import CandidatesPage from "./pages/CandidatesPage";
 import CandidateDetailPage from "./pages/CandidateDetailPage";
+import CandidateLookupPage from "./pages/CandidateLookupPage";
 import PlaceholderPage from "./pages/PlaceholderPage";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
 import DashboardPage from "./pages/DashboardPage";
 import VerifyEmailPage from "./pages/VerifyEmailPage";
 import InboxPage from "./pages/InboxPage";
+import ClientsPage from "./pages/ClientsPage";
+import ClientDetailPage from "./pages/ClientDetailPage";
+import AddClientPage from "./pages/AddClientPage";
+import MatchingPage from "./pages/MatchingPage";
 import RequireAuth from "./RequireAuth";
 import { useAuth } from "./auth";
 
@@ -24,6 +30,7 @@ export default function App() {
     loc.pathname.startsWith("/dashboard") ||
     loc.pathname.startsWith("/candidates") ||
     loc.pathname.startsWith("/clients") ||
+    loc.pathname.startsWith("/jobs") ||
     loc.pathname.startsWith("/reports") ||
     loc.pathname.startsWith("/settings") ||
     loc.pathname.startsWith("/inbox") ||
@@ -32,7 +39,10 @@ export default function App() {
   const usesDashChrome =
     loc.pathname.startsWith("/dashboard") ||
     loc.pathname.startsWith("/candidates") ||
-    loc.pathname.startsWith("/inbox");
+    loc.pathname.startsWith("/clients") ||
+    loc.pathname.startsWith("/jobs") ||
+    loc.pathname.startsWith("/inbox") ||
+    loc.pathname.startsWith("/matching");
   const { token, email, logout } = useAuth();
 
   const hideAppHeader = isHome || isAuthMarketing || usesDashChrome;
@@ -90,10 +100,26 @@ export default function App() {
             }
           />
           <Route
+            path="/jobs/add"
+            element={
+              <RequireAuth>
+                <AddJobPage />
+              </RequireAuth>
+            }
+          />
+          <Route
             path="/candidates/add"
             element={
               <RequireAuth>
                 <IngestPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/candidates/lookup/:externalId"
+            element={
+              <RequireAuth>
+                <CandidateLookupPage />
               </RequireAuth>
             }
           />
@@ -117,7 +143,23 @@ export default function App() {
             path="/clients"
             element={
               <RequireAuth>
-                <PlaceholderPage title="Clients" note="Clients are not stored yet in this demo. (We can add a Client model + CRUD next.)" />
+                <ClientsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/clients/add"
+            element={
+              <RequireAuth>
+                <AddClientPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/clients/:clientId"
+            element={
+              <RequireAuth>
+                <ClientDetailPage />
               </RequireAuth>
             }
           />
@@ -149,7 +191,7 @@ export default function App() {
             path="/matching"
             element={
               <RequireAuth>
-                <PlaceholderPage title="Matching" note="Matching hub is coming next (pick job + rank + save + feedback in one flow)." />
+                <MatchingPage />
               </RequireAuth>
             }
           />

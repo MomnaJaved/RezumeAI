@@ -5,26 +5,26 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session, load_only
 
-from api.models import Candidate, Job, JobCandidateRanking
-from api.services.candidate_competition_score import compute_competition_payloads_for_list
+from api.models import Candidate, Job, JobApplicant, JobCandidateRanking
+from api.services.candidate_competition_score import compute_profile_scores_0_100
+from api.services.candidate_display import display_full_name_from_db
 from api.services.candidate_title_display import polish_candidate_title, polish_role_fine_display
 
 _log = logging.getLogger("rezume.api")
 
 _MAX_CAND_SCAN = 1200
-_PREVIEW_ROWS = 10
+_PREVIEW_ROWS = 5
 
 # Pipeline: only columns needed for counts + avatars (avoid raw_text / embeddings).
 _PIPELINE_COLUMNS = (
     Candidate.id,
     Candidate.external_id,
     Candidate.full_name,
-    Candidate.status,
     Candidate.created_at,
 )
 _PIPELINE_STAGES: list[tuple[str, str]] = [
@@ -36,10 +36,11 @@ _PIPELINE_STAGES: list[tuple[str, str]] = [
 ]
 
 _PIE_COLORS = {
-    "active": "#38bdf8",
-    "completed": "#0ea5e9",
-    "cancelled": "#075985",
-    "on_hold": "#94a3b8",
+    # Keep within the site's blue/teal palette (matches `cand-add-btn` accent).
+    "active": "#6ce5e8",
+    "completed": "#41b8d5",
+    "cancelled": "#2d8bba",
+    "on_hold": "#506e9a",
 }
 
 
@@ -61,8 +62,6 @@ def _stage_key(status: str | None) -> str:
         return "shortlisted"
     if s in ("screened", "reviewed"):
         return "screened"
-    if s in ("rejected", "not_a_fit", "reject"):
-        return "screened"
     return "new"
 
 
@@ -74,23 +73,24 @@ def _status_label(status: str | None) -> str:
 
 
 def _preview_rows_for_cohort(
-    cohort: list[Candidate],
-    scores: dict[UUID, dict[str, float]],
+    preview: list[Candidate],
+    profile_by_id: dict[UUID, float],
+    job_fit_by_id: dict[UUID, float],
 ) -> list[dict[str, Any]]:
     candidate_rows: list[dict[str, Any]] = []
-    for c in cohort[:_PREVIEW_ROWS]:
-        sc = scores.get(c.id, {})
-        # List/dashboard summary: cohort profile percentile only (matches GET /candidates/scoreboard field).
-        raw = sc.get("profile_percentile_score", sc.get("competition_score", 50.0))
-        comp = int(round(float(raw)))
+    for c in preview[:_PREVIEW_ROWS]:
+        p = float(profile_by_id.get(c.id, 50.0))
+        j = float(job_fit_by_id.get(c.id, 0.0))
         candidate_rows.append(
             {
                 "id": str(c.id),
                 "external_id": c.external_id,
-                "full_name": (c.full_name or c.external_id).strip() or c.external_id,
+                "full_name": display_full_name_from_db(c.full_name),
                 "title": polish_candidate_title((c.title or "").strip()),
                 "role_fine": polish_role_fine_display((getattr(c, "role_fine", None) or "").strip()),
-                "score": max(0, min(100, comp)),
+                "profile_strength": max(0, min(100, int(round(p)))),
+                "avg_job_fit": max(0, min(100, int(round(j)))),
+                "best_job_match": max(0, min(100, int(round(j)))),
                 "status": _status_label(c.status),
                 "status_raw": (c.status or "new").strip().lower(),
                 "email": (getattr(c, "contact_email", None) or "").strip(),
@@ -99,33 +99,52 @@ def _preview_rows_for_cohort(
     return candidate_rows
 
 
+
+
 def build_dashboard_widgets(db: Session) -> dict[str, Any]:
+    # Applicant tracker (global): single source of truth is JobApplicant rows.
+    counts: dict[str, int] = {k: 0 for k, _ in _PIPELINE_STAGES}
+    by_stage: dict[str, list[dict[str, Any]]] = {k: [] for k, _ in _PIPELINE_STAGES}
+    stage_order = [k for k, _ in _PIPELINE_STAGES]
+    first_by_stage: dict[str, Candidate] = {}
+
     try:
-        candidates = (
-            db.query(Candidate)
-            .options(load_only(*_PIPELINE_COLUMNS))
-            .order_by(Candidate.created_at.desc())
+        apps = (
+            db.query(JobApplicant)
+            .order_by(JobApplicant.updated_at.desc())
             .limit(_MAX_CAND_SCAN)
             .all()
         )
     except Exception as e:
-        _log.warning("dashboard_widgets candidates: %s", e)
-        candidates = []
+        _log.warning("dashboard_widgets applicants: %s", e)
+        apps = []
 
-    counts: dict[str, int] = {k: 0 for k, _ in _PIPELINE_STAGES}
-    by_stage: dict[str, list[dict[str, str]]] = {k: [] for k, _ in _PIPELINE_STAGES}
+    # Load candidate rows for recent applicants (avoid N+1 by bulk query).
+    cand_ids = list({a.candidate_id for a in apps if getattr(a, "candidate_id", None)})
+    cand_by_id: dict[UUID, Candidate] = {}
+    if cand_ids:
+        for c in (
+            db.query(Candidate)
+            .options(load_only(*_PIPELINE_COLUMNS))
+            .filter(Candidate.id.in_(cand_ids))
+            .all()
+        ):
+            cand_by_id[c.id] = c
 
-    for c in candidates:
-        sk = _stage_key(c.status)
-        if sk not in counts:
-            sk = "new"
+    for a in apps:
+        sk = _stage_key(getattr(a, "status", None))
         counts[sk] = counts.get(sk, 0) + 1
-        if len(by_stage[sk]) < 8:
+        cid = getattr(a, "candidate_id", None)
+        c = cand_by_id.get(cid) if cid else None
+        if c and sk in stage_order and sk not in first_by_stage:
+            first_by_stage[sk] = c
+        if c and len(by_stage[sk]) < 8:
             by_stage[sk].append(
                 {
-                    "initials": _initials(c.full_name or c.external_id),
+                    "id": str(c.id),
+                    "initials": _initials(display_full_name_from_db(c.full_name)),
                     "external_id": c.external_id,
-                    "name": (c.full_name or c.external_id).strip() or c.external_id,
+                    "name": display_full_name_from_db(c.full_name),
                 }
             )
 
@@ -140,19 +159,25 @@ def build_dashboard_widgets(db: Session) -> dict[str, Any]:
             }
         )
 
-    # --- Jobs pie: ranked vs not ranked (+ optional zero buckets for legend) ---
-    total_jobs = db.query(Job).count()
+    # --- Jobs pie: lifecycle status breakdown ---
+    total_jobs = int(db.query(Job).count())
+    by_status = {"active": 0, "on_hold": 0, "completed": 0, "cancelled": 0}
     try:
-        ranked_jobs = int(db.query(JobCandidateRanking.job_id).distinct().count())
+        rows = db.query(Job.status).all()
+        for (st,) in rows:
+            s = (st or "active").strip().lower()
+            if s == "inactive":
+                s = "on_hold"
+            if s in by_status:
+                by_status[s] += 1
     except Exception:
-        ranked_jobs = 0
-    on_hold = max(0, total_jobs - ranked_jobs)
+        pass
 
     raw_segments = [
-        ("active", "Active", ranked_jobs, _PIE_COLORS["active"]),
-        ("on_hold", "On hold", on_hold, _PIE_COLORS["on_hold"]),
-        ("completed", "Completed", 0, _PIE_COLORS["completed"]),
-        ("cancelled", "Cancelled", 0, _PIE_COLORS["cancelled"]),
+        ("active", "Active", by_status["active"], _PIE_COLORS["active"]),
+        ("on_hold", "On hold", by_status["on_hold"], _PIE_COLORS["on_hold"]),
+        ("completed", "Completed", by_status["completed"], _PIE_COLORS["completed"]),
+        ("cancelled", "Cancelled", by_status["cancelled"], _PIE_COLORS["cancelled"]),
     ]
     nonzero = [(k, lab, n, col) for k, lab, n, col in raw_segments if n > 0]
     if not nonzero and total_jobs == 0:
@@ -183,13 +208,50 @@ def build_dashboard_widgets(db: Session) -> dict[str, Any]:
         _log.warning("dashboard_widgets cohort for scores: %s", e)
         cohort = []
 
-    scores: dict[UUID, dict[str, float]] = {}
+    # Profile strength is cohort-relative; job fit is model-based vs jobs. Compute job fit only for preview rows.
+    profile_by_id: dict[UUID, float] = {}
+    job_fit_by_id: dict[UUID, float] = {}
     try:
-        scores = dict(compute_competition_payloads_for_list(db, cohort, skip_job_breadth=True))
+        prof = compute_profile_scores_0_100(cohort)
+        profile_by_id = {c.id: prof[i] for i, c in enumerate(cohort)}
     except Exception as e:
-        _log.warning("dashboard_widgets scores: %s", e)
+        _log.warning("dashboard_widgets profile scores: %s", e)
 
-    candidate_rows = _preview_rows_for_cohort(cohort, scores)
+    # Candidate preview remains based on candidate recency + stages (best-effort).
+    try:
+        candidates = (
+            db.query(Candidate)
+            .options(load_only(*_PIPELINE_COLUMNS))
+            .order_by(Candidate.created_at.desc())
+            .limit(_MAX_CAND_SCAN)
+            .all()
+        )
+    except Exception as e:
+        _log.warning("dashboard_widgets candidates: %s", e)
+        candidates = []
+
+    preview: list[Candidate] = []
+    seen: set[UUID] = set()
+    for k in stage_order:
+        c = first_by_stage.get(k)
+        if c and c.id not in seen:
+            preview.append(c)
+            seen.add(c.id)
+        if len(preview) >= _PREVIEW_ROWS:
+            break
+    if len(preview) < _PREVIEW_ROWS:
+        for c in candidates:
+            if c.id in seen:
+                continue
+            preview.append(c)
+            seen.add(c.id)
+            if len(preview) >= _PREVIEW_ROWS:
+                break
+
+    # Dashboard should be fast: use cached best match score stored on Candidate rows.
+    job_fit_by_id = {c.id: float(getattr(c, "best_job_match_score", 0.0) or 0.0) for c in preview}
+
+    candidate_rows = _preview_rows_for_cohort(preview, profile_by_id, job_fit_by_id)
 
     return {
         "pipeline": pipeline,
@@ -212,13 +274,18 @@ def build_dashboard_preview_job_breadth_scores(db: Session) -> dict[str, Any]:
         _log.warning("dashboard_preview_job_breadth cohort: %s", e)
         cohort = []
 
-    scores: dict[UUID, dict[str, float]] = {}
+    profile_by_id: dict[UUID, float] = {}
     try:
-        scores = dict(compute_competition_payloads_for_list(db, cohort, skip_job_breadth=True))
+        prof = compute_profile_scores_0_100(cohort)
+        profile_by_id = {c.id: prof[i] for i, c in enumerate(cohort)}
     except Exception as e:
-        _log.warning("dashboard_preview_job_breadth scores: %s", e)
+        _log.warning("dashboard_preview_job_breadth profile scores: %s", e)
+
+    # Even when skipping job-breadth scoring, the preview table expects a job-fit value.
+    # Use cached best-match score from Candidate rows as a fast fallback.
+    job_fit_by_id = {c.id: float(getattr(c, "best_job_match_score", 0.0) or 0.0) for c in cohort}
 
     return {
-        "candidate_preview": _preview_rows_for_cohort(cohort, scores),
+        "candidate_preview": _preview_rows_for_cohort(cohort, profile_by_id, job_fit_by_id),
         "generated_at": datetime.utcnow().isoformat(),
     }

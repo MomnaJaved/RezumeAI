@@ -44,7 +44,7 @@ def model_versions():
 def quick_stats(db: Session = Depends(get_db)):
     return {
         "candidates_total": db.query(Candidate).count(),
-        "jobs_total": db.query(Job).count(),
+        "jobs_total": db.query(Job).filter(Job.status == "active").count(),
     }
 
 
@@ -79,7 +79,7 @@ def dashboard(db: Session = Depends(get_db)):
     since_24h = now - timedelta(hours=24)
 
     candidates_total = db.query(Candidate).count()
-    jobs_total = db.query(Job).count()
+    jobs_total = db.query(Job).filter(Job.status == "active").count()
     new_candidates_24h = db.query(Candidate).filter(Candidate.created_at >= since_24h).count()
 
     ingestions_queued = 0

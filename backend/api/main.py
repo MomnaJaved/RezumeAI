@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
 
 from api.config import get_settings
 from api.database import Base, engine
-from api.db_migrate import ensure_extra_columns
+from api.db_migrate import ensure_extra_columns, ensure_indexes
 from api.error_handlers import (
     http_exception_handler,
     rezume_api_error_handler,
@@ -34,7 +34,7 @@ from api.error_handlers import (
 )
 from api.errors import RezumeAPIError
 from api.logging_config import setup_logging
-from api.routers import auth, candidates, feedback, health, ingestions, jobs, legacy_ml, meta, ml, rankings, uploads
+from api.routers import auth, analytics, candidates, clients, feedback, health, ingestions, jobs, legacy_ml, meta, ml, rankings, uploads
 from api.slow_limiter import limiter
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -48,6 +48,7 @@ async def lifespan(app: FastAPI):
         try:
             Base.metadata.create_all(bind=engine)
             ensure_extra_columns(engine)
+            ensure_indexes(engine)
         except Exception as e:
             _log.error(
                 "Database startup failed (%s). If using Postgres, run: docker compose up -d postgres "
@@ -115,6 +116,8 @@ def create_app() -> FastAPI:
     app.include_router(ml.router, prefix=prefix)
     app.include_router(auth.router, prefix=prefix)
     app.include_router(meta.router, prefix=prefix)
+    app.include_router(analytics.router, prefix=prefix)
+    app.include_router(clients.router, prefix=prefix)
     app.include_router(jobs.router, prefix=prefix)
     app.include_router(candidates.router, prefix=prefix)
     app.include_router(rankings.router, prefix=prefix)

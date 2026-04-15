@@ -7,12 +7,12 @@ import { useToast } from "../toast";
 export default function InboxPage() {
   const toast = useToast();
   const lastPollErr = useRef<string | null>(null);
-  const { items, pollErr } = useActivityNotifications(undefined);
+  const { items, pollErr } = useActivityNotifications(undefined, { toastOnNew: true });
 
   useEffect(() => {
     if (pollErr && pollErr !== lastPollErr.current) {
       lastPollErr.current = pollErr;
-      toast.error(pollErr);
+      toast.error("Something went wrong. Please try again.");
     }
     if (!pollErr) lastPollErr.current = null;
   }, [pollErr, toast]);

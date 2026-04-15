@@ -9,8 +9,10 @@ import {
 } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import DashFrame from "../DashFrame";
+import ConfirmDialog from "../components/ConfirmDialog";
 import ResumePreviewModal from "../components/ResumePreviewModal";
 import { useToast } from "../toast";
+import { candidateAvatarInitials, candidateDisplayName, candidateMailtoSubjectLine } from "../candidateDisplayName";
 import { candidateListProfileScore } from "../candidateListScore";
 import {
   deleteCandidateByExternalId,
@@ -48,6 +50,12 @@ function scoreClass(sc: number): string {
   if (sc >= 80) return "cand-score good";
   if (sc >= 65) return "cand-score mid";
   return "cand-score low";
+}
+
+function bestMatchScore(c: CandidateDto): number | null {
+  const v = c.best_job_match_score;
+  if (v == null || Number.isNaN(Number(v))) return null;
+  return Math.max(0, Math.min(100, Math.round(Number(v))));
 }
 
 function IconBtn({
@@ -218,6 +226,7 @@ export default function CandidateDetailPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [draft, setDraft] = useState<CandidateUpdatePayload>({});
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const editOpenRef = useRef(false);
   const cRef = useRef<CandidateDto | null>(null);
   const editFormRef = useRef<HTMLFormElement>(null);
@@ -279,12 +288,13 @@ export default function CandidateDetailPage() {
   }, [load]);
 
   function scoreFor(row: CandidateDto): number {
-    return candidateListProfileScore(row);
+    const bm = bestMatchScore(row);
+    return bm ?? candidateListProfileScore(row);
   }
 
   function onMessage() {
     if (!c) return;
-    const subject = `Rezume AI — ${c.full_name || c.external_id}`;
+    const subject = candidateMailtoSubjectLine(c);
     const params = new URLSearchParams({ subject });
     const to = (c.contact_email || "").trim();
     window.location.href = to ? `mailto:${to}?${params}` : `mailto:?${params}`;
@@ -308,13 +318,19 @@ export default function CandidateDetailPage() {
     }
   }
 
-  async function onDelete() {
+  function requestDelete() {
+    if (!c || deleting) return;
+    setDeleteConfirmOpen(true);
+  }
+
+  async function performDelete() {
     if (!c) return;
-    const label = (c.full_name || "").trim() || c.external_id;
-    if (!window.confirm(`Delete candidate “${label}”? This cannot be undone.`)) return;
+    const label = candidateDisplayName(c);
+    setDeleteConfirmOpen(false);
     setDeleting(true);
     try {
       await deleteCandidateByExternalId(c.external_id);
+      toast.success(`${label} has been deleted`);
       navigate("/candidates", { replace: true });
     } catch (e) {
       toast.error((e as Error).message);
@@ -384,7 +400,7 @@ export default function CandidateDetailPage() {
               <div className="cand-detail-hero">
                 <div className="cand-detail-hero-main">
                   <div className="cand-detail-avatar" aria-hidden="true">
-                    {initials((draft.full_name || "").trim() || c.full_name || c.external_id)}
+                    {initials((draft.full_name || "").trim() || candidateDisplayName(c))}
                   </div>
                   <div className="cand-detail-hero-text">
                     <input
@@ -451,7 +467,7 @@ export default function CandidateDetailPage() {
                   onPreview={() => setPreviewOpen(true)}
                   onDownload={() => void onDownloadResume()}
                   onMessage={onMessage}
-                  onDelete={() => void onDelete()}
+                  onDelete={requestDelete}
                 />
               </div>
 
@@ -572,10 +588,10 @@ export default function CandidateDetailPage() {
               <div className="cand-detail-hero">
                 <div className="cand-detail-hero-main">
                   <div className="cand-detail-avatar" aria-hidden="true">
-                    {initials(c.full_name || c.external_id)}
+                    {candidateAvatarInitials(c)}
                   </div>
                   <div className="cand-detail-hero-text">
-                    <h1 className="cand-detail-name">{c.full_name || "—"}</h1>
+                    <h1 className="cand-detail-name">{candidateDisplayName(c)}</h1>
                     <div className="cand-detail-headline">{c.title || "—"}</div>
                     {(c.role_fine || "").trim() && (c.role_fine || "").trim().toLowerCase() !== "unknown" ? (
                       <div className="cand-detail-rolefine muted">{displayRoleFine(c.role_fine)}</div>
@@ -608,7 +624,7 @@ export default function CandidateDetailPage() {
                   onPreview={() => setPreviewOpen(true)}
                   onDownload={() => void onDownloadResume()}
                   onMessage={onMessage}
-                  onDelete={() => void onDelete()}
+                  onDelete={requestDelete}
                 />
               </div>
 
@@ -666,6 +682,20 @@ export default function CandidateDetailPage() {
             </>
           )}
 
+          <ConfirmDialog
+            open={deleteConfirmOpen}
+            title="Remove this candidate?"
+            message={`“${candidateDisplayName(c)}” will be removed from your pool. This cannot be undone.`}
+            cancelLabel="Keep"
+            confirmLabel="Remove"
+            danger
+            busy={deleting}
+            onClose={() => {
+              if (!deleting) setDeleteConfirmOpen(false);
+            }}
+            onConfirm={() => void performDelete()}
+          />
+
           <ResumePreviewModal
             open={previewOpen}
             externalId={c.external_id}
@@ -679,9 +709,8 @@ export default function CandidateDetailPage() {
 }
 
 function buildScoreTitle(c: CandidateDto): string | undefined {
-  if (c.profile_percentile_score == null) return undefined;
-  if ((c.avg_job_match_score ?? 0) > 0) {
-    return `Profile (cohort): ${Math.round(Number(c.profile_percentile_score))} · Avg job match (all jobs): ${Math.round(Number(c.avg_job_match_score))}`;
-  }
-  return `Profile (cohort): ${Math.round(Number(c.profile_percentile_score))}`;
+  const bm = bestMatchScore(c);
+  if (bm == null) return "Match score not available (no jobs in database).";
+  const jid = (c.best_job_external_id || "").trim();
+  return jid ? `Best match: ${bm}% (job ${jid})` : `Best match: ${bm}%`;
 }

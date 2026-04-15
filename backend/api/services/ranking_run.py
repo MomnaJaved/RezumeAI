@@ -6,7 +6,7 @@ from typing import Any, Optional
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from api.models import Candidate, Job
+from api.models import Candidate, Job, JobCandidateSbertScore
 from api.services import ml_ranking
 from api.services.candidate_display import meta_from_candidate, meta_from_csv_row
 from src.inference.service import match_scores_batch
@@ -37,28 +37,60 @@ def rank_for_external_job_id(
             raise HTTPException(status_code=404, detail=f"Job not found: {external_job_id}")
         job_text = ml_ranking.build_job_text_from_row(rows.iloc[0])
 
-    sbert_df = ml_ranking.get_sbert_df()
-    sbert_rows = sbert_df[sbert_df["job_id"].astype(str) == str(external_job_id)]
-    if sbert_rows.empty:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No SBERT rankings for job_id={external_job_id}. Run sbert_retrieval_ranker.py",
-        )
-    sbert_rows = sbert_rows.sort_values("rank").head(top_k)
+    sbert_rows = None
+    if use_db:
+        job = db.query(Job).filter(Job.external_id == str(external_job_id)).first()
+        if job:
+            q = (
+                db.query(JobCandidateSbertScore, Candidate)
+                .join(Candidate, Candidate.id == JobCandidateSbertScore.candidate_id)
+                .filter(JobCandidateSbertScore.job_id == job.id)
+                .order_by(JobCandidateSbertScore.rank_position.asc())
+                .limit(top_k)
+            )
+            sbert_rows = q.all()
+            if not sbert_rows:
+                # Auto-run Stage 1 (SBERT) if cache is missing; this is fast retrieval and must happen before cross-encoder.
+                try:
+                    from api.services.sbert_cache import refresh_sbert_for_job
+
+                    refresh_sbert_for_job(db, job, top_k=max(200, int(top_k or 50)))
+                    sbert_rows = q.all()
+                except Exception:
+                    # Best-effort; fallback to CSV if present.
+                    pass
+
+    if not sbert_rows:
+        # Fallback to legacy CSV shortlist if DB cache is missing.
+        sbert_df = ml_ranking.get_sbert_df()
+        sbert_rows_df = sbert_df[sbert_df["job_id"].astype(str) == str(external_job_id)]
+        if sbert_rows_df.empty:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No SBERT shortlist for job_id={external_job_id}. Run SBERT refresh or sbert_retrieval_ranker.py",
+            )
+        sbert_rows_df = sbert_rows_df.sort_values("rank").head(top_k)
+        sbert_rows = [("csv", r) for _, r in sbert_rows_df.iterrows()]
 
     to_score: list[tuple[str, dict[str, Any]]] = []
-    for _, row in sbert_rows.iterrows():
-        cand_ext = str(row["candidate_id"])
-        sim = float(row.get("cosine_similarity", 0.0))
+    for item in sbert_rows:
+        if isinstance(item, tuple) and len(item) == 2 and item[0] == "csv":
+            row = item[1]
+            cand_ext = str(row["candidate_id"])
+            sim = float(row.get("cosine_similarity", 0.0))
+        else:
+            jr, cand = item  # type: ignore[misc]
+            cand_ext = str(getattr(cand, "external_id", "") or "")
+            sim = float(getattr(jr, "cosine_similarity", 0.0) or 0.0)
         cand_text: Optional[str] = None
         meta: dict[str, Any] = {}
 
-        cand: Optional[Candidate] = None
+        cand_db: Optional[Candidate] = None
         if use_db:
-            cand = db.query(Candidate).filter(Candidate.external_id == cand_ext).first()
-        if cand:
-            cand_text = (ml_ranking.build_cand_text_from_db(cand) or "").strip() or None
-            meta = meta_from_candidate(cand, cand_ext)
+            cand_db = db.query(Candidate).filter(Candidate.external_id == cand_ext).first()
+        if cand_db:
+            cand_text = (ml_ranking.build_cand_text_from_db(cand_db) or "").strip() or None
+            meta = meta_from_candidate(cand_db, cand_ext)
 
         if not cand_text:
             cands_df = ml_ranking.get_cands_df()
@@ -67,7 +99,7 @@ def rank_for_external_job_id(
                 continue
             srow = cr.iloc[0]
             cand_text = ml_ranking.build_cand_text_from_row(srow)
-            if not cand:
+            if not cand_db:
                 meta = meta_from_csv_row(srow, cand_ext)
 
         payload = {

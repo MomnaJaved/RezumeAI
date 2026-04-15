@@ -7,6 +7,7 @@ from typing import Any, Optional
 import pandas as pd
 
 from api.models import Candidate
+from src.parsing.name_extractor import UNKNOWN_CANDIDATE
 
 
 def _truncate(text: str, max_len: int = 400) -> str:
@@ -22,10 +23,16 @@ def name_from_filename(filename: str) -> str:
     return Path(str(filename)).stem.replace("_", " ").strip()
 
 
-def meta_from_candidate(cand: Candidate, fallback_id: str) -> dict[str, Any]:
-    name = (cand.full_name or "").strip() or name_from_filename(cand.filename) or (cand.title or "").strip()
-    if not name:
-        name = fallback_id
+def display_full_name_from_db(stored: Optional[str]) -> str:
+    """API/UI label: never surface the legacy placeholder 'Candidate' as a person's name."""
+    s = (stored or "").strip()
+    if not s or s.lower() == "candidate":
+        return UNKNOWN_CANDIDATE
+    return s
+
+
+def meta_from_candidate(cand: Candidate, _fallback_id: str) -> dict[str, Any]:
+    name = display_full_name_from_db(cand.full_name)
     return {
         "candidate_name": name,
         "candidate_title": (cand.title or "").strip(),

@@ -64,14 +64,70 @@ class RankCandidatesResponse(BaseModel):
 
 
 # --- Jobs ---
+class ClientCreate(BaseModel):
+    name: str
+    contact_person: str = ""
+    email: str = ""
+    company_name: str = ""
+    status: str = "active"
+
+
+class ClientRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    contact_person: str = ""
+    email: str = ""
+    company_name: str = ""
+    active_jobs: int = 0
+    status: str
+    created_at: datetime
+
+
+class ClientUpdate(BaseModel):
+    """Partial update; omit fields to leave unchanged."""
+
+    name: Optional[str] = None
+    contact_person: Optional[str] = None
+    email: Optional[str] = None
+    company_name: Optional[str] = None
+    status: Optional[str] = None
+
+
 class JobCreate(BaseModel):
-    external_id: str
+    external_id: str = ""
+    client_id: Optional[UUID] = None
     title: str = ""
     department: str = ""
     description: str = ""
     skills: str = ""
+    salary_range: str = ""
+    work_location: str = ""
+    job_type: str = ""
+    recruitment_urgency: str = ""
+    preferred_onboarding_date: Optional[datetime] = None
     min_experience: Optional[float] = None
     education_required: str = "any"
+    status: str = "active"
+
+
+class JobUpdate(BaseModel):
+    """Partial update; omit fields to leave unchanged."""
+
+    title: Optional[str] = None
+    client_id: Optional[UUID] = None
+    department: Optional[str] = None
+    description: Optional[str] = None
+    skills: Optional[str] = None
+    salary_range: Optional[str] = None
+    work_location: Optional[str] = None
+    job_type: Optional[str] = None
+    recruitment_urgency: Optional[str] = None
+    preferred_onboarding_date: Optional[datetime] = None
+    min_experience: Optional[float] = None
+    education_required: Optional[str] = None
+    status: Optional[str] = None
 
 
 class JobRead(BaseModel):
@@ -79,14 +135,33 @@ class JobRead(BaseModel):
 
     id: UUID
     external_id: str
+    client_id: Optional[UUID] = None
+    client_name: str = ""
     title: str
     department: str
     description: str
     skills: str
+    salary_range: str = ""
+    work_location: str = ""
+    job_type: str = ""
+    recruitment_urgency: str = ""
+    preferred_onboarding_date: Optional[datetime] = None
     min_experience: Optional[float]
     education_required: str
+    status: str
     created_at: datetime
 
+
+# --- Job attachments ---
+class JobAttachmentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    job_external_id: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    created_at: datetime
 
 # --- Candidates ---
 class CandidateCreate(BaseModel):
@@ -142,6 +217,9 @@ class CandidateRead(BaseModel):
     status: str
     contact_email: str = ""
     created_at: datetime
+    # Cached ATS match score fields (optional; present when computed).
+    best_job_match_score: Optional[float] = None
+    best_job_external_id: Optional[str] = None
 
     @field_serializer("title")
     def _ser_title(self, v: str) -> str:
@@ -162,6 +240,10 @@ class CandidateReadWithScores(CandidateRead):
     profile_percentile_score: float
     avg_job_match_score: float
     competition_score: float
+
+    # Model-based best match across jobs (optional; 0 when no jobs).
+    best_job_match_score: Optional[float] = None
+    best_job_external_id: Optional[str] = None
 
 
 # --- Stored rankings ---

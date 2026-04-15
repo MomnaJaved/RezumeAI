@@ -1,15 +1,80 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import ConfirmDialog from "../components/ConfirmDialog";
 import DashFrame from "../DashFrame";
 import ResumePreviewModal from "../components/ResumePreviewModal";
-import { candidateListProfileScore } from "../candidateListScore";
-import { fetchCandidates, fetchCandidatesScoreboard, type CandidateDto } from "../api";
+import { candidateAvatarInitials, candidateDisplayName } from "../candidateDisplayName";
+import { deleteCandidateByExternalId, fetchCandidatesPage, type CandidateDto } from "../api";
 import { useToast } from "../toast";
+
+function displayRoleLabel(key: string): string {
+  const k = (key || "").trim().toLowerCase();
+  if (!k) return "—";
+  if (k === "hr") return "HR";
+  if (k === "qa") return "QA";
+  if (k === "devops") return "DevOps";
+  return k[0].toUpperCase() + k.slice(1);
+}
+
+function escapeCsvCell(v: string): string {
+  const s = String(v ?? "").replace(/"/g, '""');
+  if (/[",\r\n]/.test(s)) return `"${s}"`;
+  return s;
+}
+
+function exportCandidatesToExcelCsv(candidates: CandidateDto[]): void {
+  const headers = [
+    "Name",
+    "External ID",
+    "Title",
+    "Role",
+    "Fine role",
+    "Email",
+    "Years experience",
+    "Status",
+    "Skills",
+    "Filename",
+    "Created",
+  ];
+  const lines = [
+    headers.join(","),
+    ...candidates.map((c) =>
+      [
+        escapeCsvCell(candidateDisplayName(c)),
+        escapeCsvCell(c.external_id),
+        escapeCsvCell(c.title),
+        escapeCsvCell(c.role_label),
+        escapeCsvCell(c.role_fine ?? ""),
+        escapeCsvCell(c.contact_email ?? ""),
+        c.years_experience != null ? String(c.years_experience) : "",
+        escapeCsvCell(c.status ?? ""),
+        escapeCsvCell(c.skills),
+        escapeCsvCell(c.filename),
+        escapeCsvCell(c.created_at ?? ""),
+      ].join(","),
+    ),
+  ];
+  const bom = "\uFEFF";
+  const csv = bom + lines.join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const stamp = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `candidates_export_${stamp}.csv`;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
 
 export default function CandidatesPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const toast = useToast();
   const [rows, setRows] = useState<CandidateDto[]>([]);
+  const [total, setTotal] = useState(0);
   const [loadingList, setLoadingList] = useState(true);
   const [listFetchFailed, setListFetchFailed] = useState(false);
   const [q, setQ] = useState("");
@@ -21,62 +86,102 @@ export default function CandidatesPage() {
   const [page, setPage] = useState(1);
   const [resumePreview, setResumePreview] = useState<{ externalId: string; filename?: string } | null>(null);
   const closeResumePreview = useCallback(() => setResumePreview(null), []);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+
+  useEffect(() => {
+    if (!selectionMode) {
+      setSelectedIds(new Set());
+      setBulkDeleteOpen(false);
+    }
+  }, [selectionMode]);
+
+  useEffect(() => {
+    const st = searchParams.get("status");
+    if (st != null && st.trim() !== "") setStatus(st.trim());
+    const sort = searchParams.get("sort");
+    if (sort === "name_asc" || sort === "exp_desc" || sort === "created_desc" || sort === "score_desc") {
+      setSortBy(sort);
+    }
+  }, [searchParams]);
+
+  const pageSize = 20;
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setListFetchFailed(false);
       setLoadingList(true);
-      let listOk = false;
       try {
-        const base = await fetchCandidates(500);
+        const res = await fetchCandidatesPage({
+          skip: (page - 1) * pageSize,
+          limit: pageSize,
+          q: q.trim() || undefined,
+          status: status !== "all" ? status : undefined,
+          role: role !== "all" ? role : undefined,
+          sort: sortBy,
+        });
         if (cancelled) return;
-        setRows(base);
-        listOk = true;
+        setRows(res.items);
+        setTotal(res.total);
       } catch (e) {
         if (!cancelled) {
           setListFetchFailed(true);
           setRows([]);
+          setTotal(0);
           toast.error((e as Error).message);
         }
       } finally {
         if (!cancelled) setLoadingList(false);
       }
-      if (cancelled || !listOk) return;
-
-      try {
-        const scored = await fetchCandidatesScoreboard(500);
-        if (cancelled) return;
-        const byId = new Map(scored.map((c) => [c.id, c]));
-        setRows((prev) =>
-          prev.map((row) => {
-            const s = byId.get(row.id);
-            if (!s) return row;
-            return {
-              ...row,
-              profile_percentile_score: s.profile_percentile_score,
-              avg_job_match_score: s.avg_job_match_score,
-              competition_score: s.competition_score,
-            };
-          }),
-        );
-      } catch {
-        /* keep list; candidateListProfileScore uses heuristic until scores load */
-      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [toast]);
+  }, [toast, page, q, status, role, sortBy]);
 
   const roles = useMemo(() => {
-    const s = new Set(rows.map((r) => (r.role_label || "").trim()).filter(Boolean));
-    return ["all", ...Array.from(s).sort((a, b) => a.localeCompare(b))];
+    // Keep aligned with backend `src/parsing/role_labels.py` (ROLE_LABELS_MULTI).
+    const base = [
+      "frontend",
+      "backend",
+      "fullstack",
+      "devops",
+      "qa",
+      "data",
+      "design",
+      "product",
+      "marketing",
+      "hr",
+      "operations",
+      "other",
+    ];
+    const s = new Set<string>(base);
+    for (const r of rows) {
+      const raw = (r.role_label || "").trim().toLowerCase();
+      if (raw) s.add(raw);
+    }
+    const extras = Array.from(s)
+      .filter((x) => !base.includes(x))
+      .sort((a, b) => a.localeCompare(b));
+    return ["all", ...base, ...extras];
   }, [rows]);
 
   const statuses = useMemo(() => {
-    const s = new Set(rows.map((r) => (r.status || "new").trim()).filter(Boolean));
-    return ["all", ...Array.from(s).sort((a, b) => a.localeCompare(b))];
+    // Ensure pipeline stages are always present even if no rows currently have them.
+    const base = ["new", "screened", "shortlisted", "interviewed", "hired"];
+    const s = new Set<string>(base);
+    for (const r of rows) {
+      const raw = (r.status || "new").trim();
+      if (raw) s.add(raw);
+    }
+    // Prefer showing pipeline stages first, then any extra raw statuses from DB.
+    const extras = Array.from(s)
+      .filter((x) => !base.includes(x))
+      .sort((a, b) => a.localeCompare(b));
+    return ["all", ...base, ...extras];
   }, [rows]);
 
   function displayRoleFine(v: string | undefined): string {
@@ -93,59 +198,117 @@ export default function CandidatesPage() {
     return "5+";
   }
 
-  function scoreFor(c: CandidateDto): number {
-    return candidateListProfileScore(c);
+  function bestMatchFor(c: CandidateDto): number | null {
+    const v = c.best_job_match_score;
+    if (v == null || Number.isNaN(Number(v))) return null;
+    return Math.max(0, Math.min(100, Math.round(Number(v))));
   }
 
   const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
+    // Server already filtered/sorted; keep only lightweight local toggles.
     const out = rows.filter((c) => {
-      const st = (c.status || "new").toLowerCase();
-      if (role !== "all" && (c.role_label || "").toLowerCase() !== role.toLowerCase()) return false;
-      if (status !== "all" && st !== status.toLowerCase()) return false;
       if (cert === "yes" && !(c.certifications || "").trim()) return false;
       if (cert === "no" && (c.certifications || "").trim()) return false;
       if (exp !== "all") {
         const b = expBucket(c.years_experience);
         if (b !== exp) return false;
       }
-      if (!needle) return true;
-      const hay = `${c.full_name} ${c.title} ${c.role_label} ${c.skills} ${c.filename}`.toLowerCase();
-      return hay.includes(needle);
+      return true;
     });
+    return out;
+  }, [rows, cert, exp]);
 
-    const sorted = [...out].sort((a, b) => {
-      if (sortBy === "name_asc") return (a.full_name || "").localeCompare(b.full_name || "");
-      if (sortBy === "exp_desc") return (b.years_experience ?? -1) - (a.years_experience ?? -1);
-      if (sortBy === "created_desc") return (b.created_at || "").localeCompare(a.created_at || "");
-      // default: score desc
-      return scoreFor(b) - scoreFor(a);
+  const filteredIdsKey = useMemo(() => filtered.map((c) => c.id).join("\n"), [filtered]);
+
+  useEffect(() => {
+    const allowed = new Set(filtered.map((c) => c.id));
+    setSelectedIds((prev) => {
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (allowed.has(id)) next.add(id);
+        else changed = true;
+      }
+      if (!changed && next.size === prev.size) return prev;
+      return next;
     });
-    return sorted;
-  }, [rows, q, role, exp, status, cert, sortBy]);
+  }, [filteredIdsKey]);
+
+  const selectedOnFiltered = useMemo(
+    () => filtered.filter((c) => selectedIds.has(c.id)),
+    [filtered, selectedIds],
+  );
+
+  const allFilteredSelected = filtered.length > 0 && selectedOnFiltered.length === filtered.length;
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAllFiltered = useCallback(() => {
+    setSelectedIds((prev) => {
+      if (filtered.length === 0) return new Set();
+      const every = filtered.every((c) => prev.has(c.id));
+      if (every) return new Set();
+      return new Set(filtered.map((c) => c.id));
+    });
+  }, [filtered]);
+
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  const exportSelectionCsv = useCallback(() => {
+    if (selectedOnFiltered.length === 0) return;
+    exportCandidatesToExcelCsv(selectedOnFiltered);
+    toast.success(`Exported ${selectedOnFiltered.length} row${selectedOnFiltered.length === 1 ? "" : "s"} (CSV for Excel).`);
+  }, [selectedOnFiltered, toast]);
+
+  const runBulkDelete = useCallback(async () => {
+    const list = selectedOnFiltered;
+    if (list.length === 0) return;
+    setBulkBusy(true);
+    const results = await Promise.allSettled(list.map((c) => deleteCandidateByExternalId(c.external_id)));
+    const removedExt = new Set<string>();
+    const failedNames: string[] = [];
+    list.forEach((c, i) => {
+      const r = results[i];
+      if (r.status === "fulfilled") removedExt.add(c.external_id);
+      else failedNames.push(candidateDisplayName(c));
+    });
+    setRows((prev) => prev.filter((c) => !removedExt.has(c.external_id)));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const c of list) {
+        if (removedExt.has(c.external_id)) next.delete(c.id);
+      }
+      return next;
+    });
+    setBulkBusy(false);
+    setBulkDeleteOpen(false);
+    if (removedExt.size) toast.success(`Removed ${removedExt.size} candidate${removedExt.size === 1 ? "" : "s"}.`);
+    if (failedNames.length) {
+      toast.error(
+        failedNames.length === 1
+          ? `Could not remove ${failedNames[0]}.`
+          : `Could not remove ${failedNames.length} candidates (${failedNames.slice(0, 3).join(", ")}${failedNames.length > 3 ? "…" : ""}).`,
+      );
+    }
+  }, [selectedOnFiltered, toast]);
+
+  useEffect(() => {
+    if (bulkDeleteOpen && selectedOnFiltered.length === 0) setBulkDeleteOpen(false);
+  }, [bulkDeleteOpen, selectedOnFiltered.length]);
 
   useEffect(() => {
     setPage(1);
   }, [q, role, exp, status, cert, sortBy]);
 
-  const pageSize = 10;
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const pageRows = filtered.slice((page - 1) * pageSize, page * pageSize);
-
-  useEffect(() => {
-    if (page > totalPages) setPage(totalPages);
-  }, [page, totalPages]);
-
-  function initials(name: string): string {
-    const parts = name
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
-    if (parts.length === 0) return "?";
-    const a = parts[0]?.[0] ?? "";
-    const b = parts.length > 1 ? parts[parts.length - 1]?.[0] ?? "" : "";
-    return (a + b).toUpperCase();
-  }
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const pageRows = filtered;
 
   function statusLabel(s: string | undefined): string {
     const v = (s || "new").trim();
@@ -157,7 +320,7 @@ export default function CandidatesPage() {
       topExtra={
         <div className="cand-toolbar">
           <div className="cand-toolbar-row">
-            <div className="cand-count">Candidates: {loadingList ? "…" : filtered.length}</div>
+            <div className="cand-count">Candidates: {loadingList ? "…" : total}</div>
             <div className="cand-search">
               <input
                 value={q}
@@ -193,7 +356,7 @@ export default function CandidatesPage() {
             <select value={role} onChange={(e) => setRole(e.target.value)} aria-label="Role filter">
               {roles.map((r) => (
                 <option key={r} value={r}>
-                  {r === "all" ? "Roles" : r}
+                  {r === "all" ? "Roles" : displayRoleLabel(r)}
                 </option>
               ))}
             </select>
@@ -232,7 +395,7 @@ export default function CandidatesPage() {
             No candidates yet. Use <Link to="/candidates/add">Add candidate</Link> to upload résumés.
           </p>
         </div>
-      ) : filtered.length === 0 ? (
+      ) : total === 0 ? (
         <div className="dash-panel">
           <p className="muted" style={{ margin: 0 }}>
             No candidates match your filters. <Link to="/upload">Upload resumes</Link> from the toolbar (+).
@@ -240,17 +403,88 @@ export default function CandidatesPage() {
         </div>
       ) : (
         <>
+          {selectionMode && selectedIds.size > 0 ? (
+            <div className="cand-bulk-bar" role="region" aria-label="Bulk actions">
+              <span className="cand-bulk-summary">
+                {selectedIds.size} selected
+                {allFilteredSelected && filtered.length > pageRows.length ? (
+                  <span className="muted"> (all {filtered.length} matching filters)</span>
+                ) : null}
+              </span>
+              <div className="cand-bulk-actions">
+                <button type="button" className="small-btn cand-bulk-ghost" disabled title="Coming soon">
+                  Assign…
+                </button>
+                <button type="button" className="small-btn cand-bulk-ghost" disabled title="Coming soon">
+                  Move…
+                </button>
+                <button type="button" className="small-btn" onClick={exportSelectionCsv} title="Download selected rows as CSV (opens in Excel)">
+                  Export to Excel…
+                </button>
+                <button type="button" className="small-btn cand-bulk-danger" onClick={() => setBulkDeleteOpen(true)}>
+                  Delete selected…
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="cand-table-toolbar">
+            <span className="cand-table-toolbar-meta muted">
+              {filtered.length} in view
+              {totalPages > 1 ? ` · Page ${page} of ${totalPages}` : null}
+            </span>
+            <div className="cand-table-toolbar-actions">
+              {!selectionMode ? (
+                <button
+                  type="button"
+                  className="cand-table-toolbar-select"
+                  onClick={() => setSelectionMode(true)}
+                  title="Show checkboxes and bulk actions"
+                >
+                  Select
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="cand-table-toolbar-action cand-table-toolbar-done"
+                    onClick={() => setSelectionMode(false)}
+                    title="Hide checkboxes and clear selection"
+                  >
+                    Done
+                  </button>
+                  {selectedIds.size > 0 ? (
+                    <button type="button" className="cand-table-toolbar-action" onClick={clearSelection} title="Clear all checkboxes">
+                      Clear all
+                    </button>
+                  ) : null}
+                  {!allFilteredSelected && filtered.length > 0 ? (
+                    <button
+                      type="button"
+                      className="cand-table-toolbar-action"
+                      onClick={toggleSelectAllFiltered}
+                      title={`Select all ${filtered.length} matching current filters`}
+                    >
+                      Select all
+                    </button>
+                  ) : null}
+                </>
+              )}
+            </div>
+          </div>
+
           <div className="cand-table-wrap">
             <table className="cand-table">
               <thead>
                 <tr>
-                  <th style={{ width: "40%" }}>Name</th>
+                  {selectionMode ? <th className="cand-col-select cand-col-select--head" aria-hidden="true" /> : null}
+                  <th style={{ width: selectionMode ? "36%" : "40%" }}>Name</th>
                   <th style={{ width: "18%" }}>Role</th>
                   <th
                     style={{ width: "11%" }}
-                    title="Profile strength vs your candidate pool (same as dashboard candidate summary). Job-specific match % appears when ranking against a job."
+                    title="Best cross-encoder match vs jobs in the database (0–100)."
                   >
-                    Score
+                    Match
                   </th>
                   <th style={{ width: "14%" }}>Experience</th>
                   <th style={{ width: "12%" }}>Status</th>
@@ -258,12 +492,13 @@ export default function CandidatesPage() {
               </thead>
               <tbody>
                 {pageRows.map((c) => {
-                  const sc = scoreFor(c);
+                  const m = bestMatchFor(c);
                   const st = (c.status || "new").toLowerCase();
+                  const isSel = selectionMode && selectedIds.has(c.id);
                   return (
                     <tr
                       key={c.id}
-                      className="cand-row-nav"
+                      className={`cand-row-nav${isSel ? " cand-row-nav--selected" : ""}`}
                       tabIndex={0}
                       role="link"
                       title="Open candidate profile"
@@ -275,13 +510,30 @@ export default function CandidatesPage() {
                         }
                       }}
                     >
+                      {selectionMode ? (
+                        <td
+                          className="cand-col-select"
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => e.stopPropagation()}
+                        >
+                          <label className="cand-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={selectedIds.has(c.id)}
+                              onChange={() => toggleSelect(c.id)}
+                              aria-label={`Select ${candidateDisplayName(c)}`}
+                            />
+                            <span className="cand-checkbox-ui" aria-hidden />
+                          </label>
+                        </td>
+                      ) : null}
                       <td>
                         <div className="cand-namecell">
                           <div className="cand-avatar" aria-hidden="true">
-                            {initials(c.full_name || c.external_id)}
+                            {candidateAvatarInitials(c)}
                           </div>
                           <div className="cand-name-meta">
-                            <div className="cand-name">{c.full_name || "—"}</div>
+                            <div className="cand-name">{candidateDisplayName(c)}</div>
                             <div className="cand-sub">
                               <button
                                 type="button"
@@ -305,17 +557,8 @@ export default function CandidatesPage() {
                           </div>
                         ) : null}
                       </td>
-                      <td
-                        className={sc >= 80 ? "cand-score good" : sc >= 65 ? "cand-score mid" : "cand-score low"}
-                        title={
-                          c.profile_percentile_score != null
-                            ? (c.avg_job_match_score ?? 0) > 0
-                              ? `Profile (cohort): ${Math.round(c.profile_percentile_score)} · Avg job match (all jobs): ${Math.round(Number(c.avg_job_match_score))}`
-                              : `Profile (cohort): ${Math.round(c.profile_percentile_score)}`
-                            : undefined
-                        }
-                      >
-                        {sc}%
+                      <td className={m != null ? (m >= 80 ? "cand-score good" : m >= 65 ? "cand-score mid" : "cand-score low") : ""}>
+                        {m != null ? `${m}%` : "—"}
                       </td>
                       <td>{c.years_experience !== null && c.years_experience !== undefined ? `${c.years_experience} Years` : "—"}</td>
                       <td>
@@ -369,6 +612,18 @@ export default function CandidatesPage() {
         externalId={resumePreview?.externalId ?? ""}
         filename={resumePreview?.filename}
         onClose={closeResumePreview}
+      />
+
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        title="Delete selected candidates"
+        message={`Remove ${selectedOnFiltered.length} candidate${selectedOnFiltered.length === 1 ? "" : "s"} from your pool? This cannot be undone.`}
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        danger
+        busy={bulkBusy}
+        onClose={() => !bulkBusy && setBulkDeleteOpen(false)}
+        onConfirm={() => void runBulkDelete()}
       />
     </DashFrame>
   );

@@ -7,6 +7,7 @@ import {
   type CandidateDto,
   type Job,
 } from "../api";
+import { candidateDisplayName } from "../candidateDisplayName";
 import { useToast } from "../toast";
 
 function formatBytes(n: number): string {
@@ -246,7 +247,7 @@ export default function UploadPage() {
             <dt>Chars stored</dt>
             <dd>{uploadMeta.textLen}</dd>
             <dt>Display name</dt>
-            <dd>{candidate.full_name || "—"}</dd>
+            <dd>{candidateDisplayName(candidate)}</dd>
             <dt>Headline / title</dt>
             <dd>{candidate.title || "—"}</dd>
             <dt>Role (model)</dt>

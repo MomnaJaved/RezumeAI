@@ -12,7 +12,9 @@ from typing import Any
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
-from api.models import Candidate, HumanRankingFeedback, Job, JobCandidateRanking, ResumeIngestion
+from api.models import ActivityEvent, Candidate, HumanRankingFeedback, Job, JobCandidateRanking, ResumeIngestion
+from api.services.candidate_display import display_full_name_from_db
+from src.parsing.name_extractor import UNKNOWN_CANDIDATE
 
 _log = logging.getLogger("rezume.api")
 
@@ -25,7 +27,7 @@ def _iso(dt: datetime | None) -> str:
 
 def _feedback_message(action: str, cand_name: str, job_label: str) -> str:
     a = (action or "").strip().lower()
-    name = cand_name or "Candidate"
+    name = cand_name or UNKNOWN_CANDIDATE
     job = job_label or "job"
     if a in ("shortlisted", "shortlist"):
         return f"{name} shortlisted for {job}"
@@ -45,16 +47,32 @@ def build_activity_notifications(db: Session, limit: int = 80) -> list[dict[str,
     items: list[dict[str, Any]] = []
     recent_cutoff = datetime.utcnow() - timedelta(days=14)
 
+    # 0) Explicit activity log (append-only; used for deletes and user-facing events).
+    try:
+        for ev in (
+            db.query(ActivityEvent)
+            .order_by(desc(ActivityEvent.created_at))
+            .limit(40)
+            .all()
+        ):
+            items.append(
+                {
+                    "id": f"event-{ev.id}",
+                    "kind": (ev.kind or "info").strip() or "info",
+                    "message": (ev.message or "").strip() or "Update",
+                    "at": _iso(ev.created_at),
+                    "href": (ev.href or "").strip() or None,
+                }
+            )
+    except Exception as e:
+        _log.debug("activity_feed events skipped: %s", e)
+
     try:
         for r in db.query(ResumeIngestion).order_by(desc(ResumeIngestion.updated_at)).limit(20).all():
             ts = r.updated_at or r.created_at
             fn = (r.filename or "resume").strip() or "resume"
             if r.status == "done":
-                msg = f"Resume uploaded: {fn}"
-                if (r.candidate_external_id or "").strip():
-                    msg += f" — added to pool (candidate {r.candidate_external_id.strip()})"
-                else:
-                    msg += " — added to candidate pool"
+                msg = f"Resume uploaded: {fn} — added to the pool"
                 items.append(
                     {
                         "id": f"ingestion-{r.id}",
@@ -65,10 +83,7 @@ def build_activity_notifications(db: Session, limit: int = 80) -> list[dict[str,
                     }
                 )
             elif r.status == "failed":
-                err = (r.error or "").strip()[:120]
-                msg = f"Resume upload failed: {fn}"
-                if err:
-                    msg += f" ({err})"
+                msg = f"Resume upload failed: {fn}. Please try again."
                 items.append(
                     {
                         "id": f"ingestion-fail-{r.id}",
@@ -83,7 +98,7 @@ def build_activity_notifications(db: Session, limit: int = 80) -> list[dict[str,
                     {
                         "id": f"ingestion-queued-{r.id}",
                         "kind": "upload",
-                        "message": f"Resume upload queued: {fn}",
+                        "message": f"Upload queued: {fn}",
                         "at": _iso(ts),
                         "href": "/ingest",
                     }
@@ -93,7 +108,7 @@ def build_activity_notifications(db: Session, limit: int = 80) -> list[dict[str,
                     {
                         "id": f"ingestion-processing-{r.id}",
                         "kind": "upload",
-                        "message": f"Resume upload processing: {fn}",
+                        "message": f"Processing upload: {fn}",
                         "at": _iso(ts),
                         "href": "/ingest",
                     }
@@ -132,26 +147,8 @@ def build_activity_notifications(db: Session, limit: int = 80) -> list[dict[str,
     except Exception as e:
         _log.debug("activity_feed jobs skipped: %s", e)
 
-    try:
-        for c in (
-            db.query(Candidate)
-            .filter(Candidate.created_at >= recent_cutoff)
-            .order_by(desc(Candidate.created_at))
-            .limit(20)
-            .all()
-        ):
-            name = (c.full_name or "").strip() or c.external_id
-            items.append(
-                {
-                    "id": f"candidate-{c.id}",
-                    "kind": "candidate",
-                    "message": f"New candidate in pool: {name}",
-                    "at": _iso(c.created_at),
-                    "href": "/candidates",
-                }
-            )
-    except Exception as e:
-        _log.debug("activity_feed candidates skipped: %s", e)
+    # Candidates: use explicit ActivityEvent log instead of inferred names
+    # (avoids showing mis-parsed names from resume headers).
 
     try:
         rank_rows = (
@@ -217,10 +214,8 @@ def build_activity_notifications(db: Session, limit: int = 80) -> list[dict[str,
             job_label = ""
             if job:
                 job_label = (job.title or "").strip() or job.external_id
-            cand_name = ""
-            if cand:
-                cand_name = (cand.full_name or "").strip() or cand.external_id
-            msg = _human_action_message(fb.action, cand_name, job_label)
+            cand_name = display_full_name_from_db(cand.full_name) if cand else ""
+            msg = _feedback_message(fb.action, cand_name, job_label)
             jid = job.external_id if job else ""
             items.append(
                 {

@@ -613,6 +613,35 @@ label {
   font-size: 0.9rem;
 }
 
+.dash-toolbar .small-btn {
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(2, 6, 23, 0.26);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.dash-toolbar .small-btn:hover {
+  border-color: rgba(56, 189, 248, 0.28);
+  background: rgba(2, 6, 23, 0.36);
+}
+
+.dash-toolbar .small-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12);
+}
+
+.dash-toolbar .small-btn.cand-primary-btn {
+  border-color: rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.12);
+  color: rgba(125, 211, 252, 0.98);
+}
+
+.dash-toolbar .small-btn.cand-primary-btn:hover {
+  border-color: rgba(56, 189, 248, 0.55);
+  background: rgba(56, 189, 248, 0.18);
+  color: #fff;
+}
+
 .dash-toolbar input::placeholder {
   color: rgba(255, 255, 255, 0.38);
 }
@@ -668,6 +697,219 @@ label {
   white-space: nowrap;
 }
 
+.cand-bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  margin-bottom: 0.75rem;
+  padding: 0.55rem 0.85rem;
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.45);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+}
+
+.cand-bulk-summary {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.cand-bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.cand-bulk-danger {
+  border-color: rgba(248, 113, 113, 0.45) !important;
+  color: rgba(254, 202, 202, 0.98) !important;
+  background: rgba(127, 29, 29, 0.25) !important;
+}
+
+.cand-bulk-danger:hover {
+  border-color: rgba(248, 113, 113, 0.75) !important;
+  color: #fff !important;
+}
+
+.cand-bulk-ghost {
+  opacity: 0.45;
+  cursor: not-allowed !important;
+}
+
+.cand-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.cand-table-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+  padding: 0.35rem 0.15rem 0.45rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.cand-table-toolbar-meta {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8rem;
+}
+
+.cand-table-toolbar-action {
+  flex-shrink: 0;
+  padding: 0.2rem 0.5rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: rgba(125, 211, 252, 0.95);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.cand-table-toolbar-action:hover {
+  color: #fff;
+  text-decoration: underline;
+  background: rgba(56, 189, 248, 0.1);
+}
+
+.cand-table-toolbar-action:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.65);
+  outline-offset: 2px;
+}
+
+.cand-table-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem 0.65rem;
+}
+
+.cand-table-toolbar-select {
+  padding: 0.3rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.14);
+  color: rgba(186, 230, 253, 0.98);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.cand-table-toolbar-select:hover {
+  background: rgba(56, 189, 248, 0.24);
+  color: #fff;
+  border-color: rgba(56, 189, 248, 0.65);
+}
+
+.cand-table-toolbar-select:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.75);
+  outline-offset: 2px;
+}
+
+.cand-table-toolbar-done {
+  color: rgba(255, 255, 255, 0.55) !important;
+  font-weight: 500 !important;
+}
+
+.cand-table-toolbar-done:hover {
+  color: rgba(255, 255, 255, 0.88) !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  text-decoration: none !important;
+}
+
+.cand-col-select {
+  width: 2rem;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.cand-checkbox {
+  position: relative;
+  display: inline-flex;
+  width: 0.9rem;
+  height: 0.9rem;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+}
+
+.cand-checkbox input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.cand-checkbox-ui {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-sizing: border-box;
+  border-radius: 3px;
+  border: 1.5px solid rgba(255, 255, 255, 0.28);
+  background: rgba(15, 23, 42, 0.75);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.cand-checkbox:hover .cand-checkbox-ui {
+  border-color: rgba(56, 189, 248, 0.55);
+}
+
+.cand-checkbox input:checked + .cand-checkbox-ui {
+  background: linear-gradient(160deg, rgba(14, 165, 233, 0.55), rgba(2, 132, 199, 0.75));
+  border-color: rgba(56, 189, 248, 0.75);
+}
+
+.cand-checkbox input:checked + .cand-checkbox-ui::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  width: 2.5px;
+  height: 4.5px;
+  border: solid rgba(255, 255, 255, 0.95);
+  border-width: 0 1.5px 1.5px 0;
+  transform: translate(-55%, -35%) rotate(45deg);
+}
+
+.cand-checkbox input:focus-visible + .cand-checkbox-ui {
+  outline: 2px solid rgba(56, 189, 248, 0.75);
+  outline-offset: 2px;
+}
+
+.cand-table th.cand-col-select {
+  vertical-align: middle;
+}
+
+.cand-table th.cand-col-select--head {
+  padding: 0.5rem 0.25rem;
+}
+
+.cand-row-nav--selected td {
+  background: rgba(56, 189, 248, 0.08);
+}
+
 .cand-search {
   flex: 1;
   min-width: 12rem;
@@ -685,6 +927,33 @@ label {
 
 .cand-toolbar select option {
   color: #0f172a;
+}
+
+/* Client form (Add Client) — keep dark theme inputs */
+.client-form input,
+.client-form textarea,
+.client-form select {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(2, 6, 23, 0.26);
+  color: rgba(255, 255, 255, 0.92);
+  padding: 0.55rem 0.85rem;
+  font: inherit;
+}
+
+.client-form input::placeholder,
+.client-form textarea::placeholder {
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.client-form input:focus,
+.client-form textarea:focus,
+.client-form select:focus {
+  outline: none;
+  border-color: rgba(56, 189, 248, 0.45);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12);
 }
 
 .cand-add-btn {
@@ -1306,6 +1575,70 @@ label {
   padding: 1.25rem;
   background: rgba(2, 6, 23, 0.72);
   backdrop-filter: blur(6px);
+}
+
+/* Small confirm dialogs (delete, etc.) — same backdrop treatment as resume preview */
+.app-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+  background: rgba(2, 6, 23, 0.72);
+  backdrop-filter: blur(6px);
+}
+
+.app-confirm-card {
+  width: min(420px, 100%);
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(15, 23, 42, 0.98);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+  padding: 1.25rem 1.35rem 1.15rem;
+}
+
+.app-confirm-title {
+  margin: 0 0 0.65rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.app-confirm-message {
+  margin: 0 0 1.15rem;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  color: rgba(226, 232, 240, 0.88);
+}
+
+.app-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  justify-content: flex-end;
+}
+
+.app-confirm-cancel {
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.28);
+  color: rgba(226, 232, 240, 0.95);
+}
+
+.app-confirm-cancel:hover {
+  background: rgba(148, 163, 184, 0.2);
+}
+
+.app-confirm-danger {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(248, 113, 113, 0.45);
+  color: #fecaca;
+}
+
+.app-confirm-danger:hover {
+  background: rgba(239, 68, 68, 0.28);
+  color: #fff;
 }
 
 .cand-preview-dialog {
@@ -1950,6 +2283,659 @@ object.cand-preview-frame {
   border-bottom: none;
 }
 
+.dash-overview-hint {
+  font-size: 0.8rem;
+  margin: -0.15rem 0 0.5rem;
+}
+
+.dash-kv .dash-kv-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.45rem 0.35rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 0.92rem;
+  align-items: center;
+}
+
+.dash-kv .dash-kv-row:last-child {
+  border-bottom: none;
+}
+
+button.dash-kv-row--click {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  border-radius: 8px;
+}
+
+button.dash-kv-row--click:last-of-type {
+  border-bottom: none;
+}
+
+button.dash-kv-row--click:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+button.dash-kv-row--click:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.85);
+  outline-offset: 2px;
+}
+
+/* --- Jobs page + modal --- */
+.dash-toolbar:has(.jobs-toolbar) {
+  padding: 0.4rem 0.85rem;
+}
+
+.jobs-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.jobs-toolbar-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.jobs-count {
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.jobs-toolbar-label {
+  font-size: 0.72rem;
+}
+
+.jobs-search {
+  flex: 1;
+  min-width: 220px;
+}
+
+.jobs-toolbar select {
+  border-radius: 10px;
+}
+
+.jobs-toolbar select option {
+  color: #0f172a;
+}
+
+.jobs-table-wrap {
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(2, 6, 23, 0.2);
+  min-height: 0;
+}
+
+.jobs-table {
+  width: 100%;
+}
+
+.jobs-table th,
+.jobs-table td {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.jobs-table th {
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.jobs-row {
+  cursor: pointer;
+}
+
+.jobs-row:hover td {
+  background: rgba(2, 6, 23, 0.22);
+}
+
+.jobs-pager {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.9rem;
+}
+
+.job-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+
+.job-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.65);
+  border: none;
+}
+
+.job-modal {
+  position: relative;
+  width: min(980px, calc(100vw - 3rem));
+  height: min(720px, calc(100vh - 3rem));
+  margin: 1.5rem auto;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(15, 23, 42, 0.92);
+  color: rgba(255, 255, 255, 0.92);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+}
+
+.job-modal-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.95rem 1.1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(2, 6, 23, 0.25);
+}
+
+.job-modal-title {
+  font-weight: 800;
+  font-size: 1.05rem;
+}
+
+.job-modal-sub {
+  margin-left: 0.35rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.job-modal-meta {
+  margin-top: 0.35rem;
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.job-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.18);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 0.78rem;
+}
+
+.job-modal-actions {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.job-action-btn {
+  border-radius: 12px;
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  background: rgba(56, 189, 248, 0.08);
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.job-action-btn:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: rgba(56, 189, 248, 0.38);
+  color: #fff;
+}
+
+.job-action-btn:disabled {
+  opacity: 0.5;
+}
+
+.job-action-btn--primary {
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.22) 0%, rgba(59, 130, 246, 0.18) 100%);
+  border-color: rgba(56, 189, 248, 0.35);
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.job-action-btn--danger {
+  border-color: rgba(248, 113, 113, 0.45) !important;
+  background: rgba(248, 113, 113, 0.08);
+  color: rgba(254, 202, 202, 0.98) !important;
+}
+
+.job-action-btn--danger:hover:not(:disabled) {
+  border-color: rgba(248, 113, 113, 0.75) !important;
+  background: rgba(248, 113, 113, 0.14);
+  color: #fff !important;
+}
+
+.job-action-btn--toggle-inactive {
+  border-color: rgba(80, 110, 154, 0.55);
+  background: rgba(80, 110, 154, 0.12);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.job-action-btn--toggle-inactive:hover:not(:disabled) {
+  border-color: rgba(80, 110, 154, 0.75);
+  background: rgba(80, 110, 154, 0.18);
+}
+
+.job-modal-close {
+  padding: 0.25rem 0.55rem;
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.job-modal-close:hover {
+  color: rgba(255, 255, 255, 0.95);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.job-tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.job-tab {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.65);
+  padding: 0.4rem 0.8rem;
+  border-radius: 12px;
+}
+
+.job-tab:hover {
+  background: rgba(56, 189, 248, 0.1);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.job-tab.active {
+  background: rgba(56, 189, 248, 0.18);
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.job-modal-body {
+  padding: 0.95rem 1.1rem;
+  overflow: auto;
+  flex: 1;
+}
+
+.job-modal input,
+.job-modal textarea,
+.job-modal select {
+  background: rgba(2, 6, 23, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.job-modal select option {
+  color: #0f172a;
+}
+
+.job-modal input::placeholder,
+.job-modal textarea::placeholder {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.job-modal input:focus-visible,
+.job-modal textarea:focus-visible,
+.job-modal select:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.65);
+  outline-offset: 2px;
+}
+
+.job-overview-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem;
+}
+
+.job-card {
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(2, 6, 23, 0.18);
+  padding: 0.85rem 0.95rem;
+}
+
+.job-card-wide {
+  grid-column: 1 / -1;
+}
+
+.job-card-title {
+  font-weight: 800;
+  margin-bottom: 0.55rem;
+}
+
+.job-kv-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
+}
+
+.job-app-counts > div {
+  margin-bottom: 0.2rem;
+}
+
+.job-desc {
+  white-space: pre-wrap;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.job-table-wrap {
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.job-table th,
+.job-table td {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.job-table th {
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.job-score {
+  font-weight: 800;
+  color: #86efac;
+}
+
+.job-link-btn {
+  display: inline-flex;
+  padding: 0.28rem 0.65rem;
+  border-radius: 12px;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  background: rgba(56, 189, 248, 0.12);
+  color: rgba(255, 255, 255, 0.9);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+
+.job-link-btn:hover {
+  text-decoration: none;
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.job-notes-compose textarea {
+  background: rgba(2, 6, 23, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.job-notes-actions {
+  display: flex;
+  gap: 0.65rem;
+  align-items: center;
+  margin-top: 0.55rem;
+}
+
+.job-notes-list {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.job-attachments-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.job-note {
+  padding: 0.65rem 0.75rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(2, 6, 23, 0.14);
+}
+
+.job-note-meta {
+  font-size: 0.78rem;
+  margin-bottom: 0.25rem;
+}
+
+.job-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem;
+}
+
+.job-form-wide {
+  grid-column: 1 / -1;
+}
+
+.job-status {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 500;
+}
+
+.job-status.active {
+  color: #6ce5e8;
+}
+
+.job-status.on_hold {
+  color: #506e9a;
+}
+
+.job-status.completed {
+  color: #41b8d5;
+}
+
+.job-status.cancelled {
+  color: #2d8bba;
+}
+
+.job-form-grid textarea {
+  background: rgba(2, 6, 23, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.job-form-grid input,
+.job-form-grid select {
+  background: rgba(2, 6, 23, 0.26);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.job-form-grid select {
+  border-radius: 10px;
+  font: inherit;
+  font-size: 0.88rem;
+  padding: 0.32rem 0.45rem;
+  min-height: 31px;
+  color-scheme: dark;
+}
+
+.job-form-grid select:hover {
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
+.job-form-grid select:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.65);
+  outline-offset: 2px;
+}
+
+.job-form-grid select option {
+  color: #0f172a;
+}
+
+/* Date inputs: keep dark theme + blue calendar accent */
+.job-form-grid input[type="date"],
+.job-modal input[type="date"],
+.client-form input[type="date"] {
+  color-scheme: dark;
+  accent-color: rgba(148, 163, 184, 0.95);
+}
+
+.job-form-grid input[type="date"]::-webkit-calendar-picker-indicator,
+.job-modal input[type="date"]::-webkit-calendar-picker-indicator,
+.client-form input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1) grayscale(1) brightness(0.9);
+  opacity: 0.85;
+}
+
+.job-form-grid input[type="date"]::-webkit-calendar-picker-indicator:hover,
+.job-modal input[type="date"]::-webkit-calendar-picker-indicator:hover,
+.client-form input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
+/* Job modal selects: match theme + dark option list */
+.job-modal select {
+  color-scheme: dark;
+  font: inherit;
+  font-size: 0.88rem;
+  padding: 0.32rem 0.45rem;
+  min-height: 31px;
+}
+
+.job-modal select option {
+  color: #0f172a;
+}
+
+/* Job modal date input: match select sizing */
+.job-modal input[type="date"] {
+  font: inherit;
+  font-size: 0.88rem;
+  padding: 0.32rem 0.45rem;
+  min-height: 31px;
+}
+
+/* Client form selects: match theme + dark option list */
+.client-form select {
+  color-scheme: dark;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  padding-right: 2rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.55rem center;
+}
+
+.client-form select option {
+  background: rgba(2, 6, 23, 0.98);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+@media (max-width: 840px) {
+  .job-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 840px) {
+  .job-overview-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.dash-overview-detail {
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.dash-overview-detail-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.dash-overview-detail-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.dash-overview-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.dash-overview-detail-body {
+  margin: 0.35rem 0 0;
+  font-size: 0.86rem;
+}
+
+.dash-overview-ingest-list {
+  list-style: none;
+  margin: 0.25rem 0 0;
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.dash-overview-ingest-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 0.82rem;
+}
+
+.dash-overview-ingest-item:last-child {
+  border-bottom: none;
+}
+
+.dash-overview-ingest-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.dash-overview-ingest-status {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.12rem 0.4rem;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.dash-overview-ingest-status--done {
+  border-color: rgba(34, 197, 94, 0.45);
+  color: rgba(134, 239, 172, 0.95);
+}
+
+.dash-overview-ingest-status--processing {
+  border-color: rgba(56, 189, 248, 0.45);
+  color: rgba(125, 211, 252, 0.95);
+}
+
+.dash-overview-ingest-status--queued {
+  border-color: rgba(250, 204, 21, 0.4);
+  color: rgba(253, 224, 71, 0.95);
+}
+
 .dash-notes {
   list-style: none;
   padding: 0;
@@ -2121,10 +3107,27 @@ object.cand-preview-frame {
   color: #fff;
 }
 
+.dash-tracker-hint,
+.dash-pie-hint {
+  font-size: 0.78rem;
+  margin: -0.2rem 0 0.5rem;
+}
+
 .dash-tracker-rows {
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
+}
+
+.dash-tracker-block {
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.dash-tracker-block--open {
+  border-color: rgba(56, 189, 248, 0.35);
 }
 
 .dash-tracker-row {
@@ -2133,9 +3136,69 @@ object.cand-preview-frame {
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.5rem 0.65rem;
-  border-radius: 12px;
-  background: rgba(0, 0, 0, 0.15);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  width: 100%;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.dash-tracker-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.dash-tracker-row:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.85);
+  outline-offset: -2px;
+}
+
+.dash-tracker-detail {
+  padding: 0 0.65rem 0.65rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.dash-tracker-detail-actions {
+  margin-top: 0.5rem;
+}
+
+.dash-tracker-detail-empty {
+  margin: 0.5rem 0 0;
+  font-size: 0.82rem;
+}
+
+.dash-tracker-people {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.dash-tracker-people li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.84rem;
+}
+
+.dash-tracker-person-link {
+  color: rgba(125, 211, 252, 0.98);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.dash-tracker-person-link:hover {
+  text-decoration: underline;
+  color: #fff;
+}
+
+.dash-avatar--sm {
+  width: 26px;
+  height: 26px;
+  font-size: 0.58rem;
 }
 
 .dash-tracker-meta {
@@ -2191,6 +3254,21 @@ object.cand-preview-frame {
   justify-content: center;
 }
 
+.dash-pie-chart-hit {
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 50%;
+  line-height: 0;
+}
+
+.dash-pie-chart-hit:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.85);
+  outline-offset: 4px;
+}
+
 .dash-pie-svg {
   width: min(200px, 42vw);
   height: auto;
@@ -2210,10 +3288,40 @@ object.cand-preview-frame {
 
 .dash-pie-legend li {
   display: flex;
-  align-items: center;
-  gap: 0.45rem;
+  align-items: stretch;
   font-size: 0.85rem;
   color: rgba(255, 255, 255, 0.78);
+}
+
+.dash-pie-legend-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  padding: 0.28rem 0.35rem;
+  margin: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+.dash-pie-legend-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.dash-pie-legend-btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.dash-pie-legend-btn:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.85);
+  outline-offset: 1px;
 }
 
 .dash-pie-dot {

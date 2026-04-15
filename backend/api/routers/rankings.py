@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from api.database import get_db
-from api.models import Candidate, Job, JobCandidateRanking
+from api.models import Candidate, Job, JobApplicant, JobCandidateRanking, JobCandidateSbertScore, JobShortlistedCandidate
 from api.schemas import JobRankingsResponse, RankingExplanationOut, StoredRankingRow
 from api.services import ml_ranking
 from api.services.candidate_display import meta_from_candidate
@@ -63,10 +63,25 @@ def rank_and_save(
             detail="No candidates scored for this job (empty shortlist or missing data).",
         )
 
+    # Ensure JobApplicant rows exist for this job (single source of truth).
+    now = datetime.utcnow()
+    for r in rows:
+        cand = db.query(Candidate).filter(Candidate.external_id == r["candidate_id"]).first()
+        if not cand:
+            continue
+        existing_app = (
+            db.query(JobApplicant)
+            .filter(JobApplicant.job_id == job.id, JobApplicant.candidate_id == cand.id)
+            .first()
+        )
+        if not existing_app:
+            db.add(JobApplicant(job_id=job.id, candidate_id=cand.id, status="new", updated_at=now))
+    db.commit()
+
     db.query(JobCandidateRanking).filter(JobCandidateRanking.job_id == job.id).delete()
     db.commit()
 
-    run_at = datetime.utcnow()
+    run_at = now
     out_rows: list[StoredRankingRow] = []
 
     for pos, r in enumerate(rows, start=1):
@@ -115,6 +130,250 @@ def rank_and_save(
         rankings=out_rows,
         run_at=run_at,
     )
+
+
+@router.get("/{external_job_id}/stage1-pool")
+def stage1_pool(external_job_id: str, limit: int = 50, db: Session = Depends(get_db)):
+    """
+    Stage-1 pool for shortlisting: comes from SBERT cache.
+    NEVER returns SBERT scores to the UI.
+    """
+    job = db.query(Job).filter(Job.external_id == external_job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    lim = max(1, min(int(limit or 50), 500))
+    rows = (
+        db.query(JobCandidateSbertScore, Candidate)
+        .join(Candidate, Candidate.id == JobCandidateSbertScore.candidate_id)
+        .filter(JobCandidateSbertScore.job_id == job.id)
+        .order_by(JobCandidateSbertScore.rank_position.asc())
+        .limit(lim)
+        .all()
+    )
+    shortlisted = {
+        str(cid)
+        for (cid,) in db.query(JobShortlistedCandidate.candidate_id)
+        .filter(JobShortlistedCandidate.job_id == job.id)
+        .all()
+    }
+    items = []
+    for srow, cand in rows:
+        meta = meta_from_candidate(cand, cand.external_id)
+        items.append(
+            {
+                "candidate_id": cand.external_id,
+                "candidate_uuid": str(cand.id),
+                "candidate_name": meta.get("candidate_name", "") or (cand.full_name or ""),
+                "candidate_title": meta.get("candidate_title", "") or (cand.title or ""),
+                "candidate_role": meta.get("candidate_role", "") or (cand.role_label or ""),
+                "years_experience": meta.get("years_experience", cand.years_experience),
+                "highest_degree": meta.get("highest_degree", cand.highest_degree or ""),
+                "skills_summary": meta.get("skills_summary", "") or (cand.skills or ""),
+                # SBERT retrieval score (cosine similarity). Shown ONLY in Ranked (retrieval) list.
+                "sbert_score": float(getattr(srow, "cosine_similarity", 0.0) or 0.0),
+                "is_shortlisted": str(cand.id) in shortlisted,
+            }
+        )
+    return {"job_external_id": external_job_id, "items": items}
+
+
+@router.get("/{external_job_id}/shortlist")
+def get_shortlist(external_job_id: str, db: Session = Depends(get_db)):
+    job = db.query(Job).filter(Job.external_id == external_job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    rows = (
+        db.query(JobShortlistedCandidate, Candidate)
+        .join(Candidate, Candidate.id == JobShortlistedCandidate.candidate_id)
+        .filter(JobShortlistedCandidate.job_id == job.id)
+        .order_by(JobShortlistedCandidate.created_at.desc())
+        .all()
+    )
+    items = []
+    for _, cand in rows:
+        meta = meta_from_candidate(cand, cand.external_id)
+        items.append(
+            {
+                "candidate_id": cand.external_id,
+                "candidate_uuid": str(cand.id),
+                "candidate_name": meta.get("candidate_name", "") or (cand.full_name or ""),
+                "candidate_title": meta.get("candidate_title", "") or (cand.title or ""),
+                "candidate_role": meta.get("candidate_role", "") or (cand.role_label or ""),
+                "years_experience": meta.get("years_experience", cand.years_experience),
+                "highest_degree": meta.get("highest_degree", cand.highest_degree or ""),
+                "skills_summary": meta.get("skills_summary", "") or (cand.skills or ""),
+            }
+        )
+    return {"job_external_id": external_job_id, "items": items}
+
+
+@router.post("/{external_job_id}/shortlist")
+def mutate_shortlist(external_job_id: str, body: dict, db: Session = Depends(get_db)):
+    """
+    Body:
+      { add: ["C001", ...], remove: ["C002", ...] } (candidate external ids)
+    """
+    job = db.query(Job).filter(Job.external_id == external_job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    add = body.get("add") or []
+    rem = body.get("remove") or []
+    add_set = {str(x).strip() for x in add if str(x).strip()}
+    rem_set = {str(x).strip() for x in rem if str(x).strip()}
+
+    if rem_set:
+        cands = db.query(Candidate).filter(Candidate.external_id.in_(list(rem_set))).all()
+        ids = [c.id for c in cands]
+        if ids:
+            db.query(JobShortlistedCandidate).filter(
+                JobShortlistedCandidate.job_id == job.id, JobShortlistedCandidate.candidate_id.in_(ids)
+            ).delete(synchronize_session=False)
+            # Shortlist removed -> reset application status back to NEW (do not delete history record).
+            db.query(JobApplicant).filter(JobApplicant.job_id == job.id, JobApplicant.candidate_id.in_(ids)).update(
+                {JobApplicant.status: "new", JobApplicant.updated_at: datetime.utcnow()},
+                synchronize_session=False,
+            )
+            db.commit()
+
+    if add_set:
+        existing = {
+            str(cid)
+            for (cid,) in db.query(JobShortlistedCandidate.candidate_id)
+            .filter(JobShortlistedCandidate.job_id == job.id)
+            .all()
+        }
+        cands = db.query(Candidate).filter(Candidate.external_id.in_(list(add_set))).all()
+        for c in cands:
+            if str(c.id) in existing:
+                continue
+            db.add(JobShortlistedCandidate(job_id=job.id, candidate_id=c.id))
+            # Upsert application status -> SHORTLISTED
+            app = (
+                db.query(JobApplicant)
+                .filter(JobApplicant.job_id == job.id, JobApplicant.candidate_id == c.id)
+                .first()
+            )
+            if not app:
+                db.add(JobApplicant(job_id=job.id, candidate_id=c.id, status="shortlisted", updated_at=datetime.utcnow()))
+            else:
+                app.status = "shortlisted"
+                app.updated_at = datetime.utcnow()
+        db.commit()
+
+    return get_shortlist(external_job_id, db=db)
+
+
+@router.post("/{external_job_id}/rank-shortlist", response_model=JobRankingsResponse)
+def rank_shortlist(external_job_id: str, db: Session = Depends(get_db)):
+    """
+    Stage-2 ranking: cross-encoder on USER SHORTLIST only.
+    """
+    job = db.query(Job).filter(Job.external_id == external_job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job_text = ml_ranking.build_job_text_from_db(job)
+    if not job_text.strip():
+        raise HTTPException(status_code=422, detail="Job has no description/skills text to match.")
+
+    rows = (
+        db.query(JobShortlistedCandidate, Candidate)
+        .join(Candidate, Candidate.id == JobShortlistedCandidate.candidate_id)
+        .filter(JobShortlistedCandidate.job_id == job.id)
+        .order_by(JobShortlistedCandidate.created_at.desc())
+        .all()
+    )
+    if not rows:
+        raise HTTPException(status_code=422, detail="No shortlisted candidates yet. Shortlist candidates first.")
+
+    # Ensure JobApplicant exists + is SHORTLISTED for all shortlisted candidates
+    now = datetime.utcnow()
+    for _, cand in rows:
+        app = (
+            db.query(JobApplicant)
+            .filter(JobApplicant.job_id == job.id, JobApplicant.candidate_id == cand.id)
+            .first()
+        )
+        if not app:
+            db.add(JobApplicant(job_id=job.id, candidate_id=cand.id, status="shortlisted", updated_at=now))
+        else:
+            if (app.status or "new").strip().lower() == "new":
+                app.status = "shortlisted"
+            app.updated_at = now
+    db.commit()
+
+    texts = []
+    payloads = []
+    for _, cand in rows:
+        ct = (ml_ranking.build_cand_text_from_db(cand) or "").strip()
+        if not ct:
+            continue
+        meta = meta_from_candidate(cand, cand.external_id)
+        texts.append(ct)
+        payloads.append({"candidate_id": cand.external_id, **meta})
+
+    if not payloads:
+        raise HTTPException(status_code=422, detail="No candidate text could be extracted for scoring.")
+
+    scores = match_scores_batch(job_text, texts)
+    scored = [{**p, "cross_encoder_score": s} for s, p in zip(scores, payloads)]
+    scored.sort(key=lambda x: x["cross_encoder_score"], reverse=True)
+
+    # Map SBERT similarity from cache (still not shown in UI)
+    sbert_map = {
+        str(cid): float(sim or 0.0)
+        for cid, sim in db.query(JobCandidateSbertScore.candidate_id, JobCandidateSbertScore.cosine_similarity)
+        .filter(JobCandidateSbertScore.job_id == job.id)
+        .all()
+    }
+
+    db.query(JobCandidateRanking).filter(JobCandidateRanking.job_id == job.id).delete()
+    db.commit()
+
+    run_at = datetime.utcnow()
+    out_rows: list[StoredRankingRow] = []
+    for pos, r in enumerate(scored, start=1):
+        cand = db.query(Candidate).filter(Candidate.external_id == r["candidate_id"]).first()
+        if not cand:
+            continue
+        snap_role = _snapshot_role(cand, r)
+        expl_raw = build_ranking_explanation(job, cand, r["cross_encoder_score"])
+        expl = RankingExplanationOut(**expl_raw)
+        db.add(
+            JobCandidateRanking(
+                job_id=job.id,
+                candidate_id=cand.id,
+                rank_position=pos,
+                cross_encoder_score=r["cross_encoder_score"],
+                sbert_similarity=float(sbert_map.get(str(cand.id), 0.0)),
+                candidate_name=r.get("candidate_name") or "",
+                candidate_title=r.get("candidate_title") or "",
+                candidate_role=snap_role,
+                years_experience=r.get("years_experience"),
+                highest_degree=r.get("highest_degree") or "",
+                skills_summary=r.get("skills_summary") or "",
+                run_at=run_at,
+                explanation_json=json.dumps(expl_raw),
+            )
+        )
+        out_rows.append(
+            StoredRankingRow(
+                rank_position=pos,
+                cross_encoder_score=r["cross_encoder_score"],
+                sbert_similarity=0.0,  # never shown; keep field but zero it here
+                candidate_external_id=cand.external_id,
+                candidate_name=r.get("candidate_name") or "",
+                candidate_title=r.get("candidate_title") or "",
+                candidate_role=snap_role,
+                years_experience=r.get("years_experience"),
+                highest_degree=r.get("highest_degree") or "",
+                skills_summary=r.get("skills_summary") or "",
+                explanation=expl,
+            )
+        )
+    db.commit()
+
+    return JobRankingsResponse(job_external_id=external_job_id, rankings=out_rows, run_at=run_at)
 
 
 @router.post("/{external_job_id}/rank-database-candidates", response_model=JobRankingsResponse)

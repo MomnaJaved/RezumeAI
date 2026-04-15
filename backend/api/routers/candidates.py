@@ -5,15 +5,19 @@ from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi import Query
 from fastapi import Response
 from fastapi.responses import FileResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from api.database import get_db
 from api.dependencies import require_user_if_auth_enabled
-from api.models import Candidate
+from api.models import Candidate, Job, JobCandidateRanking
 from api.schemas import CandidateCreate, CandidateRead, CandidateReadWithScores, CandidateUpdate
+from api.services.activity_log import log_activity
 from api.services.candidate_competition_score import compute_competition_payloads_for_list
+from src.parsing.name_extractor import UNKNOWN_CANDIDATE
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
@@ -24,6 +28,56 @@ def list_candidates(skip: int = 0, limit: int = 100, db: Session = Depends(get_d
     return list(q.all())
 
 
+@router.get("/page")
+def list_candidates_page(
+    skip: int = 0,
+    limit: int = Query(50, ge=1, le=100),
+    q: str = "",
+    status: str = "",
+    role: str = "",
+    sort: str = "created_desc",
+    db: Session = Depends(get_db),
+):
+    """
+    Server-side paginated candidates listing with lightweight filters.
+    Returns: { total, items }.
+    """
+    needle = (q or "").strip()
+    st = (status or "").strip().lower()
+    rl = (role or "").strip().lower()
+    srt = (sort or "created_desc").strip().lower()
+
+    base = db.query(Candidate)
+    if needle:
+        like = f"%{needle}%"
+        base = base.filter(
+            or_(
+                Candidate.full_name.ilike(like),
+                Candidate.title.ilike(like),
+                Candidate.skills.ilike(like),
+                Candidate.filename.ilike(like),
+                Candidate.contact_email.ilike(like),
+                Candidate.external_id.ilike(like),
+            )
+        )
+    if st:
+        base = base.filter(Candidate.status.ilike(st))
+    if rl:
+        base = base.filter(Candidate.role_label.ilike(rl))
+
+    total = int(base.count())
+
+    if srt == "name_asc":
+        base = base.order_by(Candidate.full_name.asc())
+    elif srt == "score_desc":
+        base = base.order_by(Candidate.best_job_match_score.desc().nullslast(), Candidate.created_at.desc())
+    else:
+        base = base.order_by(Candidate.created_at.desc())
+
+    rows = base.offset(max(0, int(skip or 0))).limit(int(limit)).all()
+    return {"total": total, "items": [CandidateRead.model_validate(r) for r in rows]}
+
+
 @router.get("/scoreboard", response_model=list[CandidateReadWithScores])
 def list_candidates_scoreboard(skip: int = 0, limit: int = 500, db: Session = Depends(get_db)):
     """
@@ -31,25 +85,45 @@ def list_candidates_scoreboard(skip: int = 0, limit: int = 500, db: Session = De
     vs all jobs in the DB. Expensive; do not use for generic listing.
     Set REZUME_COMPETITION_SKIP_JOB_FIT=1 to skip the job pass (profile only).
     """
-    cohort = db.query(Candidate).order_by(Candidate.created_at.desc()).all()
-    scores_by_id = compute_competition_payloads_for_list(db, cohort)
-    page = cohort[skip : skip + limit]
+    # Hard cap to prevent pathological slow requests; frontend should paginate.
+    limit = max(1, min(int(limit or 50), 100))
+    skip = max(0, int(skip or 0))
+    page = (
+        db.query(Candidate)
+        .order_by(Candidate.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+    # Best match across jobs is cached on Candidate to keep this endpoint fast.
+    best_by_id = {c.id: float(getattr(c, "best_job_match_score", 0.0) or 0.0) for c in page}
+    best_job_by_id = {c.id: (getattr(c, "best_job_external_id", "") or "").strip() or None for c in page}
+
     out: list[CandidateReadWithScores] = []
     for c in page:
         base = CandidateRead.model_validate(c)
-        extra = scores_by_id.get(c.id)
-        if not extra:
-            extra = {
-                "profile_percentile_score": 50.0,
-                "avg_job_match_score": 0.0,
-                "competition_score": 50.0,
-            }
+        # Keep legacy fields but avoid expensive cohort-wide computations here.
+        p = 0.0
+        j = 0.0
+        b = float(best_by_id.get(c.id, 0.0) or 0.0)
+        bj = best_job_by_id.get(c.id)
+        # Keep competition_score aligned with profile strength in list views (single "Score" removed in UI).
+        extra = {
+            "profile_percentile_score": p,
+            "avg_job_match_score": j,
+            "competition_score": p,
+            "best_job_match_score": b,
+            "best_job_external_id": bj,
+        }
         out.append(
             CandidateReadWithScores(
                 **base.model_dump(),
                 profile_percentile_score=extra["profile_percentile_score"],
                 avg_job_match_score=extra["avg_job_match_score"],
                 competition_score=extra["competition_score"],
+                best_job_match_score=extra["best_job_match_score"],
+                best_job_external_id=extra["best_job_external_id"],
             )
         )
     return out
@@ -103,12 +177,48 @@ def get_candidate_with_scores(candidate_uuid: UUID, db: Session = Depends(get_db
             "avg_job_match_score": 0.0,
             "competition_score": 50.0,
         }
+    best_score = float(getattr(c, "best_job_match_score", 0.0) or 0.0)
+    best_job_external_id = (getattr(c, "best_job_external_id", "") or "").strip() or None
     return CandidateReadWithScores(
         **base.model_dump(),
         profile_percentile_score=extra["profile_percentile_score"],
         avg_job_match_score=extra["avg_job_match_score"],
         competition_score=extra["competition_score"],
+        best_job_match_score=best_score,
+        best_job_external_id=best_job_external_id,
     )
+
+
+@router.get("/{candidate_uuid}/top-matches")
+def candidate_top_matches(candidate_uuid: UUID, limit: int = 3, db: Session = Depends(get_db)):
+    """
+    Top job matches for a candidate across all jobs based on stored rankings.
+    Does NOT compute any new model scores; it reads the existing matches table.
+    """
+    c = db.query(Candidate).filter(Candidate.id == candidate_uuid).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    lim = max(1, min(int(limit or 3), 20))
+    rows = (
+        db.query(JobCandidateRanking, Job)
+        .join(Job, Job.id == JobCandidateRanking.job_id)
+        .filter(JobCandidateRanking.candidate_id == c.id)
+        .order_by(JobCandidateRanking.cross_encoder_score.desc())
+        .limit(lim)
+        .all()
+    )
+    items = []
+    for r, j in rows:
+        items.append(
+            {
+                "job_external_id": j.external_id,
+                "job_title": j.title,
+                "job_status": j.status,
+                "score": float(r.cross_encoder_score or 0.0),
+                "rank_position": int(r.rank_position or 0),
+            }
+        )
+    return {"candidate_id": str(c.id), "items": items}
 
 
 @router.patch("/{candidate_uuid}", response_model=CandidateRead)
@@ -162,6 +272,8 @@ def create_candidate(body: CandidateCreate, db: Session = Depends(get_db)):
     db.add(cand)
     db.commit()
     db.refresh(cand)
+    name = (cand.full_name or "").strip() or UNKNOWN_CANDIDATE
+    log_activity(db, kind="success", message=f"{name} added to the pool", href="/candidates")
     return cand
 
 
@@ -170,6 +282,8 @@ def delete_candidate_by_external_id(external_id: str, db: Session = Depends(get_
     c = db.query(Candidate).filter(Candidate.external_id == external_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Candidate not found")
+    name = (c.full_name or "").strip() or UNKNOWN_CANDIDATE
     db.delete(c)
     db.commit()
+    log_activity(db, kind="info", message=f"{name} has been deleted", href="/candidates")
     return Response(status_code=204)

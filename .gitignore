@@ -36,6 +36,14 @@ rezume_dev.db
 logs/
 
 # -------------------------
+# Runtime storage (uploads, ingestions, attachments)
+# -------------------------
+backend/storage/
+uploads/
+# Historical bug: UUID-named artifact folders in repo root
+????????-????-????-????-????????????/
+
+# -------------------------
 # Optional: Large files
 # (uncomment if needed)
 # -------------------------

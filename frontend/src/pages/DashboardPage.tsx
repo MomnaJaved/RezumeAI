@@ -1,6 +1,13 @@
-import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
-import { fetchDashboard, fetchDashboardWidgets, type DashboardData, type DashboardWidgets } from "../api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import {
+  fetchDashboard,
+  fetchDashboardWidgets,
+  fetchRecentIngestions,
+  type DashboardData,
+  type DashboardWidgets,
+  type IngestionItem,
+} from "../api";
 import ActivityNotificationList from "../components/ActivityNotificationList";
 import {
   DashboardApplicantTracker,
@@ -15,12 +22,26 @@ function fmt(n: number): string {
   return new Intl.NumberFormat().format(n);
 }
 
+type IngestOverviewKind = "queued" | "processing" | "done";
+
+const INGEST_LABELS: Record<IngestOverviewKind, string> = {
+  queued: "Queued uploads",
+  processing: "Processing",
+  done: "Completed (last 24h)",
+};
+
 export default function DashboardPage() {
   const toast = useToast();
+  const navigate = useNavigate();
   const lastPollErr = useRef<string | null>(null);
   const [data, setData] = useState<DashboardData | null>(null);
   const [widgets, setWidgets] = useState<DashboardWidgets | null>(null);
   const [widgetsErr, setWidgetsErr] = useState<string | null>(null);
+
+  const [ingestOpen, setIngestOpen] = useState<IngestOverviewKind | null>(null);
+  const [ingestRows, setIngestRows] = useState<IngestionItem[]>([]);
+  const [ingestLoading, setIngestLoading] = useState(false);
+  const [ingestErr, setIngestErr] = useState<string | null>(null);
 
   useEffect(() => {
     fetchDashboard()
@@ -32,8 +53,7 @@ export default function DashboardPage() {
     let cancelled = false;
     fetchDashboardWidgets()
       .then((w) => {
-        if (cancelled) return;
-        setWidgets(w);
+        if (!cancelled) setWidgets(w);
       })
       .catch((e: Error) => {
         if (!cancelled) {
@@ -44,15 +64,49 @@ export default function DashboardPage() {
     return () => {
       cancelled = true;
     };
+  }, [toast]);
+
+  useEffect(() => {
+    if (!ingestOpen) {
+      setIngestRows([]);
+      setIngestErr(null);
+      setIngestLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setIngestLoading(true);
+    setIngestErr(null);
+    fetchRecentIngestions(ingestOpen, {
+      sinceHours: ingestOpen === "done" ? 24 : undefined,
+      limit: 30,
+    })
+      .then((rows) => {
+        if (!cancelled) setIngestRows(rows);
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setIngestErr(e.message);
+      })
+      .finally(() => {
+        if (!cancelled) setIngestLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ingestOpen]);
+
+  const toggleIngest = useCallback((kind: IngestOverviewKind) => {
+    setIngestOpen((prev) => (prev === kind ? null : kind));
   }, []);
 
   const overview = data?.overview;
-  const { items: notifications, pollErr: notificationsPollErr } = useActivityNotifications(data?.notifications);
+  const { items: notifications, pollErr: notificationsPollErr } = useActivityNotifications(data?.notifications, {
+    toastOnNew: true,
+  });
 
   useEffect(() => {
     if (notificationsPollErr && notificationsPollErr !== lastPollErr.current) {
       lastPollErr.current = notificationsPollErr;
-      toast.error(notificationsPollErr);
+      toast.error("Something went wrong. Please try again.");
     }
     if (!notificationsPollErr) lastPollErr.current = null;
   }, [notificationsPollErr, toast]);
@@ -64,32 +118,112 @@ export default function DashboardPage() {
       <section className="dash-lower">
         <div className="dash-panel">
           <h2>Overview</h2>
+          <p className="dash-overview-hint muted">Click a row for quick navigation or to expand upload details.</p>
           <div className="dash-kv">
-            <div className="row">
+            <button
+              type="button"
+              className="dash-kv-row dash-kv-row--click"
+              onClick={() => navigate("/candidates")}
+              title="Open candidates list"
+            >
               <span>Total Candidate</span>
               <strong>{overview ? fmt(overview.candidates_total) : "—"}</strong>
-            </div>
-            <div className="row">
+            </button>
+            <button
+              type="button"
+              className="dash-kv-row dash-kv-row--click"
+              onClick={() => navigate("/jobs")}
+              title="Open jobs list"
+            >
               <span>Active Jobs</span>
               <strong>{overview ? fmt(overview.jobs_total) : "—"}</strong>
-            </div>
-            <div className="row">
+            </button>
+            <button
+              type="button"
+              className="dash-kv-row dash-kv-row--click"
+              onClick={() => toggleIngest("queued")}
+              title="Show recent queued uploads"
+              aria-expanded={ingestOpen === "queued"}
+            >
               <span>Queued</span>
               <strong>{overview ? fmt(overview.ingestions_queued) : "—"}</strong>
-            </div>
-            <div className="row">
+            </button>
+            <button
+              type="button"
+              className="dash-kv-row dash-kv-row--click"
+              onClick={() => toggleIngest("processing")}
+              title="Show items currently processing"
+              aria-expanded={ingestOpen === "processing"}
+            >
               <span>Processing</span>
               <strong>{overview ? fmt(overview.ingestions_processing) : "—"}</strong>
-            </div>
-            <div className="row">
+            </button>
+            <button
+              type="button"
+              className="dash-kv-row dash-kv-row--click"
+              onClick={() => navigate("/candidates?sort=created_desc")}
+              title="Candidates sorted by newest first"
+            >
               <span>New Candidates Today</span>
               <strong>{overview ? fmt(overview.new_candidates_24h) : "—"}</strong>
-            </div>
-            <div className="row">
+            </button>
+            <button
+              type="button"
+              className="dash-kv-row dash-kv-row--click"
+              onClick={() => toggleIngest("done")}
+              title="Show uploads finished in the last 24 hours"
+              aria-expanded={ingestOpen === "done"}
+            >
               <span>Done (24h)</span>
               <strong>{overview ? fmt(overview.ingestions_done_24h) : "—"}</strong>
-            </div>
+            </button>
           </div>
+
+          {ingestOpen ? (
+            <div className="dash-overview-detail">
+              <div className="dash-overview-detail-head">
+                <h3 className="dash-overview-detail-title">{INGEST_LABELS[ingestOpen]}</h3>
+                <div className="dash-overview-detail-actions">
+                  <Link to="/candidates/add" className="dash-widget-link">
+                    Upload &amp; track →
+                  </Link>
+                  <button type="button" className="small-btn" onClick={() => setIngestOpen(null)}>
+                    Close
+                  </button>
+                </div>
+              </div>
+              {ingestLoading ? (
+                <p className="muted dash-overview-detail-body">Loading…</p>
+              ) : ingestErr ? (
+                <p className="dash-overview-detail-body" style={{ color: "#fca5a5" }}>
+                  {ingestErr}
+                </p>
+              ) : ingestRows.length === 0 ? (
+                <p className="muted dash-overview-detail-body">No rows in this state right now.</p>
+              ) : (
+                <ul className="dash-overview-ingest-list">
+                  {ingestRows.map((r) => (
+                    <li key={r.id} className="dash-overview-ingest-item">
+                      <span className="dash-overview-ingest-file">{r.filename || "—"}</span>
+                      <span className={`dash-overview-ingest-status dash-overview-ingest-status--${r.status}`}>
+                        {r.status}
+                      </span>
+                      {r.candidate_external_id && r.status === "done" ? (
+                        <Link
+                          className="dash-widget-link"
+                          to={`/candidates/lookup/${encodeURIComponent(r.candidate_external_id)}`}
+                        >
+                          Open candidate
+                        </Link>
+                      ) : (
+                        <span className="muted">{r.candidate_external_id || "—"}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : null}
         </div>
 
         <div className="dash-panel dash-panel-notifications">
@@ -112,9 +246,7 @@ export default function DashboardPage() {
           <DashboardCandidateSummary rows={widgets.candidate_preview} />
         </section>
       ) : (
-        !widgetsErr && (
-          <p className="muted dash-widgets-loading">Loading dashboard widgets…</p>
-        )
+        !widgetsErr && <p className="muted dash-widgets-loading">Loading dashboard widgets…</p>
       )}
 
       <footer className="dash-site-footer">

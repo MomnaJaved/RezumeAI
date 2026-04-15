@@ -1,6 +1,0 @@
-Jane Smith
-Data analyst
-Skills: sql, power bi, excel, statistics
-Experience: 2 years
-Projects: reporting, KPI dashboards, A/B analysis.
-Summary: detail oriented analyst with strong communication.

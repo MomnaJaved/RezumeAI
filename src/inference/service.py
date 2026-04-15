@@ -8,19 +8,19 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import numpy as np
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 # Lazy-loaded singletons
-_role_model = None
-_role_tokenizer = None
+_role_model: Optional[torch.nn.Module] = None
+_role_tokenizer: Any = None
 _role_id2label: Optional[Dict[int, str]] = None
 _role_device: Optional[torch.device] = None
-_match_model = None
-_match_tokenizer = None
+_match_model: Optional[torch.nn.Module] = None
+_match_tokenizer: Any = None
 _match_device: Optional[torch.device] = None
 _tfidf_vectorizer = None
 _tfidf_job_vectors = None
@@ -35,11 +35,41 @@ _ml_log = logging.getLogger("rezume.ml")
 
 
 def _infer_device() -> torch.device:
+    forced = (os.environ.get("REZUME_TORCH_DEVICE") or "").strip().lower()
+    if forced in ("cpu", "mps", "cuda"):
+        return torch.device(forced)
     if torch.cuda.is_available():
         return torch.device("cuda")
-    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+    # MPS can be fast on Apple Silicon but is prone to OOM / instability on some setups.
+    # Default to CPU unless explicitly enabled.
+    enable_mps = (os.environ.get("REZUME_ENABLE_MPS") or "").strip().lower() in ("1", "true", "yes")
+    if enable_mps and getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+def _is_mps_oom(e: Exception) -> bool:
+    msg = str(e).lower()
+    return "mps backend out of memory" in msg or ("mps" in msg and "out of memory" in msg)
+
+
+def _fallback_to_cpu(which: str) -> None:
+    """
+    If an MPS forward fails (OOM), move model back to CPU so requests keep working.
+    """
+    global _role_device, _match_device, _role_model, _match_model
+    try:
+        if which == "role":
+            if _role_model is not None:
+                _role_model = _role_model.to(torch.device("cpu"))
+            _role_device = torch.device("cpu")
+        elif which == "match":
+            if _match_model is not None:
+                _match_model = _match_model.to(torch.device("cpu"))
+            _match_device = torch.device("cpu")
+    except Exception:
+        # If moving fails, last resort is to keep current device and let caller handle.
+        pass
 
 
 def _role_forward(enc: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -49,7 +79,15 @@ def _role_forward(enc: dict[str, torch.Tensor]) -> torch.Tensor:
     if dev.type == "cuda":
         with torch.autocast(device_type="cuda", dtype=torch.float16):
             return _role_model(**enc).logits.squeeze(0).float()
-    return _role_model(**enc).logits.squeeze(0).float()
+    try:
+        return _role_model(**enc).logits.squeeze(0).float()
+    except RuntimeError as e:
+        if dev.type == "mps" and _is_mps_oom(e):
+            _ml_log.warning("MPS OOM in role classifier; falling back to CPU.")
+            _fallback_to_cpu("role")
+            enc_cpu = {k: v.to(torch.device("cpu")) for k, v in enc.items()}
+            return _role_model.to(torch.device("cpu"))(**enc_cpu).logits.squeeze(0).float()
+        raise
 
 
 def _warmup_role_forward() -> None:
@@ -92,10 +130,12 @@ def _load_role_model():
     _role_id2label = {int(v): k for k, v in label2id.items()}
 
     _role_tokenizer = AutoTokenizer.from_pretrained(str(ROLE_DIR))
-    _role_model = AutoModelForSequenceClassification.from_pretrained(str(ROLE_DIR))
-    _role_model.eval()
+    model = cast(torch.nn.Module, AutoModelForSequenceClassification.from_pretrained(str(ROLE_DIR)))
+    model.eval()
+    _role_model = model
 
     _role_device = _infer_device()
+    _ml_log.info("role_classifier device=%s", _role_device)
     if _role_device.type == "cpu":
         disable_q = os.environ.get("REZUME_ROLE_NO_DYNAMIC_QUANT", "").lower() in ("1", "true", "yes")
         if not disable_q:
@@ -113,7 +153,7 @@ def _load_role_model():
 
     if os.environ.get("REZUME_TORCH_COMPILE", "").lower() in ("1", "true", "yes") and _role_device.type == "cuda":
         try:
-            _role_model = torch.compile(_role_model, mode="reduce-overhead")  # type: ignore[assignment]
+            _role_model = cast(torch.nn.Module, torch.compile(_role_model, mode="reduce-overhead"))
         except Exception:
             pass
 
@@ -128,7 +168,16 @@ def _match_forward_logits(enc: dict[str, torch.Tensor]) -> torch.Tensor:
         with torch.autocast(device_type="cuda", dtype=torch.float16):
             logits = _match_model(**enc).logits
     else:
-        logits = _match_model(**enc).logits
+        try:
+            logits = _match_model(**enc).logits
+        except RuntimeError as e:
+            if dev.type == "mps" and _is_mps_oom(e):
+                _ml_log.warning("MPS OOM in match ranker; falling back to CPU.")
+                _fallback_to_cpu("match")
+                enc_cpu = {k: v.to(torch.device("cpu")) for k, v in enc.items()}
+                logits = _match_model.to(torch.device("cpu"))(**enc_cpu).logits
+            else:
+                raise
     return logits.reshape(-1).float()
 
 
@@ -180,10 +229,12 @@ def _load_match_model():
     if not (MATCH_DIR / "config.json").exists():
         return
     _match_tokenizer = AutoTokenizer.from_pretrained(str(MATCH_DIR))
-    _match_model = AutoModelForSequenceClassification.from_pretrained(str(MATCH_DIR))
-    _match_model.eval()
+    model = cast(torch.nn.Module, AutoModelForSequenceClassification.from_pretrained(str(MATCH_DIR)))
+    model.eval()
+    _match_model = model
 
     _match_device = _infer_device()
+    _ml_log.info("match_ranker device=%s", _match_device)
     if _match_device.type == "cpu":
         disable_q = os.environ.get("REZUME_MATCH_NO_DYNAMIC_QUANT", "").lower() in ("1", "true", "yes")
         if not disable_q:
@@ -201,7 +252,7 @@ def _load_match_model():
 
     if os.environ.get("REZUME_TORCH_COMPILE", "").lower() in ("1", "true", "yes") and _match_device.type == "cuda":
         try:
-            _match_model = torch.compile(_match_model, mode="reduce-overhead")  # type: ignore[assignment]
+            _match_model = cast(torch.nn.Module, torch.compile(_match_model, mode="reduce-overhead"))
         except Exception:
             pass
 

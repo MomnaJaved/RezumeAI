@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Recompute Candidate.full_name from raw_text using name_extractor (fixes older parses).
+Recompute Candidate.full_name for broken placeholders (empty / "Candidate" / "Unknown Candidate")
+using the same resolver as ingest: resume text, then email local-part, else "Unknown Candidate".
 
 Usage:
   PYTHONPATH=backend:. python training/scripts/backfill_candidate_names.py
@@ -22,7 +23,12 @@ from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
 from api.config import get_settings  # noqa: E402
 from api.db_migrate import ensure_extra_columns  # noqa: E402
 from api.models import Candidate  # noqa: E402
-from src.parsing.name_extractor import extract_name_from_raw  # noqa: E402
+from src.parsing.name_extractor import resolve_candidate_full_name  # noqa: E402
+
+
+def _needs_name_repair(stored: str) -> bool:
+    s = (stored or "").strip().lower()
+    return (not s) or s == "candidate" or s == "unknown candidate"
 
 
 def main() -> None:
@@ -37,14 +43,14 @@ def main() -> None:
         rows = db.query(Candidate).all()
         updated = 0
         for c in rows:
+            cur = (c.full_name or "").strip()
+            if not _needs_name_repair(cur):
+                continue
             raw = (c.raw_text or "").strip()
-            if not raw:
-                continue
-            new = extract_name_from_raw(raw)
-            if not new:
-                continue
-            if (c.full_name or "").strip() != new:
-                c.full_name = new
+            email = (c.contact_email or "").strip() or None
+            new_name, _src = resolve_candidate_full_name(raw, email)
+            if new_name != cur:
+                c.full_name = new_name
                 updated += 1
         db.commit()
         print("candidates:", len(rows), "full_name updated:", updated)

@@ -6,7 +6,42 @@ and initials (J. K. Rowling). Avoids picking job titles when possible.
 """
 from __future__ import annotations
 
+import logging
 import re
+from typing import Optional
+
+_log = logging.getLogger("rezume.parsing")
+
+# Display default when resume text + email do not yield a confident person name.
+UNKNOWN_CANDIDATE = "Unknown Candidate"
+
+_SKIP_EMAIL_LOCAL_PREFIXES = frozenset(
+    {
+        "noreply",
+        "no-reply",
+        "donotreply",
+        "do-not-reply",
+        "mailer-daemon",
+        "postmaster",
+        "bounce",
+        "support",
+        "help",
+        "helpdesk",
+        "hello",
+        "team",
+        "admin",
+        "info",
+        "contact",
+        "sales",
+        "careers",
+        "jobs",
+        "hr",
+        "recruiting",
+        "newsletter",
+        "notifications",
+        "notification",
+    }
+)
 
 # Split header lines: name | title | contact — PDFs often glue these together.
 RE_HEADER_SPLIT = re.compile(r"[|•·\u2022]+|\t+| {3,}")
@@ -16,6 +51,11 @@ RE_NAME_LABEL = re.compile(
 )
 RE_EMAIL = re.compile(r"[\w.+-]+@[\w.-]+\.\w+|linkedin\.com|github\.com|http", re.IGNORECASE)
 RE_PHONEISH = re.compile(r"\b\+?\d[\d\s().-]{7,}\d\b")
+RE_CREDENTIAL_HINT = re.compile(
+    r"\b(certified|certification|certifications|certificate|certificates|credential|credentials|"
+    r"license|licence|licensed|licenced|badge|badges)\b",
+    re.IGNORECASE,
+)
 
 # Same role lexicon as title_extractor (avoid returning a job title as the name).
 ROLE_KEYWORDS = {
@@ -98,6 +138,9 @@ _PHRASE_NOT_A_NAME = frozenset(
         "operations management",
         "product management",
         "sales management",
+        "aws certified",
+        "azure certified",
+        "google certified",
     }
 )
 
@@ -136,6 +179,17 @@ _TOKEN_NOT_A_NAME = frozenset(
         "technical",
         "certification",
         "certifications",
+        "certified",
+        "certificate",
+        "certificates",
+        "credential",
+        "credentials",
+        "license",
+        "licence",
+        "licensed",
+        "licenced",
+        "badge",
+        "badges",
         "university",
         "college",
         "institute",
@@ -223,7 +277,13 @@ def _word_token_ok(w: str) -> bool:
 
 def _normalize_name_parts(raw: str) -> str:
     s = RE_HONORIFIC.sub("", (raw or "").strip())
+    # Handle "LAST, FIRST [M.]" common in some templates
+    if "," in s and s.count(",") == 1:
+        a, b = [x.strip() for x in s.split(",", 1)]
+        if a and b:
+            s = f"{b} {a}"
     s = re.sub(r"\s*\([^)]{0,80}\)\s*$", "", s).strip()
+    s = re.sub(r"[•|·]+$", "", s).strip()
     s = re.sub(r"\s+", " ", s)
     parts = s.split()
     if not parts:
@@ -233,7 +293,24 @@ def _normalize_name_parts(raw: str) -> str:
     for p in parts:
         if not _word_token_ok(p):
             return ""
-    return " ".join(parts)
+    out = " ".join(parts)
+
+    # Reject short ALLCAPS tokens that usually indicate skills/keywords (AWS, SQL, API),
+    # but only when the overall candidate isn't fully uppercased (common in resume headers).
+    # This avoids false positives like "Python, AWS" → "AWS Python" while still allowing
+    # "ALI JANJUA".
+    any_lower = any(c.islower() for c in out if c.isalpha())
+    if any_lower:
+        for p in parts:
+            letters = [c for c in p if c.isalpha()]
+            if letters and all(c.isupper() for c in letters) and 2 <= len(letters) <= 4 and "." not in p:
+                return ""
+
+    # If everything is ALLCAPS, title-case it for display.
+    letters = [c for c in out if c.isalpha()]
+    if letters and all(c.isupper() for c in letters):
+        out = " ".join(w if (len(w) <= 2 and w.endswith(".")) else (w[:1].upper() + w[1:].lower()) for w in out.split())
+    return out
 
 
 def _looks_like_job_title(s: str) -> bool:
@@ -276,6 +353,11 @@ _TAIL_FILENAME_WORDS = frozenset(
         "file",
         "profile",
         "copy",
+        "sample",
+        "samples",
+        "test",
+        "testing",
+        "example",
     }
 )
 
@@ -289,7 +371,10 @@ def guess_name_from_filename_stem(stem: str) -> str:
     if not stem or len(stem) > 56:
         return ""
     low_all = stem.lower()
-    if re.match(r"^(resume|cv|curriculum|résumé)\b", low_all) or re.search(r"\b(linkedin|profile|untitled)\b", low_all):
+    # If the stem is primarily a resume/document label, don't use it as a name.
+    if re.search(r"\b(resume|cv|curriculum|résumé)\b", low_all) or re.search(
+        r"\b(linkedin|profile|untitled|document|file)\b", low_all
+    ):
         return ""
     if re.match(r"^[\d\s._-]+$", low_all):
         return ""
@@ -300,10 +385,13 @@ def guess_name_from_filename_stem(stem: str) -> str:
         return ""
     while parts and parts[-1].lower().rstrip("0123456789.") in _TAIL_FILENAME_WORDS:
         parts.pop()
+    # Require at least two remaining words; a single leftover like "sample" is not a person's name.
     if len(parts) < 2:
         return ""
     cand = " ".join(parts)
     if _looks_like_job_title(cand) or _looks_like_skill_topic_or_company(cand):
+        return ""
+    if RE_CREDENTIAL_HINT.search(cand):
         return ""
     val = _normalize_name_parts(cand)
     if val and not _looks_like_job_title(val):
@@ -326,34 +414,56 @@ def extract_name_from_raw(raw_text: str, *, max_lines: int = 40) -> str:
 
     lines = [ln.strip() for ln in t.splitlines() if ln.strip()][:max_lines]
 
+    def ok_candidate(val: str) -> bool:
+        if not val:
+            return False
+        if val.strip().lower() in ("candidate", "unknown candidate", "unknown"):
+            return False
+        if RE_CREDENTIAL_HINT.search(val):
+            return False
+        return (not _looks_like_job_title(val)) and (not _looks_like_skill_topic_or_company(val))
+
+    # Collect candidates with a score, then pick best above threshold.
+    found: list[tuple[int, str]] = []
+
     # 1) Explicit labels (multilingual "Name:" common)
-    for ln in lines[:35]:
+    for i, ln in enumerate(lines[:35]):
         m = RE_NAME_LABEL.match(ln)
-        if m:
-            val = _normalize_name_parts(m.group(1).split("|")[0].strip())
-            if val and not _looks_like_job_title(val) and not _looks_like_skill_topic_or_company(val):
-                return val
+        if not m:
+            continue
+        val = _normalize_name_parts(m.group(1).split("|")[0].strip())
+        if ok_candidate(val):
+            # Labeled names are high-confidence.
+            found.append((100 - i, val))
 
     # 2) First plausible segment per line (split headers on | • tabs).
     # Do not drop the whole line just because one chunk has a phone/email.
-    for ln in lines[:28]:
+    for i, ln in enumerate(lines[:28]):
         if RE_BAD_LINE_HINT.search(ln):
             continue
 
+        line_has_contact = bool(RE_EMAIL.search(ln) or RE_PHONEISH.search(ln))
         chunks = [c.strip() for c in RE_HEADER_SPLIT.split(ln) if c.strip()] or [ln]
-        for ch in chunks:
+        for j, ch in enumerate(chunks):
             ch = ch.strip()
             if not ch or len(ch) > 70:
                 continue
             if RE_EMAIL.search(ch) or RE_PHONEISH.search(ch):
                 continue
             val = _normalize_name_parts(ch)
-            if val and not _looks_like_job_title(val) and not _looks_like_skill_topic_or_company(val):
-                return val
+            if not ok_candidate(val):
+                continue
+            score = 80 - i * 2
+            # Names on the same line as email/phone are usually in the header.
+            if line_has_contact:
+                score += 12
+            # Earlier chunks on a header line are more likely name/title; keep but score slightly higher.
+            score += max(0, 6 - j * 2)
+            found.append((score, val))
 
     # 3) Legacy: whole line is only letters/spaces/hyphen/apostrophe (old heuristic, slightly wider)
     bad_words = ("resume", "curriculum vitae", "cv", "contact", "profile", "summary", "objective")
-    for ln in lines[:15]:
+    for i, ln in enumerate(lines[:15]):
         low = ln.lower()
         if any(b in low for b in bad_words):
             continue
@@ -363,7 +473,67 @@ def extract_name_from_raw(raw_text: str, *, max_lines: int = 40) -> str:
             parts = [p for p in ln.replace("-", " ").split() if p]
             if 1 < len(parts) <= 5:
                 cand = " ".join(parts)
-                if not _looks_like_job_title(cand) and not _looks_like_skill_topic_or_company(cand):
-                    return cand
+                val = _normalize_name_parts(cand)
+                if ok_candidate(val):
+                    found.append((40 - i, val))
 
-    return ""
+    if not found:
+        return ""
+
+    # Choose best-scoring unique candidate. Require a minimum confidence to avoid false positives.
+    found.sort(key=lambda t: (-t[0], t[1]))
+    best_score, best = found[0]
+    if best_score < 45:
+        return ""
+    return best
+
+
+def extract_name_from_email(email: str) -> str:
+    """
+    Derive a display name from an email local-part when it looks like firstname.lastname
+    (e.g. ahmad.ali@gmail.com -> Ahmad Ali). Conservative: requires two+ alphabetic tokens.
+    """
+    e = (email or "").strip().lower()
+    if "@" not in e:
+        return ""
+    local = e.split("@", 1)[0].strip()
+    if "+" in local:
+        local = local.split("+", 1)[0].strip()
+    if not local or len(local) > 64:
+        return ""
+    if local in _SKIP_EMAIL_LOCAL_PREFIXES:
+        return ""
+    tokens = [t for t in re.split(r"[._-]+", local) if t]
+    cleaned: list[str] = []
+    for t in tokens:
+        t = re.sub(r"\d+$", "", t)
+        if len(t) < 2 or not t.isalpha():
+            continue
+        cleaned.append(t)
+    if len(cleaned) < 2:
+        return ""
+    cleaned = cleaned[:4]
+    out = " ".join(x[:1].upper() + x[1:].lower() for x in cleaned)
+    low = out.lower()
+    if _looks_like_job_title(out) or _looks_like_skill_topic_or_company(low):
+        return ""
+    if RE_CREDENTIAL_HINT.search(out):
+        return ""
+    return out
+
+
+def resolve_candidate_full_name(raw_text: str, contact_email: Optional[str]) -> tuple[str, str]:
+    """
+    Resolve stored candidate full_name: resume header first, then email local-part, else UNKNOWN_CANDIDATE.
+    Returns (name, source) where source is one of: resume, email, unknown.
+    """
+    guessed = extract_name_from_raw(raw_text or "")
+    if guessed and guessed.strip().lower() not in ("candidate", "unknown candidate", "unknown"):
+        return guessed, "resume"
+    em = (contact_email or "").strip()
+    from_email = extract_name_from_email(em) if em else ""
+    if from_email:
+        _log.debug("name_from_email email=%s name=%s", em, from_email)
+        return from_email, "email"
+    _log.debug("name_unresolved email_present=%s", bool(em))
+    return UNKNOWN_CANDIDATE, "unknown"

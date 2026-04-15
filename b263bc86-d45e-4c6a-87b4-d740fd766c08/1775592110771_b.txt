@@ -1,4 +1,0 @@
-Jane Smith
-Data analyst
-Skills: sql, power bi
-Experience: 2 years
