@@ -49,6 +49,9 @@ class Job(Base):
     education_required: Mapped[str] = mapped_column(String(64), default="any")
     status: Mapped[str] = mapped_column(String(24), default="active")  # active|inactive
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # Cached LLM/deterministic "top candidate" narrative; invalidated on shortlist change or cache miss.
+    rankings_top_insight: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    rankings_top_insight_cache_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
     client: Mapped[Optional["Client"]] = relationship(back_populates="jobs")
     rankings: Mapped[list["JobCandidateRanking"]] = relationship(
@@ -212,6 +215,14 @@ class User(Base):
     verification_code_hash: Mapped[str] = mapped_column(String(256), default="")
     verification_code_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # Profile fields
+    full_name: Mapped[str] = mapped_column(String(256), default="")
+    phone: Mapped[str] = mapped_column(String(64), default="")
+    address: Mapped[str] = mapped_column(String(512), default="")
+    company: Mapped[str] = mapped_column(String(256), default="")
+    available_hours: Mapped[str] = mapped_column(String(128), default="")
+    role_label: Mapped[str] = mapped_column(String(64), default="Recruiter")
+    avatar_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class HumanRankingFeedback(Base):

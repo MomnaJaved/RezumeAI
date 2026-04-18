@@ -5,13 +5,73 @@ Used for training the match ranker and for evaluation proxy.
 from __future__ import annotations
 
 import math
-from typing import Set
+import re
+from typing import Iterable, Set
 
 
 def parse_skill_str(s: str) -> Set[str]:
     if not isinstance(s, str) or not s.strip():
         return set()
-    return {x.strip().lower() for x in s.split(",") if x.strip()}
+    parts = re.split(r"[,|\n;/]+", s)
+    return {x.strip().lower() for x in parts if x.strip()}
+
+
+GENERIC_SKILLS = frozenset(
+    {
+        "communication",
+        "communications",
+        "teamwork",
+        "leadership",
+        "problem solving",
+        "problem-solving",
+        "reporting",
+        "documentation",
+        "ms office",
+        "microsoft office",
+        "excel",
+        "powerpoint",
+        "word",
+        "presentation",
+        "time management",
+        "multitasking",
+        "customer service",
+        "interpersonal skills",
+        "stakeholder management",
+        "collaboration",
+        "attention to detail",
+    }
+)
+
+
+def normalize_skill_token(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+
+def classify_job_skills(job_skills: Iterable[str]) -> tuple[set[str], set[str], dict[str, float]]:
+    """
+    Returns (all_skills, critical_skills, weight_by_skill).
+    Critical = non-generic skills; generic skills get lower weight.
+    """
+    all_s = {normalize_skill_token(x) for x in job_skills if normalize_skill_token(x)}
+    weight: dict[str, float] = {}
+    critical: set[str] = set()
+    for sk in all_s:
+        if sk in GENERIC_SKILLS:
+            weight[sk] = 0.25
+        else:
+            weight[sk] = 1.0
+            critical.add(sk)
+    return all_s, critical, weight
+
+
+def weighted_overlap_ratio(job_skills: set[str], cand_skills: set[str], weight_by_skill: dict[str, float]) -> float:
+    if not job_skills:
+        return 0.0
+    denom = sum(float(weight_by_skill.get(s, 1.0)) for s in job_skills)
+    if denom <= 0:
+        return 0.0
+    num = sum(float(weight_by_skill.get(s, 1.0)) for s in job_skills if s in cand_skills)
+    return num / denom
 
 
 def jaccard(a: Set[str], b: Set[str]) -> float:

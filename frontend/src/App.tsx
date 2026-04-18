@@ -1,4 +1,6 @@
+import { useEffect } from "react";
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { applyAppSettings } from "./settings";
 import HomePage from "./pages/HomePage";
 import JobsPage from "./pages/JobsPage";
 import JobDetailPage from "./pages/JobDetailPage";
@@ -7,9 +9,12 @@ import PlaygroundPage from "./pages/PlaygroundPage";
 import IngestPage from "./pages/IngestPage";
 import UploadPage from "./pages/UploadPage";
 import CandidatesPage from "./pages/CandidatesPage";
+import CandidatesComparePage from "./pages/CandidatesComparePage";
 import CandidateDetailPage from "./pages/CandidateDetailPage";
 import CandidateLookupPage from "./pages/CandidateLookupPage";
 import PlaceholderPage from "./pages/PlaceholderPage";
+import ReportsPage from "./pages/ReportsPage";
+import SettingsPage from "./pages/SettingsPage";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
 import DashboardPage from "./pages/DashboardPage";
@@ -24,6 +29,11 @@ import { useAuth } from "./auth";
 
 export default function App() {
   const loc = useLocation();
+
+  // Apply persisted theme + font-size on every navigation and on first load
+  useEffect(() => {
+    applyAppSettings();
+  }, [loc.pathname]);
   const isHome = loc.pathname === "/";
   const isAuthMarketing = loc.pathname === "/login" || loc.pathname === "/register";
   const isDashRoute =
@@ -41,6 +51,8 @@ export default function App() {
     loc.pathname.startsWith("/candidates") ||
     loc.pathname.startsWith("/clients") ||
     loc.pathname.startsWith("/jobs") ||
+    loc.pathname.startsWith("/reports") ||
+    loc.pathname.startsWith("/settings") ||
     loc.pathname.startsWith("/inbox") ||
     loc.pathname.startsWith("/matching");
   const { token, email, logout } = useAuth();
@@ -124,6 +136,14 @@ export default function App() {
             }
           />
           <Route
+            path="/candidates/compare"
+            element={
+              <RequireAuth>
+                <CandidatesComparePage />
+              </RequireAuth>
+            }
+          />
+          <Route
             path="/candidates/:candidateId"
             element={
               <RequireAuth>
@@ -167,7 +187,7 @@ export default function App() {
             path="/reports"
             element={
               <RequireAuth>
-                <PlaceholderPage title="Reports" note="Reports dashboard is coming next. (We can add match reports, bias/fairness checks, and exports.)" />
+                <ReportsPage />
               </RequireAuth>
             }
           />
@@ -175,7 +195,7 @@ export default function App() {
             path="/settings"
             element={
               <RequireAuth>
-                <PlaceholderPage title="Settings" note="Settings page coming next (profile, auth, and API keys)." />
+                <SettingsPage />
               </RequireAuth>
             }
           />

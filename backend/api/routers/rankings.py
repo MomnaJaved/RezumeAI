@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -11,8 +12,12 @@ from api.database import get_db
 from api.models import Candidate, Job, JobApplicant, JobCandidateRanking, JobCandidateSbertScore, JobShortlistedCandidate
 from api.schemas import JobRankingsResponse, RankingExplanationOut, StoredRankingRow
 from api.services import ml_ranking
+from api.services.candidate_best_job_cache import refresh_candidate_best_job_cache
 from api.services.candidate_display import meta_from_candidate
+from api.services.ranking_adjust import adjusted_match_score
 from api.services.ranking_explain import build_ranking_explanation
+from api.services.ranking_insight_sync import clear_job_ranking_insight_cache, refresh_job_ranking_top_insight, shortlisted_candidate_ids
+from api.services.top_candidate_insight import build_top_candidate_insight_paragraph
 from api.services.ranking_run import rank_for_external_job_id
 from src.inference.service import classify_role, match_scores_batch
 
@@ -89,13 +94,16 @@ def rank_and_save(
         if not cand:
             continue
         snap_role = _snapshot_role(cand, r)
-        expl_raw = build_ranking_explanation(job, cand, r["cross_encoder_score"])
+        raw = float(r.get("cross_encoder_score_raw") or r["cross_encoder_score"])
+        adj = adjusted_match_score(job, cand, raw_cross_encoder_score=raw, sbert_similarity=float(r.get("sbert_similarity", 0.0) or 0.0))
+        r["cross_encoder_score"] = float(adj["final_score"])
+        expl_raw = build_ranking_explanation(job, cand, float(adj["final_score"]), raw_cross_encoder_score=raw)
         expl = RankingExplanationOut(**expl_raw)
         jr = JobCandidateRanking(
             job_id=job.id,
             candidate_id=cand.id,
             rank_position=pos,
-            cross_encoder_score=r["cross_encoder_score"],
+            cross_encoder_score=float(adj["final_score"]),
             sbert_similarity=r["sbert_similarity"],
             candidate_name=r.get("candidate_name") or "",
             candidate_title=r.get("candidate_title") or "",
@@ -107,28 +115,32 @@ def rank_and_save(
             explanation_json=json.dumps(expl_raw),
         )
         db.add(jr)
-        out_rows.append(
-            StoredRankingRow(
-                rank_position=pos,
-                cross_encoder_score=r["cross_encoder_score"],
-                sbert_similarity=r["sbert_similarity"],
-                candidate_external_id=cand.external_id,
-                candidate_name=r.get("candidate_name") or "",
-                candidate_title=r.get("candidate_title") or "",
-                candidate_role=snap_role,
-                years_experience=r.get("years_experience"),
-                highest_degree=r.get("highest_degree") or "",
-                skills_summary=r.get("skills_summary") or "",
-                explanation=expl,
-            )
+        row = StoredRankingRow(
+            rank_position=pos,
+            cross_encoder_score=float(adj["final_score"]),
+            sbert_similarity=r["sbert_similarity"],
+            candidate_external_id=cand.external_id,
+            candidate_name=r.get("candidate_name") or "",
+            candidate_title=r.get("candidate_title") or "",
+            candidate_role=snap_role,
+            years_experience=r.get("years_experience"),
+            highest_degree=r.get("highest_degree") or "",
+            skills_summary=r.get("skills_summary") or "",
+            explanation=expl,
         )
+        out_rows.append(row)
 
     db.commit()
 
+    refresh_candidate_best_job_cache(db, [c.id for c in db.query(Candidate).filter(Candidate.external_id.in_([r["candidate_id"] for r in rows])).all()])
+
+    db.refresh(job)
+    insight = refresh_job_ranking_top_insight(db, job)
     return JobRankingsResponse(
         job_external_id=external_job_id,
         rankings=out_rows,
         run_at=run_at,
+        top_candidate_insight=insight,
     )
 
 
@@ -168,10 +180,13 @@ def stage1_pool(external_job_id: str, limit: int = 50, db: Session = Depends(get
                 "candidate_role": meta.get("candidate_role", "") or (cand.role_label or ""),
                 "years_experience": meta.get("years_experience", cand.years_experience),
                 "highest_degree": meta.get("highest_degree", cand.highest_degree or ""),
+                "certifications": meta.get("certifications", "") or (getattr(cand, "certifications", "") or ""),
                 "skills_summary": meta.get("skills_summary", "") or (cand.skills or ""),
                 # SBERT retrieval score (cosine similarity). Shown ONLY in Ranked (retrieval) list.
                 "sbert_score": float(getattr(srow, "cosine_similarity", 0.0) or 0.0),
                 "is_shortlisted": str(cand.id) in shortlisted,
+                # Pipeline status (candidates.status — source of truth).
+                "candidate_status": str(cand.status or "new").strip().lower(),
             }
         )
     return {"job_external_id": external_job_id, "items": items}
@@ -228,11 +243,7 @@ def mutate_shortlist(external_job_id: str, body: dict, db: Session = Depends(get
             db.query(JobShortlistedCandidate).filter(
                 JobShortlistedCandidate.job_id == job.id, JobShortlistedCandidate.candidate_id.in_(ids)
             ).delete(synchronize_session=False)
-            # Shortlist removed -> reset application status back to NEW (do not delete history record).
-            db.query(JobApplicant).filter(JobApplicant.job_id == job.id, JobApplicant.candidate_id.in_(ids)).update(
-                {JobApplicant.status: "new", JobApplicant.updated_at: datetime.utcnow()},
-                synchronize_session=False,
-            )
+            # Status is NOT reset when removing from shortlist — only explicit user action changes status.
             db.commit()
 
     if add_set:
@@ -247,17 +258,27 @@ def mutate_shortlist(external_job_id: str, body: dict, db: Session = Depends(get
             if str(c.id) in existing:
                 continue
             db.add(JobShortlistedCandidate(job_id=job.id, candidate_id=c.id))
-            # Upsert application status -> SHORTLISTED
+            # Upsert the JobApplicant tracking row and set status to "shortlisted".
             app = (
                 db.query(JobApplicant)
                 .filter(JobApplicant.job_id == job.id, JobApplicant.candidate_id == c.id)
                 .first()
             )
-            if not app:
-                db.add(JobApplicant(job_id=job.id, candidate_id=c.id, status="shortlisted", updated_at=datetime.utcnow()))
+            if app:
+                # Only promote — never downgrade a candidate who is already further along.
+                _PROMOTE_FROM = {"new", "screened"}
+                if (app.status or "new") in _PROMOTE_FROM:
+                    app.status = "shortlisted"
+                    app.updated_at = datetime.utcnow()
             else:
-                app.status = "shortlisted"
-                app.updated_at = datetime.utcnow()
+                db.add(JobApplicant(job_id=job.id, candidate_id=c.id, status="shortlisted", updated_at=datetime.utcnow()))
+            # Mirror on the global candidate row so the Candidates page reflects it.
+            if c.status in (None, "new", "screened"):
+                c.status = "shortlisted"
+        db.commit()
+
+    if add_set or rem_set:
+        clear_job_ranking_insight_cache(db, job)
         db.commit()
 
     return get_shortlist(external_job_id, db=db)
@@ -286,7 +307,8 @@ def rank_shortlist(external_job_id: str, db: Session = Depends(get_db)):
     if not rows:
         raise HTTPException(status_code=422, detail="No shortlisted candidates yet. Shortlist candidates first.")
 
-    # Ensure JobApplicant exists + is SHORTLISTED for all shortlisted candidates
+    # Ensure a JobApplicant tracking row exists for each shortlisted candidate.
+    # Status is NOT modified here — ranking is a scoring operation, not a status decision.
     now = datetime.utcnow()
     for _, cand in rows:
         app = (
@@ -295,11 +317,7 @@ def rank_shortlist(external_job_id: str, db: Session = Depends(get_db)):
             .first()
         )
         if not app:
-            db.add(JobApplicant(job_id=job.id, candidate_id=cand.id, status="shortlisted", updated_at=now))
-        else:
-            if (app.status or "new").strip().lower() == "new":
-                app.status = "shortlisted"
-            app.updated_at = now
+            db.add(JobApplicant(job_id=job.id, candidate_id=cand.id, status="new", updated_at=now))
     db.commit()
 
     texts = []
@@ -316,7 +334,13 @@ def rank_shortlist(external_job_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=422, detail="No candidate text could be extracted for scoring.")
 
     scores = match_scores_batch(job_text, texts)
-    scored = [{**p, "cross_encoder_score": s} for s, p in zip(scores, payloads)]
+    scored = [{**p, "cross_encoder_score_raw": float(s), "cross_encoder_score": float(s)} for s, p in zip(scores, payloads)]
+    for r in scored:
+        cand = db.query(Candidate).filter(Candidate.external_id == r["candidate_id"]).first()
+        if not cand:
+            continue
+        adj = adjusted_match_score(job, cand, raw_cross_encoder_score=float(r["cross_encoder_score_raw"]))
+        r["cross_encoder_score"] = float(adj["final_score"])
     scored.sort(key=lambda x: x["cross_encoder_score"], reverse=True)
 
     # Map SBERT similarity from cache (still not shown in UI)
@@ -337,14 +361,19 @@ def rank_shortlist(external_job_id: str, db: Session = Depends(get_db)):
         if not cand:
             continue
         snap_role = _snapshot_role(cand, r)
-        expl_raw = build_ranking_explanation(job, cand, r["cross_encoder_score"])
+        expl_raw = build_ranking_explanation(
+            job,
+            cand,
+            float(r["cross_encoder_score"]),
+            raw_cross_encoder_score=float(r.get("cross_encoder_score_raw") or r["cross_encoder_score"]),
+        )
         expl = RankingExplanationOut(**expl_raw)
         db.add(
             JobCandidateRanking(
                 job_id=job.id,
                 candidate_id=cand.id,
                 rank_position=pos,
-                cross_encoder_score=r["cross_encoder_score"],
+                cross_encoder_score=float(r["cross_encoder_score"]),
                 sbert_similarity=float(sbert_map.get(str(cand.id), 0.0)),
                 candidate_name=r.get("candidate_name") or "",
                 candidate_title=r.get("candidate_title") or "",
@@ -356,24 +385,170 @@ def rank_shortlist(external_job_id: str, db: Session = Depends(get_db)):
                 explanation_json=json.dumps(expl_raw),
             )
         )
-        out_rows.append(
-            StoredRankingRow(
-                rank_position=pos,
-                cross_encoder_score=r["cross_encoder_score"],
-                sbert_similarity=0.0,  # never shown; keep field but zero it here
-                candidate_external_id=cand.external_id,
-                candidate_name=r.get("candidate_name") or "",
-                candidate_title=r.get("candidate_title") or "",
-                candidate_role=snap_role,
-                years_experience=r.get("years_experience"),
-                highest_degree=r.get("highest_degree") or "",
-                skills_summary=r.get("skills_summary") or "",
-                explanation=expl,
-            )
+        row = StoredRankingRow(
+            rank_position=pos,
+            cross_encoder_score=float(r["cross_encoder_score"]),
+            sbert_similarity=0.0,  # never shown; keep field but zero it here
+            candidate_external_id=cand.external_id,
+            candidate_name=r.get("candidate_name") or "",
+            candidate_title=r.get("candidate_title") or "",
+            candidate_role=snap_role,
+            years_experience=r.get("years_experience"),
+            highest_degree=r.get("highest_degree") or "",
+            skills_summary=r.get("skills_summary") or "",
+            explanation=expl,
         )
+        out_rows.append(row)
     db.commit()
 
-    return JobRankingsResponse(job_external_id=external_job_id, rankings=out_rows, run_at=run_at)
+    refresh_candidate_best_job_cache(db, [cand.id for _, cand in rows])
+
+    db.refresh(job)
+    insight = refresh_job_ranking_top_insight(db, job)
+    return JobRankingsResponse(
+        job_external_id=external_job_id,
+        rankings=out_rows,
+        run_at=run_at,
+        top_candidate_insight=insight,
+    )
+
+
+@router.post("/{external_job_id}/match-one")
+def match_one_candidate(external_job_id: str, body: dict, db: Session = Depends(get_db)):
+    """
+    Cross-encoder match for ONE candidate vs ONE job.
+
+    This does not require shortlisting and does not persist ranking rows; it is meant for
+    the Matching page "Match" button to avoid forcing users to manage shortlists.
+    """
+    cand_external_id = str(body.get("candidate_id") or body.get("candidate_external_id") or "").strip()
+    if not cand_external_id:
+        raise HTTPException(status_code=422, detail="candidate_id is required")
+
+    job = db.query(Job).filter(Job.external_id == external_job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    cand = db.query(Candidate).filter(Candidate.external_id == cand_external_id).first()
+    if not cand:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    job_text = ml_ranking.build_job_text_from_db(job)
+    if not job_text.strip():
+        raise HTTPException(status_code=422, detail="Job has no description/skills text to match.")
+    ct = (ml_ranking.build_cand_text_from_db(cand) or "").strip()
+    if not ct:
+        raise HTTPException(status_code=422, detail="No candidate text could be extracted for scoring.")
+
+    try:
+        score = float(match_scores_batch(job_text, [ct])[0])
+    except Exception as e:
+        _log.exception("match_scores_batch failed: %s", e)
+        raise HTTPException(status_code=503, detail="Model inference failed for match") from e
+
+    adj = adjusted_match_score(job, cand, raw_cross_encoder_score=float(score))
+    return {
+        "job_external_id": external_job_id,
+        "candidate_id": cand_external_id,
+        "rank_position": 1,
+        "cross_encoder_score": float(adj["final_score"]),
+        "cross_encoder_score_raw": float(adj["raw_cross_encoder_score"]),
+        "critical_skill_coverage": float(adj["critical_skill_coverage"]),
+        "total_skill_coverage": float(adj["total_skill_coverage"]),
+    }
+
+
+@router.post("/{external_job_id}/match-batch")
+def match_batch_candidates(external_job_id: str, body: dict, db: Session = Depends(get_db)):
+    """
+    Cross-encoder match for MANY candidates vs ONE job (no shortlist required).
+    Returns rank positions sorted by cross-encoder score desc.
+    """
+    raw_ids = body.get("candidate_ids") or body.get("candidates") or []
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(status_code=422, detail="candidate_ids must be a non-empty list")
+    cand_external_ids = [str(x).strip() for x in raw_ids if str(x).strip()]
+    if not cand_external_ids:
+        raise HTTPException(status_code=422, detail="candidate_ids must be a non-empty list")
+    if len(cand_external_ids) > 200:
+        raise HTTPException(status_code=422, detail="candidate_ids max is 200")
+
+    job = db.query(Job).filter(Job.external_id == external_job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job_text = ml_ranking.build_job_text_from_db(job)
+    if not job_text.strip():
+        raise HTTPException(status_code=422, detail="Job has no description/skills text to match.")
+
+    cands = db.query(Candidate).filter(Candidate.external_id.in_(cand_external_ids)).all()
+    by_ext = {c.external_id: c for c in cands}
+
+    texts: list[str] = []
+    kept_ids: list[str] = []
+    for ext in cand_external_ids:
+        cand = by_ext.get(ext)
+        if not cand:
+            continue
+        ct = (ml_ranking.build_cand_text_from_db(cand) or "").strip()
+        if not ct:
+            continue
+        kept_ids.append(ext)
+        texts.append(ct)
+
+    if not kept_ids:
+        raise HTTPException(status_code=422, detail="No candidate text could be extracted for scoring.")
+
+    try:
+        scores = [float(x) for x in match_scores_batch(job_text, texts)]
+    except Exception as e:
+        _log.exception("match_scores_batch failed: %s", e)
+        raise HTTPException(status_code=503, detail="Model inference failed for match") from e
+
+    scored = []
+    for cid, s in zip(kept_ids, scores):
+        cand = by_ext.get(cid)
+        if not cand:
+            continue
+        adj = adjusted_match_score(job, cand, raw_cross_encoder_score=float(s))
+        scored.append(
+            {
+                "candidate_id": cid,
+                "cross_encoder_score": float(adj["final_score"]),
+                "cross_encoder_score_raw": float(adj["raw_cross_encoder_score"]),
+                "critical_skill_coverage": float(adj["critical_skill_coverage"]),
+                "total_skill_coverage": float(adj["total_skill_coverage"]),
+            }
+        )
+    scored.sort(key=lambda x: x["cross_encoder_score"], reverse=True)
+    for i, row in enumerate(scored, start=1):
+        row["rank_position"] = i
+
+    top_insight = ""
+    try:
+        pairs = []
+        for r in scored[:6]:
+            ext = r["candidate_id"]
+            cand = by_ext.get(ext)
+            if not cand:
+                continue
+            meta = meta_from_candidate(cand, ext)
+            row = SimpleNamespace(
+                candidate_name=meta.get("candidate_name", "") or (cand.full_name or ""),
+                candidate_title=meta.get("candidate_title", "") or (cand.title or ""),
+                candidate_role=meta.get("candidate_role", "") or (cand.role_label or ""),
+                candidate_external_id=ext,
+                years_experience=meta.get("years_experience", cand.years_experience),
+                highest_degree=meta.get("highest_degree", cand.highest_degree or ""),
+                skills_summary=meta.get("skills_summary", "") or (cand.skills or ""),
+                cross_encoder_score=float(r.get("cross_encoder_score") or 0.0),
+                explanation=None,
+            )
+            pairs.append((row, cand))
+        if pairs:
+            top_insight = build_top_candidate_insight_paragraph(job, pairs, peer_scope="this ranking pool")
+    except Exception:
+        top_insight = ""
+
+    return {"job_external_id": external_job_id, "items": scored, "top_candidate_insight": top_insight}
 
 
 @router.post("/{external_job_id}/rank-database-candidates", response_model=JobRankingsResponse)
@@ -488,7 +663,13 @@ def rank_database_candidates(
         _log.exception("match_scores_batch failed: %s", e)
         raise HTTPException(status_code=503, detail="Model inference failed for ranking") from e
 
-    scored = [{**p, "cross_encoder_score": s} for s, p in zip(scores, payloads)]
+    scored = [{**p, "cross_encoder_score_raw": float(s), "cross_encoder_score": float(s)} for s, p in zip(scores, payloads)]
+    for r in scored:
+        cand = db.query(Candidate).filter(Candidate.external_id == r["candidate_id"]).first()
+        if not cand:
+            continue
+        adj = adjusted_match_score(job, cand, raw_cross_encoder_score=float(r["cross_encoder_score_raw"]), sbert_similarity=float(r.get("sbert_similarity", 0.0) or 0.0))
+        r["cross_encoder_score"] = float(adj["final_score"])
 
     scored.sort(key=lambda x: x["cross_encoder_score"], reverse=True)
     scored = scored[:top_n]
@@ -501,6 +682,7 @@ def rank_database_candidates(
 
     run_at = datetime.utcnow()
     out_rows: list[StoredRankingRow] = []
+    insight_pairs: list[tuple[StoredRankingRow, Candidate]] = []
 
     if persist:
         db.query(JobCandidateRanking).filter(JobCandidateRanking.job_id == job.id).delete()
@@ -511,7 +693,12 @@ def rank_database_candidates(
         if not cand:
             continue
         snap_role = _snapshot_role(cand, r)
-        expl_raw = build_ranking_explanation(job, cand, r["cross_encoder_score"])
+        expl_raw = build_ranking_explanation(
+            job,
+            cand,
+            float(r["cross_encoder_score"]),
+            raw_cross_encoder_score=float(r.get("cross_encoder_score_raw") or r["cross_encoder_score"]),
+        )
         expl = RankingExplanationOut(**expl_raw)
         if persist:
             db.add(
@@ -519,7 +706,7 @@ def rank_database_candidates(
                     job_id=job.id,
                     candidate_id=cand.id,
                     rank_position=pos,
-                    cross_encoder_score=r["cross_encoder_score"],
+                    cross_encoder_score=float(r["cross_encoder_score"]),
                     sbert_similarity=r["sbert_similarity"],
                     candidate_name=r.get("candidate_name") or "",
                     candidate_title=r.get("candidate_title") or "",
@@ -531,30 +718,62 @@ def rank_database_candidates(
                     explanation_json=json.dumps(expl_raw),
                 )
             )
-        out_rows.append(
-            StoredRankingRow(
-                rank_position=pos,
-                cross_encoder_score=r["cross_encoder_score"],
-                sbert_similarity=r["sbert_similarity"],
-                candidate_external_id=cand.external_id,
-                candidate_name=r.get("candidate_name") or "",
-                candidate_title=r.get("candidate_title") or "",
-                candidate_role=snap_role,
-                years_experience=r.get("years_experience"),
-                highest_degree=r.get("highest_degree") or "",
-                skills_summary=r.get("skills_summary") or "",
-                explanation=expl,
-            )
+        row = StoredRankingRow(
+            rank_position=pos,
+            cross_encoder_score=float(r["cross_encoder_score"]),
+            sbert_similarity=r["sbert_similarity"],
+            candidate_external_id=cand.external_id,
+            candidate_name=r.get("candidate_name") or "",
+            candidate_title=r.get("candidate_title") or "",
+            candidate_role=snap_role,
+            years_experience=r.get("years_experience"),
+            highest_degree=r.get("highest_degree") or "",
+            skills_summary=r.get("skills_summary") or "",
+            explanation=expl,
         )
+        out_rows.append(row)
+        insight_pairs.append((row, cand))
 
     if persist:
         db.commit()
+        refresh_candidate_best_job_cache(db, [c.id for c in cands if c])
+        db.refresh(job)
+        insight = refresh_job_ranking_top_insight(db, job)
+    else:
+        sid = shortlisted_candidate_ids(db, job.id)
+        peer = "shortlisted candidates" if sid else "ranked candidates for this job"
+        insight = build_top_candidate_insight_paragraph(job, insight_pairs, peer_scope=peer) if insight_pairs else None
 
     return JobRankingsResponse(
         job_external_id=external_job_id,
         rankings=out_rows,
         run_at=run_at,
+        top_candidate_insight=insight,
     )
+
+
+@router.post("/{external_job_id}/match-candidates", response_model=JobRankingsResponse)
+def match_candidates(
+    external_job_id: str,
+    top_k: int = 50,
+    db: Session = Depends(get_db),
+):
+    """
+    Canonical match trigger: compute SBERT + cross-encoder scores, persist to
+    job_candidate_rankings, and refresh each candidate's best_job_match_score.
+    All frontend views should call this to trigger matching, then read from
+    GET .../matches (stored data only).
+    """
+    return rank_and_save(external_job_id, top_k=top_k, db=db)
+
+
+@router.get("/{external_job_id}/matches", response_model=JobRankingsResponse)
+def get_job_matches(external_job_id: str, db: Session = Depends(get_db)):
+    """
+    Fetch latest persisted match scores for a job.
+    Single source of truth: always reads from job_candidate_rankings.
+    """
+    return get_saved_rankings(external_job_id, db=db)
 
 
 @router.get("/{external_job_id}/rankings", response_model=JobRankingsResponse)
@@ -574,7 +793,7 @@ def get_saved_rankings(external_job_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No saved rankings for this job. POST .../rank-and-save first.")
 
     run_at = rows[0][0].run_at
-    rankings = []
+    rankings: list[StoredRankingRow] = []
     for jr, cand in rows:
         expl = None
         if getattr(jr, "explanation_json", None):
@@ -586,23 +805,25 @@ def get_saved_rankings(external_job_id: str, db: Session = Depends(get_db)):
             expl = RankingExplanationOut(
                 **build_ranking_explanation(job, cand, jr.cross_encoder_score)
             )
-        rankings.append(
-            StoredRankingRow(
-                rank_position=jr.rank_position,
-                cross_encoder_score=jr.cross_encoder_score,
-                sbert_similarity=jr.sbert_similarity,
-                candidate_external_id=cand.external_id,
-                candidate_name=jr.candidate_name or "",
-                candidate_title=jr.candidate_title or "",
-                candidate_role=jr.candidate_role or "",
-                years_experience=jr.years_experience,
-                highest_degree=jr.highest_degree or "",
-                skills_summary=jr.skills_summary or "",
-                explanation=expl,
-            )
+        row = StoredRankingRow(
+            rank_position=jr.rank_position,
+            cross_encoder_score=jr.cross_encoder_score,
+            sbert_similarity=jr.sbert_similarity,
+            candidate_external_id=cand.external_id,
+            candidate_name=jr.candidate_name or "",
+            candidate_title=jr.candidate_title or "",
+            candidate_role=jr.candidate_role or "",
+            years_experience=jr.years_experience,
+            highest_degree=jr.highest_degree or "",
+            skills_summary=jr.skills_summary or "",
+            explanation=expl,
         )
+        rankings.append(row)
+    db.refresh(job)
+    insight = refresh_job_ranking_top_insight(db, job)
     return JobRankingsResponse(
         job_external_id=external_job_id,
         rankings=rankings,
         run_at=run_at,
+        top_candidate_insight=insight,
     )

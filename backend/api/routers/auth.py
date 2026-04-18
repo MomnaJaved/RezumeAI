@@ -1,26 +1,29 @@
 """Optional JWT auth: email verification + login."""
-from __future__ import annotations
-
 import logging
 import re
 import secrets
 import smtplib
 from datetime import datetime, timedelta
+from typing import Optional
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from api.config import get_settings
 from api.database import get_db
 from api.models import User
 from api.schemas import (
+    ChangePasswordIn,
     RegisterStartResponse,
     TokenResponse,
+    UserProfileOut,
+    UserProfileUpdate,
     UserRegisterIn,
     VerifyEmailCodeIn,
     VerifyEmailCodeResponse,
 )
-from api.security import create_access_token, hash_password, verify_password
+from api.security import create_access_token, decode_token, hash_password, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 _log = logging.getLogger("rezume.api")
@@ -142,3 +145,62 @@ def login(body: UserRegisterIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=403, detail="Email not verified")
     token = create_access_token(str(user.id), extra={"email": email})
     return TokenResponse(access_token=token)
+
+
+def _get_auth_user(request: Request, db: Session) -> User:
+    """Extract and validate JWT from Authorization header, return User or raise 401."""
+    auth = request.headers.get("Authorization", "")
+    token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    payload = decode_token(token)
+    if not payload or "sub" not in payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    try:
+        uid = UUID(payload["sub"])
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    user = db.query(User).filter(User.id == uid).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+
+def _profile_out(u: User) -> UserProfileOut:
+    return UserProfileOut(
+        id=str(u.id),
+        email=u.email,
+        full_name=getattr(u, "full_name", "") or "",
+        phone=getattr(u, "phone", "") or "",
+        address=getattr(u, "address", "") or "",
+        company=getattr(u, "company", "") or "",
+        available_hours=getattr(u, "available_hours", "") or "",
+        role_label=getattr(u, "role_label", "Recruiter") or "Recruiter",
+        avatar_data=getattr(u, "avatar_data", None),
+    )
+
+
+@router.get("/me", response_model=UserProfileOut)
+def get_me(request: Request, db: Session = Depends(get_db)):
+    return _profile_out(_get_auth_user(request, db))
+
+
+@router.patch("/me", response_model=UserProfileOut)
+def update_me(request: Request, body: UserProfileUpdate, db: Session = Depends(get_db)):
+    u = _get_auth_user(request, db)
+    for field, val in body.model_dump(exclude_unset=True).items():
+        if val is not None:
+            setattr(u, field, val)
+    db.commit()
+    db.refresh(u)
+    return _profile_out(u)
+
+
+@router.post("/change-password")
+def change_password(request: Request, body: ChangePasswordIn, db: Session = Depends(get_db)):
+    u = _get_auth_user(request, db)
+    if not verify_password(body.current_password, u.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    u.password_hash = hash_password(body.new_password)
+    db.commit()
+    return {"status": "password_changed"}

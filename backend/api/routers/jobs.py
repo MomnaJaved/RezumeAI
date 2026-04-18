@@ -19,18 +19,23 @@ from datetime import datetime
 
 from sqlalchemy import func
 
-from api.models import Candidate, Client, Job, JobApplicant, JobAttachment, JobCandidateRanking
-from api.schemas import JobAttachmentRead, JobCreate, JobRead, JobUpdate, StoredRankingRow
+from api.models import Candidate, Client, Job, JobApplicant, JobAttachment, JobCandidateRanking, JobCandidateSbertScore
+from api.schemas import JobAttachmentRead, JobCreate, JobRead, JobUpdate, RankingExplanationOut, StoredRankingRow
 from api.services.resume_ingest import MAX_UPLOAD_BYTES, _storage_root  # reuse upload dir helper
+from api.services.applicant_status_effective import (
+    applicant_tracker_counts,
+    effective_applicant_status,
+    sync_candidate_status_from_applicants,
+    STORAGE_APPLICANT_STATUSES,
+)
+from api.services.candidate_display import display_full_name_from_db
+from api.services.candidate_title_db import resolved_display_title
 from api.database import engine
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 _JOB_ID_RE = re.compile(r"^J(\d+)$", re.IGNORECASE)
 _JOB_STATUSES = {"active", "on_hold", "completed", "cancelled"}
-
-_APPLICANT_STATUSES = {"new", "screened", "shortlisted", "interviewed", "hired"}
-
 
 def _norm_job_status(raw: str) -> str:
     s = (raw or "").strip().lower()
@@ -181,6 +186,12 @@ def candidates_for_job(external_id: str, limit: int = 200, db: Session = Depends
     )
     items = []
     for r in rows:
+        expl = None
+        if getattr(r, "explanation_json", None):
+            try:
+                expl = RankingExplanationOut.model_validate_json(r.explanation_json)
+            except Exception:
+                expl = None
         items.append(
             StoredRankingRow(
                 rank_position=r.rank_position,
@@ -193,7 +204,7 @@ def candidates_for_job(external_id: str, limit: int = 200, db: Session = Depends
                 years_experience=r.years_experience,
                 highest_degree=r.highest_degree,
                 skills_summary=r.skills_summary,
-                explanation=None,
+                explanation=expl,
             )
         )
     return {"job_external_id": job.external_id, "items": items}
@@ -320,22 +331,63 @@ def job_applicant_stats(external_id: str, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.external_id == external_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    rows = (
-        db.query(JobApplicant.status, func.count(JobApplicant.id))
+    pairs = (
+        db.query(JobApplicant.status, Candidate.created_at)
+        .join(Candidate, Candidate.id == JobApplicant.candidate_id)
         .filter(JobApplicant.job_id == job.id)
-        .group_by(JobApplicant.status)
         .all()
     )
-    counts = {str(st or "new").strip().lower(): int(n or 0) for st, n in rows}
+    agg = applicant_tracker_counts([(str(st or "new"), cat) for st, cat in pairs])
     return {
         "job_external_id": external_id,
-        "total": int(sum(counts.values())),
-        "new": int(counts.get("new", 0)),
-        "screened": int(counts.get("screened", 0)),
-        "shortlisted": int(counts.get("shortlisted", 0)),
-        "interviewed": int(counts.get("interviewed", 0)),
-        "hired": int(counts.get("hired", 0)),
+        "total": int(agg["total"]),
+        "new": int(agg["new"]),
+        "screened": int(agg["screened"]),
+        "shortlisted": int(agg["shortlisted"]),
+        "interviewed": int(agg["interviewed"]),
+        "hired": int(agg["hired"]),
+        "rejected": int(agg["rejected"]),
     }
+
+
+@router.get("/{external_id}/applicants")
+def list_job_applicants(external_id: str, limit: int = 500, db: Session = Depends(get_db)):
+    """
+    All applicants for a job (JobApplicant), with match scores when available.
+    """
+    job = db.query(Job).filter(Job.external_id == external_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    lim = max(1, min(int(limit or 500), 2000))
+    apps = (
+        db.query(JobApplicant, Candidate)
+        .join(Candidate, Candidate.id == JobApplicant.candidate_id)
+        .filter(JobApplicant.job_id == job.id)
+        .order_by(JobApplicant.updated_at.desc())
+        .limit(lim)
+        .all()
+    )
+    rank_rows = {r.candidate_id: r for r in db.query(JobCandidateRanking).filter(JobCandidateRanking.job_id == job.id).all()}
+    sbert_rows = {r.candidate_id: r for r in db.query(JobCandidateSbertScore).filter(JobCandidateSbertScore.job_id == job.id).all()}
+    items = []
+    for app, cand in apps:
+        st = (app.status or "new").strip().lower()
+        rnk = rank_rows.get(cand.id)
+        sb = sbert_rows.get(cand.id)
+        items.append(
+            {
+                "candidate_external_id": cand.external_id,
+                "candidate_name": display_full_name_from_db(cand.full_name),
+                "candidate_title": resolved_display_title(cand),
+                "applicant_status": st,
+                "applicant_status_effective": effective_applicant_status(st, cand.created_at),
+                "cross_encoder_score": float(rnk.cross_encoder_score) if rnk else None,
+                "retrieval_similarity": float(sb.cosine_similarity) if sb else None,
+                "rank_position": int(rnk.rank_position) if rnk else None,
+                "in_saved_ranking": rnk is not None,
+            }
+        )
+    return {"job_external_id": external_id, "items": items}
 
 
 @router.patch("/{external_id}/applicants/{candidate_external_id}/status")
@@ -351,8 +403,11 @@ def update_applicant_status(external_id: str, candidate_external_id: str, body: 
     if not cand:
         raise HTTPException(status_code=404, detail="Candidate not found")
     st = str(body.get("status") or "").strip().lower()
-    if st not in _APPLICANT_STATUSES:
-        raise HTTPException(status_code=422, detail="status must be one of: new, screened, shortlisted, interviewed, hired")
+    if st not in STORAGE_APPLICANT_STATUSES:
+        raise HTTPException(
+            status_code=422,
+            detail="status must be one of: new, screened, shortlisted, interviewing, selected, hired, rejected",
+        )
     now = datetime.utcnow()
     app = (
         db.query(JobApplicant)
@@ -365,6 +420,8 @@ def update_applicant_status(external_id: str, candidate_external_id: str, body: 
     else:
         app.status = st
         app.updated_at = now
+    # Keep candidates.status in sync so candidates page + dashboard reflect this change.
+    sync_candidate_status_from_applicants(db, cand)
     db.commit()
     return {"job_external_id": external_id, "candidate_external_id": candidate_external_id, "status": st}
 

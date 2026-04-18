@@ -5,8 +5,9 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from api.models import Candidate, Job, JobCandidateSbertScore
+from api.models import Candidate, Job, JobApplicant, JobCandidateSbertScore
 from api.services import ml_ranking
+from api.services.candidate_title_db import resolved_display_title
 
 _log = logging.getLogger("rezume.api")
 
@@ -93,7 +94,7 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
             sbert_score=sim,
             job_title=(job.title or ""),
             job_skills_raw=(job.skills or ""),
-            cand_title=(c.title or ""),
+            cand_title=resolved_display_title(c),
             cand_role_label=(c.role_label or ""),
             cand_skills_raw=(c.skills or ""),
             sbert_threshold=sbert_threshold,
@@ -115,6 +116,15 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
         cand = by_ext.get(cand_ext)
         if not cand:
             continue
+        # Ensure applicant tracker row exists for candidates in the stage-1 pool.
+        # Do not override progressed statuses; only create missing rows as NEW.
+        existing_app = (
+            db.query(JobApplicant)
+            .filter(JobApplicant.job_id == job.id, JobApplicant.candidate_id == cand.id)
+            .first()
+        )
+        if not existing_app:
+            db.add(JobApplicant(job_id=job.id, candidate_id=cand.id, status="new", updated_at=now))
         db.add(
             JobCandidateSbertScore(
                 job_id=job.id,

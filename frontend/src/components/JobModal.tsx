@@ -6,6 +6,7 @@ import {
   fetchClients,
   fetchJobByExternalId,
   fetchJobApplicantStats,
+  fetchJobApplicants,
   fetchJobAttachments,
   fetchSavedRankings,
   downloadJobAttachmentBlob,
@@ -13,6 +14,7 @@ import {
   updateJobByExternalId,
   uploadJobAttachment,
   type Job,
+  type JobApplicantRow,
   type JobAttachmentDto,
   type RankedCandidate,
 } from "../api";
@@ -112,9 +114,16 @@ export default function JobModal({
   const [job, setJob] = useState<Job | null>(null);
   const [rankings, setRankings] = useState<RankedCandidate[] | null>(null);
   const [clients, setClients] = useState<{ id: string; name: string }[]>([]);
-  const [appStats, setAppStats] = useState<{ total: number; new: number; screened: number; shortlisted: number; interviewed: number; hired: number } | null>(
-    null,
-  );
+  const [appStats, setAppStats] = useState<{
+    total: number;
+    new: number;
+    screened: number;
+    shortlisted: number;
+    interviewing: number;
+    hired: number;
+    rejected: number;
+  } | null>(null);
+  const [applicants, setApplicants] = useState<JobApplicantRow[] | null>(null);
   const [appStatusByCandidate, setAppStatusByCandidate] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [, setError] = useState<string | null>(null);
@@ -144,6 +153,7 @@ export default function JobModal({
     setRankings(null);
     setAttachments([]);
     setAppStats(null);
+    setApplicants(null);
     setAppStatusByCandidate({});
     setLoading(true);
     Promise.allSettled([fetchJobByExternalId(externalId), fetchSavedRankings(externalId)])
@@ -183,11 +193,26 @@ export default function JobModal({
     let cancelled = false;
     (async () => {
       try {
-        const s = await fetchJobApplicantStats(externalId);
+        const [s, appRows] = await Promise.all([fetchJobApplicantStats(externalId), fetchJobApplicants(externalId)]);
         if (cancelled) return;
-        setAppStats({ total: s.total, new: s.new, screened: s.screened, shortlisted: s.shortlisted, interviewed: s.interviewed, hired: s.hired });
+        setAppStats({
+          total: s.total,
+          new: s.new,
+          screened: s.screened,
+          shortlisted: s.shortlisted,
+          interviewing: s.interviewing ?? s.interviewed ?? 0,
+          hired: s.hired,
+          rejected: s.rejected ?? 0,
+        });
+        setApplicants(appRows.items);
+        const m: Record<string, string> = {};
+        for (const r of appRows.items) m[r.candidate_external_id] = r.applicant_status;
+        setAppStatusByCandidate(m);
       } catch {
-        if (!cancelled) setAppStats(null);
+        if (!cancelled) {
+          setAppStats(null);
+          setApplicants(null);
+        }
       }
     })();
     return () => {
@@ -229,9 +254,18 @@ export default function JobModal({
 
   const applicantsCounts = useMemo(() => {
     if (appStats) return appStats;
-    const total = rankings?.length ?? 0;
-    return { total, new: total, screened: 0, shortlisted: 0, interviewed: 0, hired: 0 };
-  }, [rankings, appStats]);
+    return { total: 0, new: 0, screened: 0, shortlisted: 0, interviewing: 0, hired: 0, rejected: 0 };
+  }, [appStats]);
+
+  function applicantScoreCell(row: JobApplicantRow): string {
+    if (row.cross_encoder_score != null && Number.isFinite(row.cross_encoder_score)) {
+      return scorePct(row.cross_encoder_score);
+    }
+    if (row.retrieval_similarity != null && Number.isFinite(row.retrieval_similarity)) {
+      return `${scorePct(row.retrieval_similarity)} (retrieval)`;
+    }
+    return "—";
+  }
 
   const canMutate = Boolean(externalId.trim());
 
@@ -614,7 +648,8 @@ export default function JobModal({
                     <div>New: {applicantsCounts.new}</div>
                     <div>Screened: {applicantsCounts.screened}</div>
                     <div>Shortlisted: {applicantsCounts.shortlisted}</div>
-                    <div>Interviewed: {applicantsCounts.interviewed}</div>
+                    <div>Interviewing: {applicantsCounts.interviewing}</div>
+                    <div>Rejected: {applicantsCounts.rejected}</div>
                     <div>Hired: {applicantsCounts.hired}</div>
                   </div>
                 </div>
@@ -652,38 +687,49 @@ export default function JobModal({
 
             {tab === "applicants" ? (
               <div className="job-tab-panel">
-                {rankings && rankings.length > 0 ? (
+                {applicants && applicants.length > 0 ? (
                   <div className="job-table-wrap">
                     <table className="job-table">
                       <thead>
                         <tr>
                           <th>Name</th>
+                          <th>Title</th>
                           <th>Status</th>
                           <th>Score</th>
                           <th>Actions</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {rankings.slice(0, 50).map((r) => (
-                          <tr key={r.candidate_id}>
-                            <td>{r.candidate_name || r.candidate_id}</td>
+                        {applicants.map((row) => (
+                          <tr key={row.candidate_external_id}>
+                            <td>{row.candidate_name || row.candidate_external_id}</td>
+                            <td>{row.candidate_title || "—"}</td>
                             <td>
                               <select
-                                value={appStatusByCandidate[r.candidate_id] || "new"}
+                                value={appStatusByCandidate[row.candidate_external_id] || row.applicant_status || "new"}
                                 onChange={async (e) => {
                                   const next = e.target.value;
-                                  setAppStatusByCandidate((m) => ({ ...m, [r.candidate_id]: next }));
+                                  const id = row.candidate_external_id;
+                                  setAppStatusByCandidate((m) => ({ ...m, [id]: next }));
                                   try {
-                                    await updateJobApplicantStatus(externalId, r.candidate_id, next);
-                                    const s = await fetchJobApplicantStats(externalId);
+                                    await updateJobApplicantStatus(externalId, id, next);
+                                    const [s, appRows] = await Promise.all([
+                                      fetchJobApplicantStats(externalId),
+                                      fetchJobApplicants(externalId),
+                                    ]);
                                     setAppStats({
                                       total: s.total,
                                       new: s.new,
                                       screened: s.screened,
                                       shortlisted: s.shortlisted,
-                                      interviewed: s.interviewed,
+                                      interviewing: s.interviewing ?? s.interviewed ?? 0,
                                       hired: s.hired,
+                                      rejected: s.rejected ?? 0,
                                     });
+                                    setApplicants(appRows.items);
+                                    const m: Record<string, string> = {};
+                                    for (const x of appRows.items) m[x.candidate_external_id] = x.applicant_status;
+                                    setAppStatusByCandidate(m);
                                     toast.success("Applicant status updated.");
                                   } catch (err) {
                                     toast.error((err as Error).message || "Failed to update status");
@@ -693,13 +739,18 @@ export default function JobModal({
                                 <option value="new">New</option>
                                 <option value="screened">Screened</option>
                                 <option value="shortlisted">Shortlisted</option>
-                                <option value="interviewed">Interviewed</option>
+                                <option value="interviewing">Interviewing</option>
+                                <option value="selected">Selected</option>
                                 <option value="hired">Hired</option>
+                                <option value="rejected">Rejected</option>
                               </select>
                             </td>
-                            <td>{scorePct(r.cross_encoder_score)}</td>
+                            <td>{applicantScoreCell(row)}</td>
                             <td>
-                              <Link className="job-link-btn" to={`/candidates/lookup/${encodeURIComponent(r.candidate_id)}`}>
+                              <Link
+                                className="job-link-btn"
+                                to={`/candidates/lookup/${encodeURIComponent(row.candidate_external_id)}`}
+                              >
                                 View Profile »
                               </Link>
                             </td>
@@ -709,7 +760,7 @@ export default function JobModal({
                     </table>
                   </div>
                 ) : (
-                  <div className="muted">No rankings saved for this job yet. Run “Save DB ranking” from the job page if needed.</div>
+                  <div className="muted">No applicants linked to this job yet. They appear when candidates enter the matching pool or rankings run.</div>
                 )}
               </div>
             ) : null}

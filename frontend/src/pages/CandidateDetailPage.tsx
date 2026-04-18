@@ -13,14 +13,18 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import ResumePreviewModal from "../components/ResumePreviewModal";
 import { useToast } from "../toast";
 import { candidateAvatarInitials, candidateDisplayName, candidateMailtoSubjectLine } from "../candidateDisplayName";
+import { formatCandidateExperience } from "../experienceDisplay";
 import { candidateListProfileScore } from "../candidateListScore";
 import {
   deleteCandidateByExternalId,
   fetchCandidate,
   fetchCandidateFileBlob,
+  fetchCandidateJobEvaluations,
   fetchCandidateWithScores,
   updateCandidate,
+  normalizedBestJobMatchPercent,
   type CandidateDto,
+  type CandidateJobEvaluationRow,
   type CandidateUpdatePayload,
 } from "../api";
 
@@ -53,9 +57,7 @@ function scoreClass(sc: number): string {
 }
 
 function bestMatchScore(c: CandidateDto): number | null {
-  const v = c.best_job_match_score;
-  if (v == null || Number.isNaN(Number(v))) return null;
-  return Math.max(0, Math.min(100, Math.round(Number(v))));
+  return normalizedBestJobMatchPercent(c.best_job_match_score);
 }
 
 function IconBtn({
@@ -139,10 +141,9 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "screened", label: "Screened" },
   { value: "shortlisted", label: "Shortlisted" },
   { value: "interviewing", label: "Interviewing" },
-  { value: "interviewed", label: "Interviewed" },
+  { value: "selected", label: "Selected" },
   { value: "hired", label: "Hired" },
   { value: "rejected", label: "Rejected" },
-  { value: "selected", label: "Selected" },
 ];
 
 function PipeFieldList({ text }: { text: string | undefined }) {
@@ -227,6 +228,7 @@ export default function CandidateDetailPage() {
   const [draft, setDraft] = useState<CandidateUpdatePayload>({});
   const [previewOpen, setPreviewOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [jobEvals, setJobEvals] = useState<CandidateJobEvaluationRow[]>([]);
   const editOpenRef = useRef(false);
   const cRef = useRef<CandidateDto | null>(null);
   const editFormRef = useRef<HTMLFormElement>(null);
@@ -272,6 +274,16 @@ export default function CandidateDetailPage() {
               profile_percentile_score: full.profile_percentile_score,
               avg_job_match_score: full.avg_job_match_score,
               competition_score: full.competition_score,
+              best_job_match_score: full.best_job_match_score ?? cur.best_job_match_score,
+              best_job_external_id: full.best_job_external_id ?? cur.best_job_external_id,
+              best_job_title: full.best_job_title ?? cur.best_job_title,
+              best_job_department: full.best_job_department ?? cur.best_job_department,
+              best_job_client_name: full.best_job_client_name ?? cur.best_job_client_name,
+              best_job_client_company: full.best_job_client_company ?? cur.best_job_client_company,
+              best_job_client_contact: full.best_job_client_contact ?? cur.best_job_client_contact,
+              best_job_client_email: full.best_job_client_email ?? cur.best_job_client_email,
+              status_effective: full.status_effective ?? cur.status_effective,
+              skills_role_hint: full.skills_role_hint ?? cur.skills_role_hint,
             };
           }
           return full;
@@ -287,9 +299,27 @@ export default function CandidateDetailPage() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    if (!c?.id) {
+      setJobEvals([]);
+      return;
+    }
+    let cancelled = false;
+    fetchCandidateJobEvaluations(c.id)
+      .then((res) => {
+        if (!cancelled) setJobEvals(res.items || []);
+      })
+      .catch(() => {
+        if (!cancelled) setJobEvals([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [c?.id]);
+
   function scoreFor(row: CandidateDto): number {
     const bm = bestMatchScore(row);
-    return bm ?? candidateListProfileScore(row);
+    return bm ?? 0;
   }
 
   function onMessage() {
@@ -360,8 +390,9 @@ export default function CandidateDetailPage() {
     }
   }
 
+  const bm = c ? bestMatchScore(c) : null;
   const sc = c ? scoreFor(c) : 0;
-  const st = (c?.status || "new").toLowerCase();
+  const st = ((c?.status_effective || c?.status || "new") as string).toLowerCase();
   const canUseResume = Boolean(c?.external_id);
 
   return (
@@ -424,7 +455,7 @@ export default function CandidateDetailPage() {
                     />
                     <div className="cand-detail-meta-row cand-detail-meta-row-edit">
                       <span className={`${scoreClass(sc)} cand-detail-score-chip`} title={buildScoreTitle(c)}>
-                        {sc}%
+                        {bm == null ? "—" : `${sc}%`}
                       </span>
                       <label className="cand-detail-status-select-wrap">
                         <span className="visually-hidden">Status</span>
@@ -481,7 +512,13 @@ export default function CandidateDetailPage() {
                         type="number"
                         step="0.1"
                         aria-label="Years of experience"
-                        value={draft.years_experience ?? ""}
+                        value={
+                          draft.years_experience != null
+                            ? draft.years_experience
+                            : (draft.title || "").trim().toLowerCase() === "fresher"
+                              ? 0
+                              : ""
+                        }
                         onChange={(e) =>
                           setDraft((d) => ({
                             ...d,
@@ -489,6 +526,11 @@ export default function CandidateDetailPage() {
                           }))
                         }
                       />
+                      {(draft.title || "").trim().toLowerCase() === "fresher" ? (
+                        <p className="muted" style={{ marginTop: "0.35rem", marginBottom: 0, fontSize: "0.85rem" }}>
+                          Fresher profiles use 0 professional years unless you set a value.
+                        </p>
+                      ) : null}
                     </dd>
                     <dt>Highest degree</dt>
                     <dd>
@@ -593,18 +635,38 @@ export default function CandidateDetailPage() {
                   <div className="cand-detail-hero-text">
                     <h1 className="cand-detail-name">{candidateDisplayName(c)}</h1>
                     <div className="cand-detail-headline">{c.title || "—"}</div>
+                    {(c.skills_role_hint || "").trim() ? (
+                      <div className="muted" style={{ fontSize: "0.88rem", marginTop: "0.15rem" }}>
+                        Skills-aligned role: {c.skills_role_hint}
+                      </div>
+                    ) : null}
                     {(c.role_fine || "").trim() && (c.role_fine || "").trim().toLowerCase() !== "unknown" ? (
                       <div className="cand-detail-rolefine muted">{displayRoleFine(c.role_fine)}</div>
                     ) : null}
                     <div className="cand-detail-meta-row">
                       <span className={`${scoreClass(sc)} cand-detail-score-chip`} title={buildScoreTitle(c)}>
-                        {sc}%
+                        {bm == null ? "—" : `${sc}%`}
                       </span>
-                      <span className={`cand-status ${st}`}>{statusLabel(c.status)}</span>
+                      <span className={`cand-status ${st}`} title="Includes automatic transition from New after 7 days.">
+                        {statusLabel(c.status_effective || c.status)}
+                      </span>
                       {(c.role_label || "").trim() ? (
                         <span className="cand-detail-pill muted">{c.role_label}</span>
                       ) : null}
                     </div>
+                    {(() => {
+                      const title = (c.best_job_title || "").trim();
+                      const dept = (c.best_job_department || "").trim();
+                      const client = (c.best_job_client_name || c.best_job_client_company || "").trim();
+                      if (!title && !client) return null;
+                      const jobPart = [title, dept].filter(Boolean).join(" · ");
+                      const line = jobPart && client ? `${jobPart} · ${client}` : jobPart || `Hiring: ${client}`;
+                      return (
+                        <div className="muted cand-detail-bestjob" style={{ marginTop: "0.35rem", fontSize: "0.88rem" }}>
+                          Best match job: {line}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
                 <CandidateHeroToolbar
@@ -633,7 +695,7 @@ export default function CandidateDetailPage() {
                   <h2>Profile</h2>
                   <dl className="cand-detail-dl">
                     <dt>Experience</dt>
-                    <dd>{c.years_experience != null ? `${c.years_experience} years` : "—"}</dd>
+                    <dd>{formatCandidateExperience(c)}</dd>
                     <dt>Highest degree</dt>
                     <dd>{c.highest_degree?.trim() ? c.highest_degree : "—"}</dd>
                     <dt>Contact email</dt>
@@ -678,6 +740,54 @@ export default function CandidateDetailPage() {
                   <h2>Education</h2>
                   <PipeFieldList text={c.education_lines} />
                 </section>
+
+                {jobEvals.length > 0 ? (
+                  <section className="cand-detail-card cand-detail-card-wide">
+                    <h2>Job match transparency</h2>
+                    <p className="muted cand-detail-body" style={{ marginTop: 0 }}>
+                      Scores for roles you were evaluated against, including retrieval matches that did not reach the final ranked list.
+                    </p>
+                    <div className="job-table-wrap" style={{ marginTop: "0.5rem" }}>
+                      <table className="job-table">
+                        <thead>
+                          <tr>
+                            <th>Job</th>
+                            <th>Pipeline</th>
+                            <th>Match</th>
+                            <th>Similarity</th>
+                            <th>Notes</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {jobEvals.map((row) => (
+                            <tr key={row.job_external_id}>
+                              <td>
+                                <Link to={`/jobs?job=${encodeURIComponent(row.job_external_id)}`}>
+                                  {row.job_title?.trim() || row.job_external_id}
+                                </Link>
+                              </td>
+                              <td>{statusLabel(row.applicant_status_effective || row.applicant_status || "—")}</td>
+                              <td>
+                                {row.cross_encoder_score != null && Number.isFinite(row.cross_encoder_score)
+                                  ? `${Math.round(Math.max(0, Math.min(1, row.cross_encoder_score)) * 100)}%`
+                                  : "—"}
+                              </td>
+                              <td>
+                                {row.retrieval_similarity != null && Number.isFinite(row.retrieval_similarity)
+                                  ? `${Math.round(Math.max(0, Math.min(1, row.retrieval_similarity)) * 100)}%`
+                                  : "—"}
+                              </td>
+                              <td className="muted" style={{ maxWidth: 280 }}>
+                                {row.brief_reason ||
+                                  (row.in_saved_ranking ? "Included in saved ranking run." : "Not in saved shortlist ranking.")}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                ) : null}
               </div>
             </>
           )}
@@ -710,7 +820,10 @@ export default function CandidateDetailPage() {
 
 function buildScoreTitle(c: CandidateDto): string | undefined {
   const bm = bestMatchScore(c);
-  if (bm == null) return "Match score not available (no jobs in database).";
+  if (bm == null) return "No job match score yet (candidate not ranked/matched to any job).";
   const jid = (c.best_job_external_id || "").trim();
-  return jid ? `Best match: ${bm}% (job ${jid})` : `Best match: ${bm}%`;
+  const jt = (c.best_job_title || "").trim();
+  if (jt && jid) return `Best match: ${bm}% — ${jt} (${jid})`;
+  if (jid) return `Best match: ${bm}% (job ${jid})`;
+  return `Best match: ${bm}%`;
 }

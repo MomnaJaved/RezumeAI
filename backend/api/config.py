@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     # Dev-only: allow registration without SMTP by printing the code to logs.
     dev_email_print_code: bool = False
 
+    # OpenAI-compatible API for ranking narrative (optional; falls back to template if unset).
+    openai_api_key: str = ""
+    openai_api_base: str = "https://api.openai.com/v1"
+    openai_model: str = "gpt-4o-mini"
+    openai_insight_timeout_seconds: int = 45
+
     @model_validator(mode="after")
     def _anchor_relative_sqlite_paths(self) -> "Settings":
         """

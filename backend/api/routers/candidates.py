@@ -1,31 +1,72 @@
 from __future__ import annotations
 
 import mimetypes
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi import Query
 from fastapi import Response
+from fastapi import Body
 from fastapi.responses import FileResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from api.database import get_db
 from api.dependencies import require_user_if_auth_enabled
-from api.models import Candidate, Job, JobCandidateRanking
+from api.models import Candidate, Client, Job, JobApplicant, JobCandidateRanking, JobCandidateSbertScore
 from api.schemas import CandidateCreate, CandidateRead, CandidateReadWithScores, CandidateUpdate
 from api.services.activity_log import log_activity
 from api.services.candidate_competition_score import compute_competition_payloads_for_list
+from api.services.candidate_serialization import candidate_read_dict, resolve_candidate_headline
+from api.services.applicant_status_effective import STORAGE_APPLICANT_STATUSES, effective_applicant_status, sync_candidate_status_from_applicants
 from src.parsing.name_extractor import UNKNOWN_CANDIDATE
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
 
+def _best_job_enrichment_map(db: Session, job_external_ids: set[str]) -> dict[str, dict[str, str]]:
+    """
+    Batch lookup for best_job_external_id -> job + client display fields.
+    """
+    ids = [x for x in job_external_ids if x]
+    if not ids:
+        return {}
+    rows = (
+        db.query(Job, Client)
+        .outerjoin(Client, Client.id == Job.client_id)
+        .filter(Job.external_id.in_(ids))
+        .all()
+    )
+    out: dict[str, dict[str, str]] = {}
+    for j, cl in rows:
+        ext = (getattr(j, "external_id", "") or "").strip()
+        if not ext:
+            continue
+        out[ext] = {
+            "title": (j.title or "").strip(),
+            "department": (j.department or "").strip(),
+            "client_name": (cl.name or "").strip() if cl else "",
+            "client_company": (cl.company_name or "").strip() if cl else "",
+            "client_contact": (cl.contact_person or "").strip() if cl else "",
+            "client_email": (cl.email or "").strip() if cl else "",
+        }
+    return out
+
+
+def _serialize_candidate_read(db: Session, c: Candidate, *, enrich: dict[str, str | None] | None = None) -> CandidateRead:
+    d = candidate_read_dict(c)
+    jid = (d.get("best_job_external_id") or "").strip()
+    if jid and enrich:
+        d.update({k: v for k, v in enrich.items() if v is not None})
+    return CandidateRead.model_validate(d)
+
+
 @router.get("", response_model=list[CandidateRead])
 def list_candidates(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     q = db.query(Candidate).order_by(Candidate.created_at.desc()).offset(skip).limit(limit)
-    return list(q.all())
+    return [_serialize_candidate_read(db, c) for c in q.all()]
 
 
 @router.get("/page")
@@ -75,7 +116,22 @@ def list_candidates_page(
         base = base.order_by(Candidate.created_at.desc())
 
     rows = base.offset(max(0, int(skip or 0))).limit(int(limit)).all()
-    return {"total": total, "items": [CandidateRead.model_validate(r) for r in rows]}
+    job_ids = {(getattr(r, "best_job_external_id", "") or "").strip() for r in rows if getattr(r, "best_job_external_id", None)}
+    enrich_by_job = _best_job_enrichment_map(db, job_ids)
+    items: list[CandidateRead] = []
+    for r in rows:
+        jid = (getattr(r, "best_job_external_id", "") or "").strip()
+        extra = enrich_by_job.get(jid, {}) if jid else {}
+        mapped = {
+            "best_job_title": extra.get("title") or None,
+            "best_job_department": extra.get("department") or None,
+            "best_job_client_name": extra.get("client_name") or None,
+            "best_job_client_company": extra.get("client_company") or None,
+            "best_job_client_contact": extra.get("client_contact") or None,
+            "best_job_client_email": extra.get("client_email") or None,
+        }
+        items.append(_serialize_candidate_read(db, r, enrich=mapped if jid else None))
+    return {"total": total, "items": items}
 
 
 @router.get("/scoreboard", response_model=list[CandidateReadWithScores])
@@ -102,7 +158,7 @@ def list_candidates_scoreboard(skip: int = 0, limit: int = 500, db: Session = De
 
     out: list[CandidateReadWithScores] = []
     for c in page:
-        base = CandidateRead.model_validate(c)
+        base = candidate_read_dict(c)
         # Keep legacy fields but avoid expensive cohort-wide computations here.
         p = 0.0
         j = 0.0
@@ -118,7 +174,7 @@ def list_candidates_scoreboard(skip: int = 0, limit: int = 500, db: Session = De
         }
         out.append(
             CandidateReadWithScores(
-                **base.model_dump(),
+                **base,
                 profile_percentile_score=extra["profile_percentile_score"],
                 avg_job_match_score=extra["avg_job_match_score"],
                 competition_score=extra["competition_score"],
@@ -134,7 +190,17 @@ def get_candidate_by_external_id(external_id: str, db: Session = Depends(get_db)
     c = db.query(Candidate).filter(Candidate.external_id == external_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    return c
+    jid = (getattr(c, "best_job_external_id", "") or "").strip()
+    extra = _best_job_enrichment_map(db, {jid}).get(jid, {}) if jid else {}
+    mapped = {
+        "best_job_title": extra.get("title") or None,
+        "best_job_department": extra.get("department") or None,
+        "best_job_client_name": extra.get("client_name") or None,
+        "best_job_client_company": extra.get("client_company") or None,
+        "best_job_client_contact": extra.get("client_contact") or None,
+        "best_job_client_email": extra.get("client_email") or None,
+    }
+    return _serialize_candidate_read(db, c, enrich=mapped if jid else None)
 
 
 @router.get("/by-external/{external_id}/file")
@@ -169,7 +235,7 @@ def get_candidate_with_scores(candidate_uuid: UUID, db: Session = Depends(get_db
         raise HTTPException(status_code=404, detail="Candidate not found")
     cohort = db.query(Candidate).order_by(Candidate.created_at.desc()).all()
     scores_by_id = compute_competition_payloads_for_list(db, cohort)
-    base = CandidateRead.model_validate(c)
+    base = candidate_read_dict(c)
     extra = scores_by_id.get(c.id)
     if not extra:
         extra = {
@@ -180,7 +246,7 @@ def get_candidate_with_scores(candidate_uuid: UUID, db: Session = Depends(get_db
     best_score = float(getattr(c, "best_job_match_score", 0.0) or 0.0)
     best_job_external_id = (getattr(c, "best_job_external_id", "") or "").strip() or None
     return CandidateReadWithScores(
-        **base.model_dump(),
+        **base,
         profile_percentile_score=extra["profile_percentile_score"],
         avg_job_match_score=extra["avg_job_match_score"],
         competition_score=extra["competition_score"],
@@ -221,6 +287,161 @@ def candidate_top_matches(candidate_uuid: UUID, limit: int = 3, db: Session = De
     return {"candidate_id": str(c.id), "items": items}
 
 
+@router.get("/{candidate_uuid}/matches")
+def candidate_matches(candidate_uuid: UUID, limit: int = 20, db: Session = Depends(get_db)):
+    """
+    Latest persisted match scores for a candidate across all jobs.
+    Always reads from job_candidate_rankings — never recomputes.
+    Returns scores sorted descending so the best match is first.
+    """
+    import json as _json
+
+    c = db.query(Candidate).filter(Candidate.id == candidate_uuid).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    lim = max(1, min(int(limit or 20), 100))
+    rows = (
+        db.query(JobCandidateRanking, Job)
+        .join(Job, Job.id == JobCandidateRanking.job_id)
+        .filter(JobCandidateRanking.candidate_id == c.id)
+        .order_by(JobCandidateRanking.cross_encoder_score.desc())
+        .limit(lim)
+        .all()
+    )
+    items = []
+    for r, j in rows:
+        expl = None
+        raw_expl = getattr(r, "explanation_json", None) or ""
+        if raw_expl:
+            try:
+                expl = _json.loads(raw_expl)
+            except Exception:
+                expl = None
+        items.append(
+            {
+                "job_external_id": j.external_id,
+                "job_title": (j.title or "").strip(),
+                "job_status": (j.status or "").strip(),
+                "match_score": float(r.cross_encoder_score or 0.0),
+                "sbert_similarity": float(r.sbert_similarity or 0.0),
+                "rank_position": int(r.rank_position or 0),
+                "run_at": r.run_at.isoformat() if r.run_at else None,
+                "explanation": expl,
+            }
+        )
+    best_score = max((it["match_score"] for it in items), default=None)
+    return {
+        "candidate_id": str(c.id),
+        "candidate_external_id": c.external_id,
+        "best_match_score": best_score,
+        "items": items,
+    }
+
+
+@router.get("/{candidate_uuid}/job-evaluations")
+def candidate_job_evaluations(candidate_uuid: UUID, db: Session = Depends(get_db)):
+    """
+    Per-job evaluation transparency: retrieval (SBERT) and cross-encoder scores when present,
+    even when the candidate did not reach the final ranked shortlist.
+    """
+    import json
+
+    c = db.query(Candidate).filter(Candidate.id == candidate_uuid).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    by_job: dict = {}
+
+    def ensure_row(job: Job) -> dict:
+        jid = str(job.id)
+        if jid not in by_job:
+            by_job[jid] = {
+                "job_external_id": job.external_id,
+                "job_title": job.title or "",
+                "applicant_status": None,
+                "applicant_status_effective": None,
+                "retrieval_similarity": None,
+                "cross_encoder_score": None,
+                "rank_position": None,
+                "in_saved_ranking": False,
+                "brief_reason": None,
+            }
+        return by_job[jid]
+
+    for app, job in (
+        db.query(JobApplicant, Job).join(Job, Job.id == JobApplicant.job_id).filter(JobApplicant.candidate_id == c.id).all()
+    ):
+        row = ensure_row(job)
+        st = (app.status or "new").strip().lower()
+        row["applicant_status"] = st
+        row["applicant_status_effective"] = effective_applicant_status(st, c.created_at)
+
+    for sb, job in (
+        db.query(JobCandidateSbertScore, Job)
+        .join(Job, Job.id == JobCandidateSbertScore.job_id)
+        .filter(JobCandidateSbertScore.candidate_id == c.id)
+        .all()
+    ):
+        row = ensure_row(job)
+        row["retrieval_similarity"] = float(sb.cosine_similarity or 0.0)
+
+    for rnk, job in (
+        db.query(JobCandidateRanking, Job)
+        .join(Job, Job.id == JobCandidateRanking.job_id)
+        .filter(JobCandidateRanking.candidate_id == c.id)
+        .all()
+    ):
+        row = ensure_row(job)
+        row["cross_encoder_score"] = float(rnk.cross_encoder_score or 0.0)
+        row["rank_position"] = int(rnk.rank_position or 0)
+        row["in_saved_ranking"] = True
+        raw = getattr(rnk, "explanation_json", None) or ""
+        if raw:
+            try:
+                expl = json.loads(raw)
+                parts = []
+                for k in ("skills_match_ratio", "experience_match", "education_match"):
+                    if k in expl and expl[k] is not None:
+                        parts.append(f"{k.replace('_', ' ')}: {float(expl[k]):.2f}")
+                row["brief_reason"] = "; ".join(parts) if parts else None
+            except Exception:
+                row["brief_reason"] = None
+
+    items = sorted(by_job.values(), key=lambda x: (x.get("cross_encoder_score") or 0.0), reverse=True)
+    return {"candidate_id": str(c.id), "candidate_external_id": c.external_id, "items": items}
+
+
+@router.patch("/{external_id}/status")
+def set_candidate_status(
+    external_id: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_user_if_auth_enabled),
+):
+    """
+    Dedicated, single-purpose endpoint for changing a candidate's pipeline status.
+    This is the canonical way to update status from the Matching Tab and any other UI.
+    Only explicit user actions should call this endpoint — AI/ranking logic must not.
+    """
+    st = str(body.get("status") or "").strip().lower()
+    if st not in STORAGE_APPLICANT_STATUSES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"status must be one of: {', '.join(sorted(STORAGE_APPLICANT_STATUSES))}",
+        )
+    c = db.query(Candidate).filter(Candidate.external_id == external_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    c.status = st
+    # Mirror to all job_applicants rows so per-job views stay consistent.
+    now = datetime.utcnow()
+    for app in db.query(JobApplicant).filter(JobApplicant.candidate_id == c.id).all():
+        app.status = st
+        app.updated_at = now
+    db.commit()
+    return {"external_id": external_id, "status": st}
+
+
 @router.patch("/{candidate_uuid}", response_model=CandidateRead)
 def patch_candidate(candidate_uuid: UUID, body: CandidateUpdate, db: Session = Depends(get_db)):
     c = db.query(Candidate).filter(Candidate.id == candidate_uuid).first()
@@ -235,9 +456,90 @@ def patch_candidate(candidate_uuid: UUID, body: CandidateUpdate, db: Session = D
         upd["contact_email"] = str(upd["contact_email"]).strip()[:320]
     for key, val in upd.items():
         setattr(c, key, val)
+
+    # Profile status drives the same pipeline as job_applicants; keep rows in sync so the dashboard
+    # applicant tracker reflects edits from the candidate page, not only the job Applicants tab.
+    if "status" in upd:
+        st = str(c.status or "new").strip().lower()
+        if st in STORAGE_APPLICANT_STATUSES:
+            now = datetime.utcnow()
+            for app in db.query(JobApplicant).filter(JobApplicant.candidate_id == c.id).all():
+                app.status = st
+                app.updated_at = now
+
     db.commit()
     db.refresh(c)
-    return c
+    jid = (getattr(c, "best_job_external_id", "") or "").strip()
+    extra = _best_job_enrichment_map(db, {jid}).get(jid, {}) if jid else {}
+    mapped = {
+        "best_job_title": extra.get("title") or None,
+        "best_job_department": extra.get("department") or None,
+        "best_job_client_name": extra.get("client_name") or None,
+        "best_job_client_company": extra.get("client_company") or None,
+        "best_job_client_contact": extra.get("client_contact") or None,
+        "best_job_client_email": extra.get("client_email") or None,
+    }
+    return _serialize_candidate_read(db, c, enrich=mapped if jid else None)
+
+
+@router.post("/compare")
+def compare_candidates(body: dict = Body(...), db: Session = Depends(get_db)):
+    """
+    Compare 2–6 candidates side-by-side (fast fields + best match snapshot).
+    """
+    raw_ids = body.get("candidate_ids") or body.get("ids") or []
+    if not isinstance(raw_ids, list):
+        raise HTTPException(status_code=422, detail="candidate_ids must be a list of UUID strings")
+    ids: list[UUID] = []
+    for x in raw_ids:
+        try:
+            ids.append(UUID(str(x)))
+        except Exception:
+            raise HTTPException(status_code=422, detail=f"Invalid candidate id: {x}")
+    ids = list(dict.fromkeys(ids))  # stable de-dupe
+    if len(ids) < 2 or len(ids) > 6:
+        raise HTTPException(status_code=422, detail="Select between 2 and 6 candidates to compare")
+
+    cands = db.query(Candidate).filter(Candidate.id.in_(ids)).all()
+    by_id = {c.id: c for c in cands}
+    missing = [str(i) for i in ids if i not in by_id]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Candidates not found: {', '.join(missing)}")
+
+    job_ids = {(getattr(c, "best_job_external_id", "") or "").strip() for c in cands if getattr(c, "best_job_external_id", None)}
+    enrich_by_job = _best_job_enrichment_map(db, job_ids)
+
+    cols = []
+    for cid in ids:
+        c = by_id[cid]
+        jid = (getattr(c, "best_job_external_id", "") or "").strip()
+        ej = enrich_by_job.get(jid, {}) if jid else {}
+        cols.append(
+            {
+                "id": str(c.id),
+                "external_id": c.external_id,
+                "full_name": c.full_name,
+                "title": resolve_candidate_headline(c),
+                "role_label": c.role_label,
+                "role_fine": c.role_fine,
+                "skills": c.skills,
+                "years_experience": c.years_experience,
+                "highest_degree": c.highest_degree,
+                "certifications": c.certifications,
+                "status": c.status,
+                "contact_email": c.contact_email,
+                "best_job_match_score": getattr(c, "best_job_match_score", None),
+                "best_job_external_id": jid or None,
+                "best_job_title": (ej.get("title") or None) if jid else None,
+                "best_job_department": (ej.get("department") or None) if jid else None,
+                "best_job_client_name": (ej.get("client_name") or None) if jid else None,
+                "best_job_client_company": (ej.get("client_company") or None) if jid else None,
+                "best_job_client_contact": (ej.get("client_contact") or None) if jid else None,
+                "best_job_client_email": (ej.get("client_email") or None) if jid else None,
+            }
+        )
+
+    return {"candidates": cols}
 
 
 @router.get("/{candidate_uuid}", response_model=CandidateRead)
@@ -245,7 +547,17 @@ def get_candidate(candidate_uuid: UUID, db: Session = Depends(get_db)):
     c = db.query(Candidate).filter(Candidate.id == candidate_uuid).first()
     if not c:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    return c
+    jid = (getattr(c, "best_job_external_id", "") or "").strip()
+    extra = _best_job_enrichment_map(db, {jid}).get(jid, {}) if jid else {}
+    mapped = {
+        "best_job_title": extra.get("title") or None,
+        "best_job_department": extra.get("department") or None,
+        "best_job_client_name": extra.get("client_name") or None,
+        "best_job_client_company": extra.get("client_company") or None,
+        "best_job_client_contact": extra.get("client_contact") or None,
+        "best_job_client_email": extra.get("client_email") or None,
+    }
+    return _serialize_candidate_read(db, c, enrich=mapped if jid else None)
 
 
 @router.post("", response_model=CandidateRead, status_code=201)

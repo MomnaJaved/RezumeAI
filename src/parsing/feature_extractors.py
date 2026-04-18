@@ -260,12 +260,45 @@ RE_RANGE_MONTH = re.compile(
     rf"\b(?:{_RE_MO})\.?\s+({_YEAR})\s*[-–—]\s*(?:(?:{_RE_MO})\.?\s+)?({_YEAR}|present|current|now|ongoing)\b",
     re.IGNORECASE,
 )
+# "years" or singular "year" (many CVs write "1 year experience").
 RE_YEARS_PHRASE = re.compile(
-    r"\b(\d{1,2}(?:\.\d)?)\s*\+?\s*(?:years|yrs|yr)\b(?:\s+of)?",
+    r"\b(\d{1,2}(?:\.\d)?)\s*\+?\s*(?:years?|yrs|yr)\b(?:\s+of)?",
     re.IGNORECASE,
 )
 RE_YEARS_PHRASE_LEADING = re.compile(
-    r"\b(?:over|more than|at least)\s+(\d{1,2}(?:\.\d)?)\s*\+?\s*(?:years|yrs|yr)\b",
+    r"\b(?:over|more than|at least)\s+(\d{1,2}(?:\.\d)?)\s*\+?\s*(?:years?|yrs|yr)\b",
+    re.IGNORECASE,
+)
+# "X year(s) … experience" anywhere in the résumé (summary/profile when no Work Experience heading).
+RE_YEARS_BEFORE_EXPERIENCE = re.compile(
+    r"\b(\d{1,2}(?:\.\d)?)\s*\+?\s*years?\s+(?:of\s+)?(?:professional\s+|work\s+|relevant\s+)?experience\b",
+    re.IGNORECASE,
+)
+RE_YEARS_AFTER_EXPERIENCE = re.compile(
+    r"\b(?:with|having|including|plus|over|more than|at least)\s+(\d{1,2}(?:\.\d)?)\s*\+?\s*years?\b(?:\s+of)?\s+(?:professional\s+|work\s+|relevant\s+)?experience\b",
+    re.IGNORECASE,
+)
+RE_EXPERIENCE_SPAN_YEARS = re.compile(
+    r"\b(\d{1,2}(?:\.\d)?)\s*\+?\s*years?\s+(?:of\s+)?(?:hands[\s-]?on|industry|field|commercial|professional)\b",
+    re.IGNORECASE,
+)
+# "Name has 2.5 years of experience in …" (common narrative under EXPERIENCE without date ranges).
+RE_YEARS_HAS_EXPERIENCE = re.compile(
+    r"\bhas\s+(\d{1,2}(?:\.\d)?)\s*\+?\s*years?\s+(?:of\s+)?(?:professional\s+|work\s+|relevant\s+)?experience\b",
+    re.IGNORECASE,
+)
+# Explicit tenure phrases: do not apply education-window skip (otherwise EDUCATION below pulls in "University"
+# and we drop valid "2.5 years of experience …" lines that lack engineer/developer tokens).
+_PHRASE_PATTERNS_SKIP_EDU_GUARD: tuple[re.Pattern[str], ...] = (
+    RE_YEARS_BEFORE_EXPERIENCE,
+    RE_YEARS_AFTER_EXPERIENCE,
+    RE_EXPERIENCE_SPAN_YEARS,
+    RE_YEARS_HAS_EXPERIENCE,
+)
+
+RE_EDU_STRONG_NEAR_PHRASE = re.compile(
+    r"\b(university|college|institute|school|academy|bachelor|master|ph\.?d|doctorate|"
+    r"gpa|graduat(?:e|ion)|degree|diploma|coursework|thesis|dissertation)\b",
     re.IGNORECASE,
 )
 # Optional bullets / numbering before section titles (PDFs often prepend • or ·).
@@ -307,7 +340,9 @@ RE_WORK_HINT = re.compile(
     r"intern|freelance|contractor|inc\.?|ltd\.?|llc|corp\.?|company|technologies|solutions|"
     r"director|vp|cto|ceo|cfo|founder|president|scientist|researcher|product|programmer|"
     r"technician|nurse|physician|attorney|accountant|sales|marketing|coordinator|associate|"
-    r"executive|officer|head\s+of|partner|principal|owner)\b",
+    r"executive|officer|head\s+of|partner|principal|owner|"
+    r"operations|operational|support|reporting|vendor|procurement|logistics|administration|administrative|"
+    r"\bops\b|sop|stakeholder|process)\b",
     re.IGNORECASE,
 )
 
@@ -556,6 +591,45 @@ def _sum_ranges_in_text(blob: str, current_year: int) -> float:
     return round(_interval_years(intervals), 4)
 
 
+def _collect_explicit_year_phrases(text: str, *, radius: int = 120) -> list[float]:
+    """
+    Self-reported tenure phrases anywhere in the résumé (summary, profile, role bullets).
+    Skips matches whose local context looks education-only (no job-title cues), to avoid
+    counting "4 years at university" style lines.
+    """
+    low = (text or "").lower()
+    scores: list[float] = []
+    patterns = (
+        RE_YEARS_PHRASE,
+        RE_YEARS_PHRASE_LEADING,
+        *_PHRASE_PATTERNS_SKIP_EDU_GUARD,
+    )
+    skip_edu = frozenset(_PHRASE_PATTERNS_SKIP_EDU_GUARD)
+    seen: set[tuple[int, int]] = set()
+    for pat in patterns:
+        for m in pat.finditer(low):
+            key = (m.start(), m.end())
+            if key in seen:
+                continue
+            seen.add(key)
+            if pat not in skip_edu:
+                # Tighter window so a valid phrase in EXPERIENCE is not vetoed by EDUCATION further down.
+                lo = max(0, m.start() - 70)
+                hi = min(len(low), m.end() + 35)
+                win = low[lo:hi]
+                tail = low[m.end() : min(len(low), m.end() + 28)]
+                if RE_EDU_STRONG_NEAR_PHRASE.search(win) and not RE_WORK_HINT.search(win):
+                    if "experience" not in tail:
+                        continue
+            try:
+                y = float(m.group(1))
+            except (TypeError, ValueError, IndexError):
+                continue
+            if 0 < y <= 40:
+                scores.append(y)
+    return scores
+
+
 def _sum_ranges_last_resort(text: str, current_year: int, *, require_work_hint: bool) -> float:
     intervals: list[tuple[float, float]] = []
     full = text.lower()
@@ -594,9 +668,8 @@ def estimate_years_experience(text: str, current_year: int | None = None) -> flo
 
     text = _preprocess_resume_text_for_years(text.strip())
 
-    # 1) Explicit "X years" (take max)
-    years_phr = [float(m) for m in RE_YEARS_PHRASE.findall(text)]
-    years_phr += [float(m) for m in RE_YEARS_PHRASE_LEADING.findall(text)]
+    # 1) Explicit "X year(s) …" phrases anywhere (summary/profile/body), then max (cap 40).
+    years_phr = _collect_explicit_year_phrases(text)
     if years_phr:
         return round(min(max(years_phr), 40.0), 1)
 
@@ -630,9 +703,31 @@ def estimate_years_experience(text: str, current_year: int | None = None) -> flo
         if in_exp:
             exp_lines.append(ln)
 
-    # Strict behavior: if we didn't find an experience section, don't guess from education dates.
-    # (We still allow "X years" phrases globally in step (1) above.)
+    # If there is no explicit Experience heading, still try lines that combine date ranges with
+    # employment-ish cues (many résumés omit the section title but list roles with dates).
     if not exp_lines and not saw_exp_header:
+        workish_lines: list[str] = []
+        for ln in lines:
+            if not ln or len(ln) < 8:
+                continue
+            if not _line_has_range(ln):
+                continue
+            if RE_EDU_HINT.search(ln) and not RE_WORK_HINT.search(ln):
+                continue
+            if not RE_WORK_HINT.search(ln):
+                continue
+            workish_lines.append(ln)
+        if workish_lines:
+            t_fb = "\n".join(workish_lines).lower()
+            total_fb = _sum_ranges_in_text(t_fb, current_year)
+            if total_fb > 0:
+                return round(min(total_fb, 40.0), 1)
+        total_lr = _sum_ranges_last_resort(text, current_year, require_work_hint=True)
+        if total_lr > 0:
+            return round(min(total_lr, 40.0), 1)
+        years_fb = _collect_explicit_year_phrases(text)
+        if years_fb:
+            return round(min(max(years_fb), 40.0), 1)
         return 0.0
 
     t = "\n".join(exp_lines).lower()
@@ -642,5 +737,10 @@ def estimate_years_experience(text: str, current_year: int | None = None) -> flo
         # If we had an experience header but couldn't parse ranges from the section text,
         # try last-resort matching within the whole text but require work hint.
         total = _sum_ranges_last_resort(text, current_year, require_work_hint=True)
+
+    if total <= 0:
+        years_fb = _collect_explicit_year_phrases(text)
+        if years_fb:
+            return round(min(max(years_fb), 40.0), 1)
 
     return round(min(total, 40.0), 1)

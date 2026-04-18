@@ -44,13 +44,20 @@ _SKIP_EMAIL_LOCAL_PREFIXES = frozenset(
 )
 
 # Split header lines: name | title | contact — PDFs often glue these together.
-RE_HEADER_SPLIT = re.compile(r"[|•·\u2022]+|\t+| {3,}")
+# Include zero-width chars (U+200B/C/D, BOM, soft-hyphen) which PDFs insert between fields.
+RE_HEADER_SPLIT = re.compile(r"[|•·\u2022\u200b\u200c\u200d\ufeff\u00ad]+|\t+| {3,}")
 RE_NAME_LABEL = re.compile(
     r"^\s*(?:full\s*name|name|candidate(?:\s+name)?)\s*[:;]\s*(.+?)\s*$",
     re.IGNORECASE,
 )
-RE_EMAIL = re.compile(r"[\w.+-]+@[\w.-]+\.\w+|linkedin\.com|github\.com|http", re.IGNORECASE)
-RE_PHONEISH = re.compile(r"\b\+?\d[\d\s().-]{7,}\d\b")
+# Search variant — no ^ anchor; finds "Name: X" embedded mid-line (e.g. "Finance Analyst Name: Hassan Raza")
+RE_NAME_LABEL_SEARCH = re.compile(
+    r"(?:full\s*name|name|candidate(?:\s+name)?)\s*[:;]\s*([A-Za-z][A-Za-z .'-]{1,60}?)(?:\s*[|,\u200b]|\s*(?:city|phone|email|address|contact)\b|$)",
+    re.IGNORECASE,
+)
+# Also match PII-stripped placeholders so stored raw_text still signals contact presence.
+RE_EMAIL = re.compile(r"[\w.+-]+@[\w.-]+\.\w+|linkedin\.com|github\.com|http|\[e-?mail\]|\[email\s*address\]", re.IGNORECASE)
+RE_PHONEISH = re.compile(r"\b\+?\d[\d\s().-]{7,}\d\b|\[phone\]|\[tel\]|\[mobile\]|\[contact\]|\[cell\]|\[number\]", re.IGNORECASE)
 RE_CREDENTIAL_HINT = re.compile(
     r"\b(certified|certification|certifications|certificate|certificates|credential|credentials|"
     r"license|licence|licensed|licenced|badge|badges)\b",
@@ -241,6 +248,39 @@ _TOKEN_NOT_A_NAME = frozenset(
         "devops",
         "agile",
         "scrum",
+        # Action verbs common in bullet-point descriptions (prevent phrases like
+        # "Converting leads into clients" from being treated as a name)
+        "converting", "developing", "managing", "managing", "achieving", "handling",
+        "leading", "building", "implementing", "driving", "supporting", "delivering",
+        "ensuring", "maintaining", "creating", "improving", "overseeing", "preparing",
+        "assisted", "achieved", "responsible", "collaborated", "coordinated",
+        "clients", "vendors", "stakeholders", "targets", "pipelines",
+    }
+)
+
+# Common location tokens that appear on the same header line as the person's name.
+_TRAILING_LOCATION_TOKEN = frozenset(
+    {
+        "lahore",
+        "karachi",
+        "islamabad",
+        "rawalpindi",
+        "faisalabad",
+        "multan",
+        "peshawar",
+        "quetta",
+        "sialkot",
+        "gujranwala",
+        "hyderabad",
+        "pakistan",
+        "india",
+        "uae",
+        "dubai",
+        "riyadh",
+        "jeddah",
+        "uk",
+        "usa",
+        "canada",
     }
 )
 
@@ -294,6 +334,22 @@ def _normalize_name_parts(raw: str) -> str:
         if not _word_token_ok(p):
             return ""
     out = " ".join(parts)
+
+    # Trim trailing location/role tokens glued to the name
+    # e.g., "Hassan Ali Lahore" → "Hassan Ali"  |  "Sana Malik Data Scientist" → "Sana Malik"
+    _TRAILING_TRIM = _TRAILING_LOCATION_TOKEN | ROLE_KEYWORDS | {
+        "data", "machine", "artificial", "digital", "senior", "junior", "lead",
+        "principal", "chief", "head", "product", "business", "content", "cloud",
+        "cyber", "network", "system", "project", "supply", "chain", "human",
+        "resources", "resource", "financial", "graphic", "software", "mobile",
+        "android", "ios", "web", "fullstack", "backend", "frontend",
+    }
+    out_parts = out.split()
+    while len(out_parts) > 2 and out_parts[-1].lower() in _TRAILING_TRIM:
+        out_parts.pop()
+    if len(out_parts) < 2:
+        return ""
+    out = " ".join(out_parts).strip()
 
     # Reject short ALLCAPS tokens that usually indicate skills/keywords (AWS, SQL, API),
     # but only when the overall candidate isn't fully uppercased (common in resume headers).
@@ -358,6 +414,31 @@ _TAIL_FILENAME_WORDS = frozenset(
         "test",
         "testing",
         "example",
+        # Department / domain qualifiers that appear in filenames like "Hassan_Finance.pdf"
+        "finance",
+        "hr",
+        "ops",
+        "operations",
+        "tech",
+        "dev",
+        "ui",
+        "ux",
+        "sales",
+        "marketing",
+        "admin",
+        "it",
+        "engineering",
+        "accounts",
+        "account",
+        "design",
+        "data",
+        "devops",
+        "qa",
+        "sqa",
+        "product",
+        "manager",
+        "analyst",
+        "executive",
     }
 )
 
@@ -407,10 +488,22 @@ def extract_name_from_raw(raw_text: str, *, max_lines: int = 40) -> str:
         return ""
 
     t = raw_text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    # PDF zero-width chars glue fields together; convert to pipe separators so
+    # RE_HEADER_SPLIT (and later line splitting) can separate them correctly.
+    t = re.sub(r"[\u200b\u200c\u200d\ufeff\u00ad]+", " | ", t)
     # Stored raw_text is often PII-stripped with newlines collapsed to spaces; pipe-separated
     # headers ("Name | Title | …") then become one long line — split those back out.
     if t.count("\n") < 4 and "|" in t:
         t = re.sub(r"\s*\|\s*", "\n", t, count=24)
+
+    # Before scanning lines: check for "belongs to" / "resume of" patterns anywhere in the text.
+    # Some CVs hide the name at the very end: "This resume belongs to: — Muhammad Usman Ali —"
+    _RE_BELONGS_TO = re.compile(
+        r"(?:this\s+resume\s+(?:belongs\s+to|is\s+of)|resume\s+of|prepared\s+by)\s*[:\-–—]*\s*"
+        r"[—–\-]*\s*([A-Za-z][A-Za-z .'-]{3,50}?)\s*[—–\-]*\s*$",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    _belongs_match = _RE_BELONGS_TO.search(t)
 
     lines = [ln.strip() for ln in t.splitlines() if ln.strip()][:max_lines]
 
@@ -429,6 +522,9 @@ def extract_name_from_raw(raw_text: str, *, max_lines: int = 40) -> str:
     # 1) Explicit labels (multilingual "Name:" common)
     for i, ln in enumerate(lines[:35]):
         m = RE_NAME_LABEL.match(ln)
+        if not m:
+            # Also search mid-line for "Finance Analyst Name: Hassan Raza | City: ..."
+            m = RE_NAME_LABEL_SEARCH.search(ln)
         if not m:
             continue
         val = _normalize_name_parts(m.group(1).split("|")[0].strip())
@@ -476,6 +572,12 @@ def extract_name_from_raw(raw_text: str, *, max_lines: int = 40) -> str:
                 val = _normalize_name_parts(cand)
                 if ok_candidate(val):
                     found.append((40 - i, val))
+
+    # "Belongs to" / "resume of" match is high-confidence; add it now.
+    if _belongs_match:
+        val = _normalize_name_parts(_belongs_match.group(1).strip())
+        if ok_candidate(val):
+            found.append((95, val))
 
     if not found:
         return ""

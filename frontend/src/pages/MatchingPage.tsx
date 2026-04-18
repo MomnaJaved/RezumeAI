@@ -1,21 +1,22 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import DashFrame from "../DashFrame";
+import ResumePreviewModal from "../components/ResumePreviewModal";
 import {
   fetchJobByExternalId,
   fetchJobsPage,
-  fetchJobShortlist,
   fetchSavedRankings,
   fetchStage1Pool,
-  rankShortlist,
+  triggerMatchCandidates,
   updateJobShortlist,
   type Job,
-  type ShortlistRow,
+  type JobSavedRankingRow,
   type Stage1PoolRow,
 } from "../api";
 import { useSearchParams } from "react-router-dom";
 import { useToast } from "../toast";
+import { getDefaultTopMatches, getMinMatchScore, getShowOnlyTopMatches } from "../settings";
 
-type SortKey = "score_desc" | "name_asc";
+type SortKey = "rank_asc" | "score_desc" | "match_desc" | "name_asc";
 
 function pct(score: number) {
   const x = Math.max(0, Math.min(1, Number(score) || 0));
@@ -36,27 +37,25 @@ export default function MatchingPage() {
 
   const selectedJob = (sp.get("job") || "").trim();
   const [job, setJob] = useState<Job | null>(null);
-  const [rankings, setRankings] = useState<
-    Array<{
-      rank_position: number;
-      cross_encoder_score: number;
-      candidate_external_id: string;
-      candidate_name: string;
-      candidate_title: string;
-      years_experience: number | null;
-      highest_degree: string;
-      skills_summary: string;
-    }>
-  >([]);
+  const [rankings, setRankings] = useState<JobSavedRankingRow[]>([]);
+  const [topInsight, setTopInsight] = useState<string | null>(null);
   const [loadingRankings, setLoadingRankings] = useState(false);
-  const [topK, setTopK] = useState<number>(Number(sp.get("top") || 5) || 5);
-  const [sortBy, setSortBy] = useState<SortKey>((sp.get("sort") as SortKey) || "score_desc");
-  const [busyRefresh, setBusyRefresh] = useState(false);
-  const [tab, setTab] = useState<"pool" | "shortlisted">("pool");
+  const [topK, setTopK] = useState<number>(() => {
+    const fromUrl = Number(sp.get("top"));
+    return fromUrl > 0 ? fromUrl : getDefaultTopMatches();
+  });
+  const [sortBy, setSortBy] = useState<SortKey>((sp.get("sort") as SortKey) || "rank_asc");
+  const [busyRefresh] = useState(false);
   const [pool, setPool] = useState<Stage1PoolRow[]>([]);
-  const [shortlisted, setShortlisted] = useState<ShortlistRow[]>([]);
   const [loadingPool, setLoadingPool] = useState(false);
-  const [loadingShortlist, setLoadingShortlist] = useState(false);
+  const [resumeOpen, setResumeOpen] = useState(false);
+  const [resumeExternalId, setResumeExternalId] = useState<string>("");
+  const [matchingAll, setMatchingAll] = useState(false);
+  // Compare candidates
+  const [compareCount, setCompareCount] = useState<number>(2);
+  const [compareFields, setCompareFields] = useState<Set<string>>(new Set(["skills", "experience"]));
+  const [showCompare, setShowCompare] = useState(false);
+  const [shortlistedIds, setShortlistedIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -92,6 +91,7 @@ export default function MatchingPage() {
     if (!selectedJob) {
       setJob(null);
       setRankings([]);
+      setTopInsight(null);
       return;
     }
     let cancelled = false;
@@ -118,8 +118,10 @@ export default function MatchingPage() {
     try {
       const res = await fetchSavedRankings(selectedJob);
       setRankings(res.rankings || []);
+      setTopInsight(res.top_candidate_insight ?? null);
     } catch (e) {
       setRankings([]);
+      setTopInsight(null);
       // If there are no stored matches yet, user can refresh; keep UI quiet unless it's a real error.
     } finally {
       setLoadingRankings(false);
@@ -134,8 +136,6 @@ export default function MatchingPage() {
   useEffect(() => {
     if (!selectedJob) {
       setPool([]);
-      setShortlisted([]);
-      setTab("pool");
       return;
     }
     let cancelled = false;
@@ -143,7 +143,9 @@ export default function MatchingPage() {
       setLoadingPool(true);
       try {
         const res = await fetchStage1Pool(selectedJob, 50);
-        if (!cancelled) setPool(res.items || []);
+        if (!cancelled) {
+          setPool(res.items || []);
+        }
       } catch (e) {
         if (!cancelled) toast.error((e as Error).message || "Failed to load candidates pool");
       } finally {
@@ -155,46 +157,62 @@ export default function MatchingPage() {
     };
   }, [selectedJob, toast]);
 
-  useEffect(() => {
-    if (!selectedJob) return;
-    let cancelled = false;
-    (async () => {
-      setLoadingShortlist(true);
-      try {
-        const res = await fetchJobShortlist(selectedJob);
-        if (!cancelled) setShortlisted(res.items || []);
-      } catch {
-        if (!cancelled) setShortlisted([]);
-      } finally {
-        if (!cancelled) setLoadingShortlist(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedJob]);
-
-  const doRankShortlist = async () => {
-    if (!selectedJob) return;
-    setBusyRefresh(true);
-    try {
-      await rankShortlist(selectedJob);
-      toast.success("Matches refreshed.");
-      setTab("shortlisted");
-      await loadStoredRankings();
-    } catch (e) {
-      toast.error((e as Error).message || "Failed to refresh matches");
-    } finally {
-      setBusyRefresh(false);
+  const rankByCandidateId = useMemo(() => {
+    const m = new Map<string, JobSavedRankingRow>();
+    for (const r of rankings || []) {
+      if (r?.candidate_external_id) m.set(r.candidate_external_id, r);
     }
-  };
+    return m;
+  }, [rankings]);
 
-  const sortedRows = useMemo(() => {
-    const rows = [...rankings];
-    if (sortBy === "name_asc") rows.sort((a, b) => (a.candidate_name || "").localeCompare(b.candidate_name || ""));
-    else rows.sort((a, b) => (b.cross_encoder_score || 0) - (a.cross_encoder_score || 0));
-    return rows;
-  }, [rankings, sortBy]);
+  const minScorePct = getMinMatchScore(); // e.g. 70
+  const showOnlyTop = getShowOnlyTopMatches();
+
+  const visibleRows = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return [...pool]
+      .filter((r) => {
+        // Text search
+        if (needle) {
+          const hay = `${r.candidate_name || ""} ${r.candidate_title || ""} ${r.candidate_role || ""} ${r.skills_summary || ""}`.toLowerCase();
+          if (!hay.includes(needle)) return false;
+        }
+        // Minimum match score filter (Screening settings)
+        const rankRow = rankByCandidateId.get(r.candidate_id);
+        if (rankRow) {
+          const scorePct = Math.round((rankRow.cross_encoder_score ?? 0) * 100);
+          if (scorePct < minScorePct) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        if (sortBy === "name_asc") return (a.candidate_name || "").localeCompare(b.candidate_name || "");
+        if (sortBy === "rank_asc") {
+          const ra = rankByCandidateId.get(a.candidate_id)?.rank_position ?? Number.POSITIVE_INFINITY;
+          const rb = rankByCandidateId.get(b.candidate_id)?.rank_position ?? Number.POSITIVE_INFINITY;
+          if (ra !== rb) return ra - rb;
+          return (b.sbert_score || 0) - (a.sbert_score || 0);
+        }
+        if (sortBy === "match_desc") {
+          const sa = rankByCandidateId.get(a.candidate_id)?.cross_encoder_score ?? -1;
+          const sb = rankByCandidateId.get(b.candidate_id)?.cross_encoder_score ?? -1;
+          if (sb !== sa) return sb - sa;
+          return (b.sbert_score || 0) - (a.sbert_score || 0);
+        }
+        // score_desc: retrieval score
+        return (b.sbert_score || 0) - (a.sbert_score || 0);
+      })
+      .slice(0, showOnlyTop ? topK : undefined);
+  }, [pool, q, sortBy, topK, rankByCandidateId]);
+
+  const rankOneRow = useMemo(() => {
+    if (!rankings.length) return null;
+    const withPos = rankings.filter((r) => r.rank_position != null && r.rank_position > 0);
+    if (withPos.length) {
+      return withPos.reduce((a, b) => ((a.rank_position ?? 99) <= (b.rank_position ?? 99) ? a : b));
+    }
+    return [...rankings].sort((a, b) => (b.cross_encoder_score || 0) - (a.cross_encoder_score || 0))[0] ?? null;
+  }, [rankings]);
 
   const skillsList = useMemo(() => {
     const raw = (job?.skills || "").trim();
@@ -206,33 +224,74 @@ export default function MatchingPage() {
       .slice(0, 12);
   }, [job?.skills]);
 
-  const exportCsv = () => {
-    const headers = ["Rank", "Candidate", "Title", "Score", "Years experience", "Degree", "Skills summary"];
-    const lines = [headers.join(",")];
-    for (const r of sortedRows.slice(0, topK)) {
-      const esc = (v: string) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-      lines.push(
-        [
-          String(r.rank_position),
-          esc(r.candidate_name || r.candidate_external_id),
-          esc(r.candidate_title || ""),
-          esc(pct(r.cross_encoder_score)),
-          esc(r.years_experience == null ? "" : String(r.years_experience)),
-          esc(r.highest_degree || ""),
-          esc(r.skills_summary || ""),
-        ].join(","),
-      );
-    }
-    const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `matches_${selectedJob || "job"}.csv`;
-    a.rel = "noopener";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+  const exportPdf = () => {
+    const rows = (rankings || []).slice(0, topK);
+    const jobTitle = job?.title || selectedJob || "Job";
+    const date = new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+
+    const tableRows = rows
+      .map(
+        (r) => `
+        <tr>
+          <td>${r.rank_position ?? "—"}</td>
+          <td>
+            <strong>${r.candidate_name || r.candidate_external_id}</strong>
+            ${r.candidate_title ? `<br/><span class="sub">${r.candidate_title}</span>` : ""}
+          </td>
+          <td class="score">${pct(r.cross_encoder_score)}</td>
+          <td>${r.years_experience != null ? `${r.years_experience} yrs` : "—"}</td>
+          <td>${r.highest_degree || "—"}</td>
+          <td class="skills">${r.skills_summary || "—"}</td>
+        </tr>`,
+      )
+      .join("");
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Match Results – ${jobTitle}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 12px; color: #0f172a; padding: 32px 36px; }
+    h1 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+    .meta { font-size: 11px; color: #64748b; margin-bottom: 20px; }
+    table { width: 100%; border-collapse: collapse; }
+    thead tr { background: #0f172a; color: #fff; }
+    thead th { padding: 8px 10px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+    tbody tr:nth-child(even) { background: #f1f5f9; }
+    tbody td { padding: 7px 10px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+    .score { font-weight: 700; color: #0369a1; }
+    .sub { font-size: 11px; color: #64748b; }
+    .skills { font-size: 11px; color: #334155; max-width: 220px; }
+    @media print { body { padding: 0; } }
+  </style>
+</head>
+<body>
+  <h1>Match Results – ${jobTitle}</h1>
+  <div class="meta">Generated on ${date} · Top ${rows.length} candidates</div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:5%">#</th>
+        <th style="width:22%">Candidate</th>
+        <th style="width:9%">Match</th>
+        <th style="width:10%">Experience</th>
+        <th style="width:14%">Degree</th>
+        <th>Skills</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+</body>
+</html>`;
+
+    const win = window.open("", "_blank", "width=900,height=700");
+    if (!win) return;
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); }, 400);
   };
 
   return (
@@ -301,18 +360,47 @@ export default function MatchingPage() {
               }}
               aria-label="Sort by"
             >
-              <option value="score_desc">Sort by Match Score</option>
+              <option value="rank_asc">Sort by Rank</option>
+              <option value="score_desc">Sort by Score</option>
+              <option value="match_desc">Sort by Match</option>
               <option value="name_asc">Sort by Name (A–Z)</option>
             </select>
-
-            <div className="cand-toolbar-actions" style={{ marginLeft: "auto" }}>
-              <button type="button" className={tab === "pool" ? "small-btn cand-primary-btn" : "small-btn"} disabled={!selectedJob} onClick={() => setTab("pool")}>
-                Pool
-              </button>
-              <button type="button" className={tab === "shortlisted" ? "small-btn cand-primary-btn" : "small-btn"} disabled={!selectedJob} onClick={() => setTab("shortlisted")}>
-                Shortlisted ({shortlisted.length})
-              </button>
-            </div>
+            <span style={{ marginLeft: "auto" }} />
+            <button
+              type="button"
+              className="small-btn cand-primary-btn"
+              disabled={busyRefresh || matchingAll || !selectedJob}
+              onClick={async () => {
+                if (!selectedJob) return;
+                try {
+                  setMatchingAll(true);
+                  const res = await triggerMatchCandidates(selectedJob, topK);
+                  setRankings(res.rankings || []);
+                  setTopInsight((res.top_candidate_insight || "").trim() || null);
+                  setSortBy("rank_asc");
+                  setSp((prev) => {
+                    const nextSp = new URLSearchParams(prev);
+                    nextSp.set("sort", "rank_asc");
+                    return nextSp;
+                  });
+                  toast.success("Matches saved — scores updated across all views.");
+                } catch (e) {
+                  toast.error((e as Error).message || "Failed to match candidates");
+                } finally {
+                  setMatchingAll(false);
+                }
+              }}
+            >
+              {matchingAll ? "Matching…" : "Match"}
+            </button>
+            <button
+              type="button"
+              className="small-btn"
+              disabled={loadingRankings || rankings.length === 0}
+              onClick={exportPdf}
+            >
+              Export Results
+            </button>
           </div>
         </div>
       }
@@ -324,8 +412,8 @@ export default function MatchingPage() {
           </p>
         </div>
       ) : (
-        <div className="job-overview-grid" style={{ gridTemplateColumns: "320px 1fr" }}>
-          <div className="job-card">
+        <div className="job-overview-grid" style={{ gridTemplateColumns: "180px 1fr", alignItems: "stretch" }}>
+          <div className="job-card" style={{ display: "flex", flexDirection: "column" }}>
             <div className="job-card-title">Job Description</div>
             <div className="muted" style={{ marginBottom: 10 }}>
               <div>
@@ -361,167 +449,228 @@ export default function MatchingPage() {
             </div>
           </div>
 
-          <div className="job-card job-card-wide">
-            <div className="job-card-title">
-              {tab === "pool"
-                ? "Pool"
-                : "Shortlisted"}
-            </div>
+          <div className="job-card" style={{ display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
+            <div className="job-card-title">Candidates</div>
 
-            {tab === "pool" ? (
-              loadingPool ? (
-                <div className="muted">Loading…</div>
-              ) : pool.length === 0 ? (
-                <div className="muted">No candidates in pool yet (SBERT stage-1 cache empty).</div>
-              ) : (
-                <div className="job-table-wrap">
-                  <table className="job-table">
-                    <thead>
-                      <tr>
-                        <th>Name</th>
-                        <th>Title</th>
-                        <th>Experience</th>
-                        <th>Retrieval score</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pool.map((r) => (
-                        <tr key={r.candidate_id}>
-                          <td>{r.candidate_name || r.candidate_id}</td>
-                          <td className="muted">{r.candidate_title || "—"}</td>
-                          <td className="muted">{r.years_experience != null ? `${r.years_experience} Years` : "—"}</td>
-                          <td style={{ color: "rgba(148, 163, 184, 0.95)", fontWeight: 700 }}>
-                            {sbertPct((r as any).sbert_score)}
-                          </td>
-                          <td>
-                            <button
-                              type="button"
-                              className="small-btn"
-                              disabled={busyRefresh}
-                              onClick={async () => {
-                                try {
-                                  const res = await updateJobShortlist(selectedJob, { add: [r.candidate_id] });
-                                  setShortlisted(res.items || []);
-                                  setPool((prev) => prev.map((x) => (x.candidate_id === r.candidate_id ? { ...x, is_shortlisted: true } : x)));
-                                  toast.success("Added to shortlist.");
-                                } catch (e) {
-                                  toast.error((e as Error).message || "Failed to shortlist");
-                                }
-                              }}
-                            >
-                              {r.is_shortlisted ? "Shortlisted" : "Shortlist"}
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )
+            {loadingPool ? (
+              <div className="muted" style={{ flex: 1 }}>Loading…</div>
+            ) : pool.length === 0 ? (
+              <div className="muted" style={{ flex: 1 }}>No candidates in pool yet (SBERT stage-1 cache empty).</div>
             ) : (
-              loadingShortlist ? (
-                <div className="muted">Loading…</div>
-              ) : shortlisted.length === 0 ? (
-                <div className="muted">No shortlisted candidates yet. Add candidates from the pool.</div>
-              ) : (
-                <>
-                  <div className="cand-toolbar-actions" style={{ marginBottom: 10 }}>
-                    <button type="button" className="small-btn" disabled={busyRefresh || shortlisted.length === 0} onClick={() => void doRankShortlist()}>
-                      {busyRefresh ? "Refreshing…" : "Refresh Matches (Cross‑Encoder)"}
-                    </button>
-                    <button
-                      type="button"
-                      className="small-btn"
-                      disabled={loadingRankings || rankings.length === 0}
-                      onClick={exportCsv}
-                      style={{ marginLeft: "0.5rem" }}
-                    >
-                      Export Results
-                    </button>
-                  </div>
-                  <div className="job-table-wrap">
-                    <table className="job-table">
-                      <thead>
-                        <tr>
-                          <th style={{ width: "8%" }}>Rank</th>
-                          <th>Name</th>
-                          <th>Title</th>
-                          <th>Experience</th>
-                          <th style={{ width: "14%" }}>Match</th>
-                          <th>Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {shortlisted
-                          .map((r) => {
-                            const rr = rankings.find((x) => x.candidate_external_id === r.candidate_id);
-                            return { r, rr };
-                          })
-                          .sort((a, b) => {
-                            // If ranked, sort by cross-encoder score desc; else keep as-is.
-                            const sa = a.rr?.cross_encoder_score ?? -1;
-                            const sb = b.rr?.cross_encoder_score ?? -1;
-                            return sb - sa;
-                          })
-                          .map(({ r, rr }, idx) => (
+              <div className="job-table-wrap job-table-wrap--scroll" style={{ flex: 1 }}>
+                <table className="job-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: "6%" }}>Rank</th>
+                      <th style={{ width: "20%" }}>Name</th>
+                      <th style={{ width: "9%" }}>Score</th>
+                      <th style={{ width: "12%" }}>Experience</th>
+                      <th>Certifications</th>
+                      <th style={{ width: "10%" }}>Match</th>
+                      <th style={{ width: "16%" }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleRows.map((r) => {
+                        const rr = rankByCandidateId.get(r.candidate_id);
+                        const pos = rr?.rank_position ?? null;
+                        const ce = rr?.cross_encoder_score ?? null;
+                        return (
                           <tr key={r.candidate_id}>
-                            <td className="muted">{rr ? rr.rank_position : idx + 1}</td>
+                            <td className="muted">{pos ?? "—"}</td>
                             <td>{r.candidate_name || r.candidate_id}</td>
-                            <td className="muted">{r.candidate_title || "—"}</td>
+                            <td style={{ color: "rgba(148, 163, 184, 0.95)", fontWeight: 800 }}>{sbertPct(r.sbert_score)}</td>
                             <td className="muted">{r.years_experience != null ? `${r.years_experience} Years` : "—"}</td>
+                            <td className="muted">{(() => {
+                                const raw = (r.certifications || "").trim();
+                                if (!raw) return "0";
+                                return String(raw.split(",").filter(Boolean).length);
+                              })()}</td>
                             <td style={{ color: "rgba(56, 189, 248, 0.95)", fontWeight: 800 }}>
-                              {rr ? pct(rr.cross_encoder_score) : "—"}
+                              {ce != null ? pct(ce) : "—"}
                             </td>
                             <td>
                               <div style={{ display: "flex", gap: "0.45rem", alignItems: "center", flexWrap: "wrap" }}>
-                                <a className="job-link-btn" href={`/candidates/lookup/${encodeURIComponent(r.candidate_id)}`}>
-                                  View Profile »
-                                </a>
                                 <button
                                   type="button"
-                                  className="small-btn cand-bulk-danger"
-                                  disabled={busyRefresh}
-                                  onClick={async () => {
-                                    try {
-                                      const res = await updateJobShortlist(selectedJob, { remove: [r.candidate_id] });
-                                      setShortlisted(res.items || []);
-                                      setPool((prev) =>
-                                        prev.map((x) => (x.candidate_id === r.candidate_id ? { ...x, is_shortlisted: false } : x)),
-                                      );
-                                      toast.success("Removed from shortlist.");
-                                    } catch (e) {
-                                      toast.error((e as Error).message || "Failed to remove");
-                                    }
+                                  className="job-link-btn"
+                                  onClick={() => {
+                                    setResumeExternalId(r.candidate_id);
+                                    setResumeOpen(true);
                                   }}
                                 >
-                                  Remove
+                                  View resume
                                 </button>
+                                <a className="job-link-btn" href={`/candidates/lookup/${encodeURIComponent(r.candidate_id)}`}>
+                                  View profile »
+                                </a>
                               </div>
                             </td>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
             )}
 
-            {tab === "shortlisted" && sortedRows.length > 0 ? (
-              <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.08)" }}>
-                <div className="job-card-title" style={{ marginBottom: 6 }}>
-                  Top Candidate Insight
-                </div>
-                <div className="muted" style={{ lineHeight: 1.55 }}>
-                  {sortedRows[0].candidate_name || "Candidate"} is ranked #1 for {job?.title || selectedJob} with a match score of{" "}
-                  {pct(sortedRows[0].cross_encoder_score)} based on the cross-encoder re-ranking of the SBERT shortlist.
+            {/* ── Bottom section ── */}
+            {(rankings.length > 0 || topInsight || rankOneRow) && (
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+
+                {/* Comparison bar */}
+                {rankings.length >= 2 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", flexWrap: "wrap", marginBottom: 12 }}>
+                    <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "rgba(203,213,225,0.85)", whiteSpace: "nowrap" }}>
+                      Compare top
+                    </span>
+                    <select
+                      value={String(compareCount)}
+                      onChange={(e) => { setCompareCount(Number(e.target.value)); setShowCompare(false); }}
+                      style={{
+                        background: "rgba(2,6,23,0.4)",
+                        color: "rgba(226,232,240,0.9)",
+                        border: "1px solid rgba(255,255,255,0.14)",
+                        borderRadius: "8px",
+                        padding: "0.2rem 0.45rem",
+                        fontSize: "0.82rem",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {[2, 3, 4].map((n) => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                    {(["experience", "certifications", "skills", "education"] as const).map((field) => (
+                      <label
+                        key={field}
+                        style={{ display: "flex", alignItems: "center", gap: "0.3rem", cursor: "pointer", fontSize: "0.82rem", color: "rgba(203,213,225,0.85)" }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={compareFields.has(field)}
+                          onChange={() => {
+                            setShowCompare(false);
+                            setCompareFields((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(field)) next.delete(field);
+                              else next.add(field);
+                              return next;
+                            });
+                          }}
+                          style={{ accentColor: "rgba(56,189,248,0.9)", cursor: "pointer" }}
+                        />
+                        {field.charAt(0).toUpperCase() + field.slice(1)}
+                      </label>
+                    ))}
+                    <button
+                      type="button"
+                      className="match-compare-btn"
+                      disabled={compareFields.size === 0}
+                      onClick={() => setShowCompare(true)}
+                    >
+                      Compare Candidates
+                    </button>
+                  </div>
+                )}
+
+                {/* Bottom panels: compare table + insight */}
+                <div style={{ display: "flex", gap: "0.85rem", alignItems: "flex-start" }}>
+
+                  {/* Compare table */}
+                  {showCompare && (() => {
+                    const topCands = rankings.slice(0, Math.min(compareCount, rankings.length));
+                    if (topCands.length < 2) return null;
+                    const fields = (["experience", "certifications", "skills", "education"] as const).filter((f) => compareFields.has(f));
+                    const fieldLabel: Record<string, string> = { experience: "Experience", certifications: "Certifications", skills: "Skills", education: "Education" };
+                    return (
+                      <div style={{ flex: 1, minWidth: 0, overflowX: "auto" }}>
+                        <table className="match-compare-table">
+                          <tbody>
+                            {/* Name + score row — no heading */}
+                            <tr>
+                              {topCands.map((c) => (
+                                <td key={c.candidate_external_id} className="match-compare-name-cell">
+                                  <div className="match-compare-cand-name">{c.candidate_name || c.candidate_external_id}</div>
+                                  <div className="match-compare-cand-score">{pct(c.cross_encoder_score)} match</div>
+                                  {c.candidate_title && <div className="match-compare-cand-sub">{c.candidate_title}</div>}
+                                </td>
+                              ))}
+                            </tr>
+                            {/* Field sections */}
+                            {fields.map((field) => (
+                              <React.Fragment key={field}>
+                                <tr className="match-compare-section-header">
+                                  <td colSpan={topCands.length}>{fieldLabel[field]}</td>
+                                </tr>
+                                <tr>
+                                  {topCands.map((c) => {
+                                    let value = "—";
+                                    if (field === "experience") value = c.years_experience != null ? `${c.years_experience} years` : "—";
+                                    else if (field === "certifications") value = pool.find((p) => p.candidate_id === c.candidate_external_id)?.certifications?.trim() || "—";
+                                    else if (field === "skills") value = c.skills_summary || "—";
+                                    else if (field === "education") value = c.highest_degree || "—";
+                                    return <td key={c.candidate_external_id} className="match-compare-data-cell">{value}</td>;
+                                  })}
+                                </tr>
+                              </React.Fragment>
+                            ))}
+                            {/* Shortlist row */}
+                            <tr>
+                              {topCands.map((c) => (
+                                <td key={c.candidate_external_id} className="match-compare-action-cell">
+                                  <button
+                                    type="button"
+                                    className={`match-compare-btn${shortlistedIds.has(c.candidate_external_id) ? " match-compare-btn--done" : ""}`}
+                                    disabled={!selectedJob || shortlistedIds.has(c.candidate_external_id)}
+                                    onClick={async () => {
+                                      if (!selectedJob) return;
+                                      try {
+                                        await updateJobShortlist(selectedJob, { add: [c.candidate_external_id] });
+                                        setShortlistedIds((prev) => new Set([...prev, c.candidate_external_id]));
+                                        toast.success(`${c.candidate_name || c.candidate_external_id} shortlisted.`);
+                                      } catch (e) {
+                                        toast.error((e as Error).message || "Failed to shortlist");
+                                      }
+                                    }}
+                                  >
+                                    {shortlistedIds.has(c.candidate_external_id) ? "Shortlisted ✓" : "Shortlist"}
+                                  </button>
+                                </td>
+                              ))}
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Top candidate insight */}
+                  {(topInsight || rankOneRow) && (
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="job-card-title" style={{ marginBottom: 6 }}>Top candidate insight</div>
+                      <p className="muted" style={{ lineHeight: 1.65, margin: 0, fontSize: "0.88rem" }}>
+                        {topInsight ||
+                          (rankOneRow
+                            ? `${rankOneRow.candidate_name || rankOneRow.candidate_external_id} is ranked #1 for ${job?.title || selectedJob} with a match score of ${pct(rankOneRow.cross_encoder_score)}. Click "Match" to re-run and load the full narrative insight.`
+                            : null)}
+                      </p>
+                    </div>
+                  )}
+
                 </div>
               </div>
-            ) : null}
+            )}
           </div>
         </div>
       )}
+
+      <ResumePreviewModal
+        open={resumeOpen}
+        externalId={resumeExternalId}
+        onClose={() => {
+          setResumeOpen(false);
+          setResumeExternalId("");
+        }}
+      />
     </DashFrame>
   );
 }

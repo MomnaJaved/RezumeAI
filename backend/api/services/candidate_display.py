@@ -7,6 +7,7 @@ from typing import Any, Optional
 import pandas as pd
 
 from api.models import Candidate
+from api.services.candidate_title_db import resolved_display_title
 from src.parsing.name_extractor import UNKNOWN_CANDIDATE
 
 
@@ -35,7 +36,7 @@ def meta_from_candidate(cand: Candidate, _fallback_id: str) -> dict[str, Any]:
     name = display_full_name_from_db(cand.full_name)
     return {
         "candidate_name": name,
-        "candidate_title": (cand.title or "").strip(),
+        "candidate_title": resolved_display_title(cand),
         "candidate_role": (cand.role_label or "").strip(),
         "years_experience": cand.years_experience,
         "highest_degree": (cand.highest_degree or "").strip(),

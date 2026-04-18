@@ -4,8 +4,15 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import DashFrame from "../DashFrame";
 import ResumePreviewModal from "../components/ResumePreviewModal";
 import { candidateAvatarInitials, candidateDisplayName } from "../candidateDisplayName";
-import { deleteCandidateByExternalId, fetchCandidatesPage, type CandidateDto } from "../api";
+import { formatCandidateExperience } from "../experienceDisplay";
+import {
+  deleteCandidateByExternalId,
+  fetchCandidatesPage,
+  normalizedBestJobMatchPercent,
+  type CandidateDto,
+} from "../api";
 import { useToast } from "../toast";
+import { getCandidatesPerPage, getDefaultCandidateSortKey } from "../settings";
 
 function displayRoleLabel(key: string): string {
   const k = (key || "").trim().toLowerCase();
@@ -82,7 +89,7 @@ export default function CandidatesPage() {
   const [exp, setExp] = useState<string>("all");
   const [status, setStatus] = useState<string>("all");
   const [cert, setCert] = useState<string>("all");
-  const [sortBy, setSortBy] = useState<string>("score_desc");
+  const [sortBy, setSortBy] = useState<string>(() => getDefaultCandidateSortKey());
   const [page, setPage] = useState(1);
   const [resumePreview, setResumePreview] = useState<{ externalId: string; filename?: string } | null>(null);
   const closeResumePreview = useCallback(() => setResumePreview(null), []);
@@ -107,7 +114,7 @@ export default function CandidatesPage() {
     }
   }, [searchParams]);
 
-  const pageSize = 20;
+  const pageSize = getCandidatesPerPage();
 
   useEffect(() => {
     let cancelled = false;
@@ -170,14 +177,14 @@ export default function CandidatesPage() {
   }, [rows]);
 
   const statuses = useMemo(() => {
-    // Ensure pipeline stages are always present even if no rows currently have them.
-    const base = ["new", "screened", "shortlisted", "interviewed", "hired"];
+    // Canonical 7-value pipeline stages — always present in the filter dropdown.
+    const base = ["new", "screened", "shortlisted", "interviewing", "selected", "hired", "rejected"];
     const s = new Set<string>(base);
     for (const r of rows) {
       const raw = (r.status || "new").trim();
       if (raw) s.add(raw);
     }
-    // Prefer showing pipeline stages first, then any extra raw statuses from DB.
+    // Prefer showing pipeline stages first, then any extra raw statuses from DB (legacy data).
     const extras = Array.from(s)
       .filter((x) => !base.includes(x))
       .sort((a, b) => a.localeCompare(b));
@@ -199,9 +206,17 @@ export default function CandidatesPage() {
   }
 
   function bestMatchFor(c: CandidateDto): number | null {
-    const v = c.best_job_match_score;
-    if (v == null || Number.isNaN(Number(v))) return null;
-    return Math.max(0, Math.min(100, Math.round(Number(v))));
+    return normalizedBestJobMatchPercent(c.best_job_match_score);
+  }
+
+  function bestJobOneLiner(c: CandidateDto): string | null {
+    const title = (c.best_job_title || "").trim();
+    const dept = (c.best_job_department || "").trim();
+    const client = (c.best_job_client_name || c.best_job_client_company || "").trim();
+    if (!title && !client) return null;
+    const jobPart = [title, dept].filter(Boolean).join(" · ");
+    if (jobPart && client) return `${jobPart} · ${client}`;
+    return jobPart || `Hiring: ${client}`;
   }
 
   const filtered = useMemo(() => {
@@ -418,6 +433,18 @@ export default function CandidatesPage() {
                 <button type="button" className="small-btn cand-bulk-ghost" disabled title="Coming soon">
                   Move…
                 </button>
+                {selectedOnFiltered.length >= 2 && selectedOnFiltered.length <= 6 ? (
+                  <button
+                    type="button"
+                    className="small-btn cand-bulk-compare"
+                    onClick={() =>
+                      navigate(`/candidates/compare?ids=${selectedOnFiltered.map((x) => x.id).join(",")}`)
+                    }
+                    title="Open side-by-side comparison for selected candidates"
+                  >
+                    Compare…
+                  </button>
+                ) : null}
                 <button type="button" className="small-btn" onClick={exportSelectionCsv} title="Download selected rows as CSV (opens in Excel)">
                   Export to Excel…
                 </button>
@@ -546,6 +573,10 @@ export default function CandidatesPage() {
                                 View resume
                               </button>
                             </div>
+                            {(() => {
+                              const line = bestJobOneLiner(c);
+                              return line ? <div className="muted cand-bestjob-line">{line}</div> : null;
+                            })()}
                           </div>
                         </div>
                       </td>
@@ -560,7 +591,7 @@ export default function CandidatesPage() {
                       <td className={m != null ? (m >= 80 ? "cand-score good" : m >= 65 ? "cand-score mid" : "cand-score low") : ""}>
                         {m != null ? `${m}%` : "—"}
                       </td>
-                      <td>{c.years_experience !== null && c.years_experience !== undefined ? `${c.years_experience} Years` : "—"}</td>
+                      <td>{formatCandidateExperience(c)}</td>
                       <td>
                         <span className={`cand-status ${st}`}>{statusLabel(c.status)}</span>
                       </td>

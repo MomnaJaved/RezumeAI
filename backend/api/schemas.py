@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from api.services.candidate_title_display import polish_candidate_title, polish_role_fine_display
+from src.parsing.candidate_title_resolve import display_title_for_candidate_row
 
 
 # --- ML ---
@@ -38,10 +39,14 @@ class RankingExplanationOut(BaseModel):
     """Heuristic breakdown + model score (not a second neural model)."""
 
     skills_match_ratio: float
+    total_skill_coverage: float = 0.0
+    critical_skill_coverage: float = 0.0
     experience_match: float
     education_match: float
     heuristic_weak_score: float
     missing_skills: List[str]
+    missing_critical_skills: List[str] = []
+    cross_encoder_score_raw: float = 0.0
     cross_encoder_score: float
 
 
@@ -215,15 +220,40 @@ class CandidateRead(BaseModel):
     certifications: str
     education_lines: str
     status: str
+    """Query-time status for literal `new` (ages to screened after 7 days from created_at)."""
+    status_effective: str = "new"
+    """When title is Fresher, optional skills-inferred role label for transparency."""
+    skills_role_hint: Optional[str] = None
     contact_email: str = ""
     created_at: datetime
     # Cached ATS match score fields (optional; present when computed).
     best_job_match_score: Optional[float] = None
     best_job_external_id: Optional[str] = None
+    # Enriched from best_job_external_id for list/detail UX (optional).
+    best_job_title: Optional[str] = None
+    best_job_department: Optional[str] = None
+    best_job_client_name: Optional[str] = None
+    best_job_client_company: Optional[str] = None
+    best_job_client_contact: Optional[str] = None
+    best_job_client_email: Optional[str] = None
 
     @field_serializer("title")
     def _ser_title(self, v: str) -> str:
-        return polish_candidate_title(v)
+        # Polish can strip some inferred/minimal strings to empty; never return a blank headline.
+        p = polish_candidate_title(v)
+        if p:
+            return p
+        t = (v or "").strip()
+        if t:
+            return t
+        fb = display_title_for_candidate_row(
+            title="",
+            skills=self.skills or "",
+            years_experience=self.years_experience,
+            role_label=self.role_label or "",
+            raw_text="",
+        )
+        return (fb or "").strip() or "Professional"
 
     @field_serializer("role_label")
     def _ser_role_label(self, v: str) -> str:
@@ -240,10 +270,6 @@ class CandidateReadWithScores(CandidateRead):
     profile_percentile_score: float
     avg_job_match_score: float
     competition_score: float
-
-    # Model-based best match across jobs (optional; 0 when no jobs).
-    best_job_match_score: Optional[float] = None
-    best_job_external_id: Optional[str] = None
 
 
 # --- Stored rankings ---
@@ -267,6 +293,10 @@ class JobRankingsResponse(BaseModel):
     job_external_id: str
     rankings: List[StoredRankingRow]
     run_at: Optional[datetime] = None
+    top_candidate_insight: Optional[str] = Field(
+        default=None,
+        description="Executive narrative for why rank #1 leads the shortlist (job/candidate/explanation data).",
+    )
 
 
 class ResumeUploadResponse(BaseModel):
@@ -339,6 +369,33 @@ class VerifyEmailCodeResponse(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class UserProfileOut(BaseModel):
+    id: str
+    email: str
+    full_name: str
+    phone: str
+    address: str
+    company: str
+    available_hours: str
+    role_label: str
+    avatar_data: Optional[str] = None
+
+
+class UserProfileUpdate(BaseModel):
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    company: Optional[str] = None
+    available_hours: Optional[str] = None
+    role_label: Optional[str] = None
+    avatar_data: Optional[str] = None
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8, max_length=128)
 
 
 # --- Human-in-the-loop (ranking feedback) ---

@@ -86,6 +86,8 @@ def ensure_extra_columns(engine: Engine) -> None:
             ("job_type", "VARCHAR(32) NOT NULL DEFAULT ''"),
             ("recruitment_urgency", "VARCHAR(16) NOT NULL DEFAULT ''"),
             ("preferred_onboarding_date", "TIMESTAMP"),
+            ("rankings_top_insight", "TEXT"),
+            ("rankings_top_insight_cache_key", "VARCHAR(512)"),
         ]:
             if col not in existing_jobs:
                 if dialect == "postgresql":
@@ -124,6 +126,13 @@ def ensure_extra_columns(engine: Engine) -> None:
             ("is_verified", "BOOLEAN NOT NULL DEFAULT 0" if dialect != "postgresql" else "BOOLEAN NOT NULL DEFAULT FALSE"),
             ("verification_code_hash", "VARCHAR(256) NOT NULL DEFAULT ''"),
             ("verification_code_expires_at", "TIMESTAMP"),
+            ("full_name", "VARCHAR(256) NOT NULL DEFAULT ''"),
+            ("phone", "VARCHAR(64) NOT NULL DEFAULT ''"),
+            ("address", "VARCHAR(512) NOT NULL DEFAULT ''"),
+            ("company", "VARCHAR(256) NOT NULL DEFAULT ''"),
+            ("available_hours", "VARCHAR(128) NOT NULL DEFAULT ''"),
+            ("role_label", "VARCHAR(64) NOT NULL DEFAULT 'Recruiter'"),
+            ("avatar_data", "TEXT"),
         ]:
             if col not in existing_users:
                 if dialect == "postgresql":

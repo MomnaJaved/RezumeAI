@@ -215,7 +215,6 @@ export function DashboardCandidateSummary({ rows }: { rows: DashboardCandidatePr
             <tr>
               <th>Name</th>
               <th>Role</th>
-              <th title="Cohort-relative profile strength (0–100).">Profile</th>
               <th title="Best cross-encoder match vs jobs in the database (0–100).">Best match</th>
               <th>Status</th>
             </tr>
@@ -244,9 +243,6 @@ export function DashboardCandidateSummary({ rows }: { rows: DashboardCandidatePr
                       {displayRoleFine(r.role_fine)}
                     </div>
                   ) : null}
-                </td>
-                <td>
-                  <span className={`dash-score ${scoreClass(r.profile_strength)}`}>{r.profile_strength}%</span>
                 </td>
                 <td>
                   <span className={`dash-score ${scoreClass(r.best_job_match)}`}>{r.best_job_match}%</span>

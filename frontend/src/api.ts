@@ -78,6 +78,10 @@ export type CandidateDto = {
   certifications?: string;
   education_lines?: string;
   status?: string;
+  /** Query-time status (e.g. `new` ages to screened after 7 days). */
+  status_effective?: string;
+  /** When title is Fresher, optional skills-aligned role hint from the backend. */
+  skills_role_hint?: string | null;
   contact_email?: string;
   created_at: string;
   /** Cohort-relative profile blend (0–100). */
@@ -89,7 +93,84 @@ export type CandidateDto = {
   /** Best cross-encoder match vs active jobs (0–100). */
   best_job_match_score?: number | null;
   best_job_external_id?: string | null;
+  best_job_title?: string | null;
+  best_job_department?: string | null;
+  best_job_client_name?: string | null;
+  best_job_client_company?: string | null;
+  best_job_client_contact?: string | null;
+  best_job_client_email?: string | null;
 };
+
+/** Best stored cross-encoder match as 0–100 (handles legacy 0–1 scale in older rows). */
+export function normalizedBestJobMatchPercent(raw: number | null | undefined): number | null {
+  if (raw == null || Number.isNaN(Number(raw))) return null;
+  let n = Number(raw);
+  if (n > 0 && n <= 1) n *= 100;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+export type RankingExplanationDto = {
+  skills_match_ratio: number;
+  experience_match: number;
+  education_match: number;
+  heuristic_weak_score: number;
+  missing_skills: string[];
+  cross_encoder_score: number;
+};
+
+export type JobSavedRankingRow = {
+  rank_position: number;
+  cross_encoder_score: number;
+  sbert_similarity?: number;
+  candidate_external_id: string;
+  candidate_name: string;
+  candidate_title: string;
+  candidate_role?: string;
+  years_experience: number | null;
+  highest_degree: string;
+  skills_summary: string;
+  explanation?: RankingExplanationDto | null;
+};
+
+/** Saved rankings API payload (GET /rankings, POST rank-and-save, rank-shortlist, etc.). */
+export type JobRankingsApiResponse = {
+  job_external_id: string;
+  rankings: JobSavedRankingRow[];
+  run_at: string | null;
+  top_candidate_insight?: string | null;
+};
+
+export type CandidateCompareSnapshot = {
+  id: string;
+  external_id: string;
+  full_name: string;
+  title: string;
+  role_label: string;
+  role_fine?: string | null;
+  skills: string;
+  years_experience: number | null;
+  highest_degree: string;
+  certifications?: string | null;
+  status?: string | null;
+  contact_email?: string | null;
+  best_job_match_score?: number | null;
+  best_job_external_id?: string | null;
+  best_job_title?: string | null;
+  best_job_department?: string | null;
+  best_job_client_name?: string | null;
+  best_job_client_company?: string | null;
+  best_job_client_contact?: string | null;
+  best_job_client_email?: string | null;
+};
+
+export async function compareCandidates(candidateIds: string[]): Promise<{ candidates: CandidateCompareSnapshot[] }> {
+  const res = await authedFetch(`${base}/api/v1/candidates/compare`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ candidate_ids: candidateIds }),
+  });
+  return parseJson(res);
+}
 
 export async function fetchCandidates(limit = 100): Promise<CandidateDto[]> {
   const q = new URLSearchParams({ limit: String(limit) });
@@ -377,47 +458,61 @@ export async function rankJobPreview(jobId: string, topK = 30): Promise<RankResp
   return parseJson<RankResponse>(res);
 }
 
-export async function rankAndSave(jobId: string, topK = 30) {
+export async function rankAndSave(jobId: string, topK = 30): Promise<JobRankingsApiResponse> {
   const res = await authedFetch(
     `${base}/api/v1/jobs/${encodeURIComponent(jobId)}/rank-and-save?top_k=${topK}`,
     { method: "POST" },
   );
-  return parseJson<{
-    job_external_id: string;
-    rankings: Array<{
-      rank_position: number;
-      cross_encoder_score: number;
-      sbert_similarity: number;
-      candidate_external_id: string;
-      candidate_name: string;
-      candidate_title: string;
-      candidate_role: string;
-      years_experience: number | null;
-      highest_degree: string;
-      skills_summary: string;
-    }>;
-    run_at: string | null;
-  }>(res);
+  return parseJson<JobRankingsApiResponse>(res);
 }
 
-export async function fetchSavedRankings(jobId: string) {
+/**
+ * Canonical match trigger: computes SBERT + cross-encoder, persists results, and
+ * refreshes best_job_match_score for all affected candidates.
+ * Use this instead of match-batch whenever scores must be stored and visible across views.
+ */
+export async function triggerMatchCandidates(jobId: string, topK = 50): Promise<JobRankingsApiResponse> {
+  const res = await authedFetch(
+    `${base}/api/v1/jobs/${encodeURIComponent(jobId)}/match-candidates?top_k=${topK}`,
+    { method: "POST" },
+  );
+  return parseJson<JobRankingsApiResponse>(res);
+}
+
+/** Fetch latest persisted match scores for a job (single source of truth). */
+export async function fetchJobMatches(jobId: string): Promise<JobRankingsApiResponse> {
+  const res = await authedFetch(`${base}/api/v1/jobs/${encodeURIComponent(jobId)}/matches`);
+  return parseJson<JobRankingsApiResponse>(res);
+}
+
+export type CandidateMatchItem = {
+  job_external_id: string;
+  job_title: string;
+  job_status: string;
+  match_score: number;
+  sbert_similarity: number;
+  rank_position: number;
+  run_at: string | null;
+  explanation?: RankingExplanationDto | null;
+};
+
+export type CandidateMatchesResponse = {
+  candidate_id: string;
+  candidate_external_id: string;
+  best_match_score: number | null;
+  items: CandidateMatchItem[];
+};
+
+/** Fetch latest persisted job match scores for a candidate (single source of truth). */
+export async function fetchCandidateMatches(candidateUuid: string, limit = 20): Promise<CandidateMatchesResponse> {
+  const sp = new URLSearchParams({ limit: String(limit) });
+  const res = await authedFetch(`${base}/api/v1/candidates/${encodeURIComponent(candidateUuid)}/matches?${sp}`);
+  return parseJson<CandidateMatchesResponse>(res);
+}
+
+export async function fetchSavedRankings(jobId: string): Promise<JobRankingsApiResponse> {
   const res = await authedFetch(`${base}/api/v1/jobs/${encodeURIComponent(jobId)}/rankings`);
-  return parseJson<{
-    job_external_id: string;
-    rankings: Array<{
-      rank_position: number;
-      cross_encoder_score: number;
-      sbert_similarity: number;
-      candidate_external_id: string;
-      candidate_name: string;
-      candidate_title: string;
-      candidate_role: string;
-      years_experience: number | null;
-      highest_degree: string;
-      skills_summary: string;
-    }>;
-    run_at: string | null;
-  }>(res);
+  return parseJson<JobRankingsApiResponse>(res);
 }
 
 export type Stage1PoolRow = {
@@ -428,9 +523,11 @@ export type Stage1PoolRow = {
   candidate_role: string;
   years_experience: number | null;
   highest_degree: string;
+  certifications?: string;
   skills_summary: string;
   sbert_score: number;
   is_shortlisted: boolean;
+  candidate_status?: string;
 };
 
 export async function fetchStage1Pool(jobExternalId: string, limit = 50) {
@@ -455,8 +552,35 @@ export async function updateJobShortlist(jobExternalId: string, body: { add?: st
   return parseJson<{ job_external_id: string; items: ShortlistRow[] }>(res);
 }
 
-export async function rankShortlist(jobExternalId: string) {
+export async function rankShortlist(jobExternalId: string): Promise<JobRankingsApiResponse> {
   const res = await authedFetch(`${base}/api/v1/jobs/${encodeURIComponent(jobExternalId)}/rank-shortlist`, { method: "POST" });
+  return parseJson<JobRankingsApiResponse>(res);
+}
+
+export async function matchOneCandidate(jobExternalId: string, candidateExternalId: string): Promise<{
+  job_external_id: string;
+  candidate_id: string;
+  rank_position: number;
+  cross_encoder_score: number;
+}> {
+  const res = await authedFetch(`${base}/api/v1/jobs/${encodeURIComponent(jobExternalId)}/match-one`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ candidate_id: candidateExternalId }),
+  });
+  return parseJson(res);
+}
+
+export async function matchCandidatesBatch(jobExternalId: string, candidateExternalIds: string[]): Promise<{
+  job_external_id: string;
+  items: Array<{ candidate_id: string; rank_position: number; cross_encoder_score: number }>;
+  top_candidate_insight?: string;
+}> {
+  const res = await authedFetch(`${base}/api/v1/jobs/${encodeURIComponent(jobExternalId)}/match-batch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ candidate_ids: candidateExternalIds }),
+  });
   return parseJson(res);
 }
 
@@ -470,7 +594,76 @@ export async function fetchJobApplicantStats(jobExternalId: string) {
     shortlisted: number;
     interviewed: number;
     hired: number;
+    rejected: number;
   }>(res);
+}
+
+export type JobApplicantRow = {
+  candidate_external_id: string;
+  candidate_name: string;
+  candidate_title: string;
+  applicant_status: string;
+  applicant_status_effective: string;
+  cross_encoder_score: number | null;
+  retrieval_similarity: number | null;
+  rank_position: number | null;
+  in_saved_ranking: boolean;
+};
+
+export async function fetchJobApplicants(jobExternalId: string, limit = 500) {
+  const sp = new URLSearchParams({ limit: String(limit) });
+  const res = await authedFetch(`${base}/api/v1/jobs/${encodeURIComponent(jobExternalId)}/applicants?${sp.toString()}`);
+  return parseJson<{ job_external_id: string; items: JobApplicantRow[] }>(res);
+}
+
+export type CandidateJobEvaluationRow = {
+  job_external_id: string;
+  job_title: string;
+  applicant_status: string | null;
+  applicant_status_effective: string | null;
+  retrieval_similarity: number | null;
+  cross_encoder_score: number | null;
+  rank_position: number | null;
+  in_saved_ranking: boolean;
+  brief_reason: string | null;
+};
+
+export async function fetchCandidateJobEvaluations(candidateUuid: string) {
+  const res = await authedFetch(`${base}/api/v1/candidates/${encodeURIComponent(candidateUuid)}/job-evaluations`);
+  return parseJson<{ candidate_id: string; candidate_external_id: string; items: CandidateJobEvaluationRow[] }>(res);
+}
+
+// Canonical 7 pipeline status values — mirrors STORAGE_APPLICANT_STATUSES on the backend.
+export const CANDIDATE_STATUSES = [
+  "new",
+  "screened",
+  "shortlisted",
+  "interviewing",
+  "selected",
+  "hired",
+  "rejected",
+] as const;
+
+export type CandidateStatus = (typeof CANDIDATE_STATUSES)[number];
+
+/**
+ * Dedicated status-update endpoint. This is the ONLY function that should be called
+ * when changing a candidate's pipeline status from any UI view.
+ * AI/ranking logic must never call this.
+ */
+export async function updateCandidateStatus(
+  externalId: string,
+  status: CandidateStatus | string,
+): Promise<{ external_id: string; status: string }> {
+  const res = await authedFetch(
+    `${base}/api/v1/candidates/${encodeURIComponent(externalId)}/status`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    },
+  );
+  return parseJson<{ external_id: string; status: string }>(res);
 }
 
 export async function updateJobApplicantStatus(jobExternalId: string, candidateExternalId: string, status: string) {
@@ -522,6 +715,96 @@ export type DashboardData = {
 export async function fetchDashboard(): Promise<DashboardData> {
   const res = await authedFetch(`${base}/api/v1/meta/dashboard`);
   return parseJson(res);
+}
+
+// ── Settings / Profile ───────────────────────────────────────────────────────
+
+export type UserProfile = {
+  id: string;
+  email: string;
+  full_name: string;
+  phone: string;
+  address: string;
+  company: string;
+  available_hours: string;
+  role_label: string;
+  avatar_data: string | null;
+};
+
+export async function fetchMyProfile(): Promise<UserProfile> {
+  const res = await authedFetch(`${base}/api/v1/auth/me`);
+  return parseJson<UserProfile>(res);
+}
+
+export async function updateMyProfile(data: Partial<Omit<UserProfile, "id" | "email">>): Promise<UserProfile> {
+  const res = await authedFetch(`${base}/api/v1/auth/me`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return parseJson<UserProfile>(res);
+}
+
+export async function changePassword(current_password: string, new_password: string): Promise<void> {
+  const res = await authedFetch(`${base}/api/v1/auth/change-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current_password, new_password }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Password change failed" }));
+    throw new Error(err.detail || "Password change failed");
+  }
+}
+
+export type ReportsKpi = {
+  total_jobs: number;
+  total_candidates: number;
+  hires: number;
+  avg_hire_time_days: number;
+};
+
+export type ReportsPipeline = {
+  new: number;
+  screened: number;
+  shortlisted: number;
+  interviewing: number;
+  selected: number;
+  hired: number;
+  rejected: number;
+  total: number;
+};
+
+export type ReportsJobPerf = {
+  job_external_id: string;
+  job_title: string;
+  avg_match_score: number;
+  hires: number;
+};
+
+export type ReportsData = {
+  kpi: ReportsKpi;
+  pipeline: ReportsPipeline;
+  job_performance: ReportsJobPerf[];
+  time_saved_pct: number;
+  shortlist_accuracy_pct: number;
+  ai_screening_pct: number;
+  manual_screening_pct: number;
+  clients: { id: string; name: string }[];
+  jobs_list: { external_id: string; title: string }[];
+};
+
+export async function fetchReportsData(params: {
+  client_id?: string;
+  date_from?: string;
+  job_external_id?: string;
+}): Promise<ReportsData> {
+  const sp = new URLSearchParams();
+  if (params.client_id) sp.set("client_id", params.client_id);
+  if (params.date_from) sp.set("date_from", params.date_from);
+  if (params.job_external_id) sp.set("job_external_id", params.job_external_id);
+  const res = await authedFetch(`${base}/api/v1/analytics/reports?${sp.toString()}`);
+  return parseJson<ReportsData>(res);
 }
 
 /** Poll for live activity (ingestions, new candidates, rankings, shortlist actions). */

@@ -13,12 +13,9 @@ from src.parsing.feature_extractors import extract_certifications, extract_educa
 from src.parsing.text_extractors import extract_text_any
 from src.parsing.name_extractor import resolve_candidate_full_name
 from src.parsing.role_labels import ROLE_LABELS_MULTI, title_to_role_label
-from src.parsing.title_extractor import extract_title_from_raw
+from src.parsing.candidate_title_resolve import resolve_title_from_resume_text
 from src.parsing.role_fine import infer_role_fine
 from src.preprocessing.pii import extract_primary_email, strip_pii, strip_pii_keep_newlines
-
-from api.services.candidate_title_display import polish_candidate_title
-
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"}
 
@@ -121,22 +118,30 @@ def parse_upload(filename: str, content: bytes) -> dict:
     pii_safe_structural = strip_pii_keep_newlines(raw_clean)
     skills_list = extract_skill_candidates(stripped)[:80]
     skills = ", ".join(skills_list)
-    # Title extraction needs real line breaks; use raw_clean (strip_pii() collapses whitespace).
-    raw_title = extract_title_from_raw(raw_clean)
-    if raw_title != "unknown":
-        polished = polish_candidate_title(raw_title)
-        title = polished if polished else raw_title
-    else:
-        title = ""
 
-    # Coarse role label for filtering/routing (multi-dept). Prefer title mapping; fall back to ML only if needed.
+    # Years first: drives Fresher vs inferred title and seniority polish.
+    years = estimate_years_experience(raw_clean)
+
+    # Infer coarse role *before* the title so headline resolution can map e.g. frontend → "Frontend Developer"
+    # when the CV has no explicit title line and skill-based role rules miss (common on sparse résumés).
+    role_in = _build_role_input(raw_clean, "", skills)
+    role_out = classify_role(role_in, strip_pii_input=True, return_probs=False)
+    role_guess = str(role_out.get("label", "") or "").strip().lower()
+    if not role_guess or role_guess not in ROLE_LABELS_MULTI:
+        role_guess = "other"
+
+    # Title: explicit line → skills inference → role headline (see candidate_title_resolve).
+    title = resolve_title_from_resume_text(
+        raw_clean, skills, years if years > 0 else None, role_label_hint=role_guess
+    )
+    title = (title or "").strip() or "Professional"
+
+    # Coarse role label for filtering/routing (multi-dept). Prefer title mapping; else ML guess above.
     role_label = ""
-    if title.strip():
+    if (title or "").strip().lower() != "fresher" and (title or "").strip():
         role_label = title_to_role_label(title, multi_department=True)
     if not role_label:
-        role_in = _build_role_input(raw_clean, title, skills)
-        role_out = classify_role(role_in, strip_pii_input=True, return_probs=False)
-        role_label = str(role_out.get("label", "") or "")
+        role_label = role_guess
     role_label = role_label.strip().lower()
     if role_label and role_label not in ROLE_LABELS_MULTI:
         role_label = "other"
@@ -149,7 +154,7 @@ def parse_upload(filename: str, content: bytes) -> dict:
     certs = extract_certifications(pii_safe_structural)
     # Years must use newline-preserving text: strip_pii() collapses whitespace to one line,
     # which breaks section detection and makes edu hints match the entire resume.
-    years = estimate_years_experience(raw_clean)
+    # (years already computed above for title resolution)
 
     # Persist the original file so the UI can download it later.
     store_dir = _storage_root() / "uploads" / "raw"

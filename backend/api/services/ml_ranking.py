@@ -84,4 +84,7 @@ def build_job_text_from_db(job) -> str:
 
 
 def build_cand_text_from_db(cand) -> str:
-    return " ".join([cand.title or "", cand.skills or "", cand.raw_text or ""]).strip()
+    from api.services.candidate_title_db import resolved_display_title
+
+    t = resolved_display_title(cand)
+    return " ".join([t, cand.skills or "", cand.raw_text or ""]).strip()
