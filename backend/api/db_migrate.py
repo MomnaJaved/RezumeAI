@@ -4,8 +4,12 @@ Called once from app lifespan after create_all.
 """
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
+
+_log = logging.getLogger("rezume.api")
 
 
 def _cols(engine: Engine, table: str) -> set[str]:
@@ -25,7 +29,7 @@ def ensure_extra_columns(engine: Engine) -> None:
     existing_ing = _cols(engine, "resume_ingestions")
     existing_users = _cols(engine, "users")
     existing_events = _cols(engine, "activity_events")
-
+    existing_inbox_messages = _cols(engine, "inbox_messages")
     alters: list[str] = []
 
     if existing_cand:
@@ -79,6 +83,7 @@ def ensure_extra_columns(engine: Engine) -> None:
 
     if existing_jobs:
         for col, ddl in [
+            ("workspace_id", "UUID" if dialect == "postgresql" else "VARCHAR(36)"),
             ("status", "VARCHAR(24) NOT NULL DEFAULT 'active'"),
             ("client_id", "UUID" if dialect == "postgresql" else "VARCHAR(36)"),
             ("salary_range", "VARCHAR(128) NOT NULL DEFAULT ''"),
@@ -133,19 +138,65 @@ def ensure_extra_columns(engine: Engine) -> None:
             ("available_hours", "VARCHAR(128) NOT NULL DEFAULT ''"),
             ("role_label", "VARCHAR(64) NOT NULL DEFAULT 'Recruiter'"),
             ("avatar_data", "TEXT"),
+            ("two_factor_enabled", "BOOLEAN NOT NULL DEFAULT 0" if dialect != "postgresql" else "BOOLEAN NOT NULL DEFAULT FALSE"),
+            ("password_reset_code_hash", "VARCHAR(256) NOT NULL DEFAULT ''"),
+            ("password_reset_expires_at", "TIMESTAMP"),
         ]:
             if col not in existing_users:
                 if dialect == "postgresql":
                     alters.append(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {ddl}")
                 else:
                     alters.append(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
+        if "account_role" not in existing_users:
+            ddl = "VARCHAR(24) NOT NULL DEFAULT 'recruiter'"
+            if dialect == "postgresql":
+                alters.append(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS account_role {ddl}")
+            else:
+                alters.append(f"ALTER TABLE users ADD COLUMN account_role {ddl}")
+        if "workspace_id" not in existing_users:
+            if dialect == "postgresql":
+                alters.append("ALTER TABLE users ADD COLUMN IF NOT EXISTS workspace_id UUID")
+            else:
+                alters.append("ALTER TABLE users ADD COLUMN workspace_id VARCHAR(36)")
 
-    if not alters:
-        return
+    if existing_clients and "workspace_id" not in existing_clients:
+        if dialect == "postgresql":
+            alters.append("ALTER TABLE clients ADD COLUMN IF NOT EXISTS workspace_id UUID")
+        else:
+            alters.append("ALTER TABLE clients ADD COLUMN workspace_id VARCHAR(36)")
 
-    with engine.begin() as conn:
-        for stmt in alters:
-            conn.execute(text(stmt))
+    if existing_cand and "user_id" not in existing_cand:
+        if dialect == "postgresql":
+            alters.append("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS user_id UUID")
+        else:
+            alters.append("ALTER TABLE candidates ADD COLUMN user_id VARCHAR(36)")
+
+    if existing_jobs and "created_by_user_id" not in existing_jobs:
+        if dialect == "postgresql":
+            alters.append("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS created_by_user_id UUID")
+        else:
+            alters.append("ALTER TABLE jobs ADD COLUMN created_by_user_id VARCHAR(36)")
+
+    if existing_inbox_messages and "chat_scope" not in existing_inbox_messages:
+        ddl = "VARCHAR(32) NOT NULL DEFAULT 'general'"
+        if dialect == "postgresql":
+            alters.append(f"ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS chat_scope {ddl}")
+        else:
+            alters.append(f"ALTER TABLE inbox_messages ADD COLUMN chat_scope {ddl}")
+
+    if existing_inbox_messages:
+        bool_ddl = "BOOLEAN NOT NULL DEFAULT 0" if dialect != "postgresql" else "BOOLEAN NOT NULL DEFAULT FALSE"
+        for col in ("hidden_for_sender", "hidden_for_recipient"):
+            if col not in existing_inbox_messages:
+                if dialect == "postgresql":
+                    alters.append(f"ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS {col} {bool_ddl}")
+                else:
+                    alters.append(f"ALTER TABLE inbox_messages ADD COLUMN {col} {bool_ddl}")
+
+    if alters:
+        with engine.begin() as conn:
+            for stmt in alters:
+                conn.execute(text(stmt))
 
     # Best-effort: resume_ingestions.updated_at default for older DBs (Postgres only).
     # SQLite lacks ALTER COLUMN default in a simple way; we keep app-level updates.
@@ -159,6 +210,73 @@ def ensure_extra_columns(engine: Engine) -> None:
                 )
         except Exception:
             pass
+
+
+def backfill_workspaces(engine: Engine) -> None:
+    """
+    One-time data migration: recruiter users get a workspace; jobs and clients pick up workspace_id.
+    Safe to run repeatedly (only fills NULLs).
+    """
+    insp = inspect(engine)
+    if not insp.has_table("workspaces"):
+        return
+    existing_users = _cols(engine, "users")
+    existing_jobs = _cols(engine, "jobs")
+    existing_clients = _cols(engine, "clients")
+    if "workspace_id" not in existing_users or "workspace_id" not in existing_jobs:
+        return
+
+    from sqlalchemy.orm import sessionmaker
+
+    from api.models import Client, Job, User, Workspace
+
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = SessionLocal()
+    try:
+        # Recruiters without workspace: create one per user
+        for u in db.query(User).all():
+            role = (getattr(u, "account_role", None) or "recruiter").strip().lower()
+            if role == "candidate":
+                continue
+            if getattr(u, "workspace_id", None) is not None:
+                continue
+            label = (u.email or "user").split("@")[0][:48] or "workspace"
+            ws = Workspace(name=f"{label} workspace")
+            db.add(ws)
+            db.flush()
+            u.workspace_id = ws.id
+        db.commit()
+
+        # Jobs: inherit creator's workspace
+        if existing_jobs:
+            for job in db.query(Job).filter(Job.workspace_id.is_(None)).all():  # noqa: E711
+                uid = getattr(job, "created_by_user_id", None)
+                if uid:
+                    creator = db.query(User).filter(User.id == uid).first()
+                    if creator and creator.workspace_id:
+                        job.workspace_id = creator.workspace_id
+            db.commit()
+
+        # Orphan jobs (no creator): attach to a default workspace
+        if existing_jobs:
+            default_ws = db.query(Workspace).order_by(Workspace.created_at.asc()).first()
+            if default_ws:
+                for job in db.query(Job).filter(Job.workspace_id.is_(None)).all():  # noqa: E711
+                    job.workspace_id = default_ws.id
+                db.commit()
+
+        # Clients: copy workspace from any linked job
+        if existing_clients and "workspace_id" in existing_clients:
+            for cl in db.query(Client).filter(Client.workspace_id.is_(None)).all():  # noqa: E711
+                j = db.query(Job).filter(Job.client_id == cl.id, Job.workspace_id.isnot(None)).first()
+                if j:
+                    cl.workspace_id = j.workspace_id
+            db.commit()
+    except Exception as e:
+        _log.warning("backfill_workspaces: %s", e)
+        db.rollback()
+    finally:
+        db.close()
 
 
 def ensure_indexes(engine: Engine) -> None:
@@ -182,6 +300,9 @@ def ensure_indexes(engine: Engine) -> None:
     stmts.append("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at)")
     stmts.append("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status)")
     stmts.append("CREATE INDEX IF NOT EXISTS idx_jobs_client_id ON jobs (client_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_jobs_workspace_id ON jobs (workspace_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_users_workspace_id ON users (workspace_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_clients_workspace_id ON clients (workspace_id)")
 
     # Clients
     stmts.append("CREATE INDEX IF NOT EXISTS idx_clients_status ON clients (status)")

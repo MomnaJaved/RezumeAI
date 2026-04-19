@@ -5,16 +5,29 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, Uuid
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, Uuid, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from api.database import Base
+
+
+class Workspace(Base):
+    """Recruiter tenant boundary (Manatal-style); candidates do not belong to a workspace."""
+
+    __tablename__ = "workspaces"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(256), default="Workspace")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class Client(Base):
     __tablename__ = "clients"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     name: Mapped[str] = mapped_column(String(256), unique=True, index=True)
     contact_person: Mapped[str] = mapped_column(String(256), default="")
     email: Mapped[str] = mapped_column(String(320), default="")
@@ -22,6 +35,7 @@ class Client(Base):
     status: Mapped[str] = mapped_column(String(24), default="active")  # active|inactive
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    workspace: Mapped[Optional["Workspace"]] = relationship()
     jobs: Mapped[list["Job"]] = relationship(back_populates="client")
 
 
@@ -30,6 +44,9 @@ class Job(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True
     )
     # Matches job_id in jobs_enriched.csv (e.g. J001)
     external_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
@@ -49,11 +66,15 @@ class Job(Base):
     education_required: Mapped[str] = mapped_column(String(64), default="any")
     status: Mapped[str] = mapped_column(String(24), default="active")  # active|inactive
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     # Cached LLM/deterministic "top candidate" narrative; invalidated on shortlist change or cache miss.
     rankings_top_insight: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     rankings_top_insight_cache_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
     client: Mapped[Optional["Client"]] = relationship(back_populates="jobs")
+    workspace: Mapped[Optional["Workspace"]] = relationship()
     rankings: Mapped[list["JobCandidateRanking"]] = relationship(
         back_populates="job", cascade="all, delete-orphan"
     )
@@ -103,6 +124,10 @@ class Candidate(Base):
     status: Mapped[str] = mapped_column(String(64), default="new")
     # First email found in resume text at ingest (not in PII-stripped raw_text).
     contact_email: Mapped[str] = mapped_column(String(320), default="")
+    # Platform account (candidate role) linked to this pool row — same data recruiters see.
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, unique=True, index=True
+    )
     # Cached model-based best match vs jobs (0–100) to keep list/dashboard fast.
     best_job_match_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     best_job_external_id: Mapped[str] = mapped_column(String(64), default="")
@@ -223,6 +248,43 @@ class User(Base):
     available_hours: Mapped[str] = mapped_column(String(128), default="")
     role_label: Mapped[str] = mapped_column(String(64), default="Recruiter")
     avatar_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    two_factor_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    password_reset_code_hash: Mapped[str] = mapped_column(String(256), default="")
+    password_reset_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Platform UX: recruiter vs candidate (distinct from profile role_label).
+    account_role: Mapped[str] = mapped_column(String(24), default="recruiter", index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+    workspace: Mapped[Optional["Workspace"]] = relationship()
+
+
+class UserSession(Base):
+    """Server-tracked login session (JWT jti must match a row for token to be valid)."""
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    jti: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    device_label: Mapped[str] = mapped_column(String(256), default="")
+    ip_address: Mapped[str] = mapped_column(String(64), default="")
+    location_label: Mapped[str] = mapped_column(String(256), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class LoginOtpChallenge(Base):
+    """Email OTP step after password when two_factor_enabled."""
+
+    __tablename__ = "login_otp_challenges"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(256))
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class HumanRankingFeedback(Base):
@@ -290,3 +352,34 @@ class ActivityEvent(Base):
     message: Mapped[str] = mapped_column(String(512), default="")
     href: Mapped[str] = mapped_column(String(256), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class InboxReadState(Base):
+    """Per-user read marker for synthetic activity inbox ids (event-*, job-*, rank-*, feedback-*)."""
+
+    __tablename__ = "inbox_read_states"
+    __table_args__ = (UniqueConstraint("user_id", "item_key", name="uq_inbox_read_user_item"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    item_key: Mapped[str] = mapped_column(String(192), index=True)
+    read_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class InboxMessage(Base):
+    """User-to-user in-app message; recipient resolves by Rezume account email."""
+
+    __tablename__ = "inbox_messages"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sender_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    recipient_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # general = only "All" inbox; candidates | clients = scoped chat lists + All
+    chat_scope: Mapped[str] = mapped_column(String(32), default="general", index=True)
+    subject: Mapped[str] = mapped_column(String(512), default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    read_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    # "Delete for me" — message stays in DB for the other party until both sides hide or sender deletes for everyone.
+    hidden_for_sender: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    hidden_for_recipient: Mapped[bool] = mapped_column(Boolean, default=False, index=True)

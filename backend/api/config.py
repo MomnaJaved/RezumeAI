@@ -58,9 +58,14 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from: str = "no-reply@rezume.local"
     smtp_use_tls: bool = True
+    # If true, connect with SMTP_SSL (typical port 465). Otherwise use plain SMTP + STARTTLS when smtp_use_tls.
+    smtp_ssl: bool = False
+    # Log SMTP protocol to api logger (troubleshoot auth / TLS).
+    smtp_debug: bool = False
     verification_code_ttl_minutes: int = 15
 
-    # Dev-only: allow registration without SMTP by printing the code to logs.
+    # When SMTP is configured: also log codes (useful while debugging mail delivery).
+    # When SMTP is unset, codes are always logged — no need to toggle this for local dev.
     dev_email_print_code: bool = False
 
     # OpenAI-compatible API for ranking narrative (optional; falls back to template if unset).

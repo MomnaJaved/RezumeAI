@@ -1,8 +1,21 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import DashFrame from "../DashFrame";
-import { changePassword, fetchMyProfile, updateMyProfile, type UserProfile } from "../api";
+import {
+  changePassword,
+  deleteAccount,
+  deleteAllAuthSessions,
+  deleteAuthSession,
+  fetchAuthSessions,
+  fetchMyProfile,
+  updateMyProfile,
+  type AuthSessionRow,
+  type UserProfile,
+} from "../api";
 import { useToast } from "../toast";
 import { applyAppSettings } from "../settings";
+import { useT } from "../i18n";
+import { useAuth } from "../auth";
 
 // ── Local profile cache (fallback when not authenticated) ─────────────────────
 const LOCAL_PROFILE_KEY = "rezume.local_profile";
@@ -14,7 +27,7 @@ function loadLocalProfile(): Partial<UserProfile> {
   } catch { return {}; }
 }
 
-function saveLocalProfile(p: UserProfile) {
+function saveLocalProfile(p: Partial<UserProfile>) {
   try { localStorage.setItem(LOCAL_PROFILE_KEY, JSON.stringify(p)); } catch {}
 }
 
@@ -31,7 +44,26 @@ function buildFallbackProfile(): UserProfile {
     available_hours: cached.available_hours ?? "",
     role_label: cached.role_label ?? "Recruiter",
     avatar_data: cached.avatar_data ?? null,
+    two_factor_enabled: cached.two_factor_enabled ?? false,
     ...cached,
+  };
+}
+
+// Merge remote profile onto local: prefer non-empty values so locally saved
+// fields are never clobbered by empty strings returned from the backend.
+function mergeProfile(local: UserProfile, remote: Partial<UserProfile>): UserProfile {
+  return {
+    ...local,
+    ...remote,
+    full_name: remote.full_name || local.full_name,
+    phone: remote.phone || local.phone,
+    address: remote.address || local.address,
+    company: remote.company || local.company,
+    available_hours: remote.available_hours || local.available_hours,
+    role_label: remote.role_label || local.role_label,
+    avatar_data: remote.avatar_data || local.avatar_data,
+    two_factor_enabled:
+      typeof remote.two_factor_enabled === "boolean" ? remote.two_factor_enabled : (local.two_factor_enabled ?? false),
   };
 }
 
@@ -41,17 +73,12 @@ type AccountSettings = {
   defaultDashboard: string;
   candidatesPerPage: string;
   defaultTopMatches: string;
-  dateFormat: string;
-  timeZone: string;
   language: string;
 };
 
 type ScreeningSettings = {
   minMatchScore: string;
   showOnlyTopMatches: string;
-  skillsImportance: string;
-  experienceImportance: string;
-  certifications: string;
   autoRankCandidates: string;
   autoRejectLowMatches: string;
 };
@@ -60,10 +87,9 @@ type NotifSettings = {
   newCandidateApplied: string;
   candidateShortlisted: string;
   candidateRejected: string;
+  candidateHired: string;
   topMatchesFound: string;
   lowMatchWarning: string;
-  weeklySummaryEmail: string;
-  monthlyHiringReport: string;
 };
 
 type PrefSettings = {
@@ -92,17 +118,12 @@ const DEFAULT_ACCOUNT: AccountSettings = {
   defaultDashboard: "Dashboard Overview",
   candidatesPerPage: "10",
   defaultTopMatches: "3",
-  dateFormat: "DD/MM/YYYY",
-  timeZone: "GMT +05:00",
   language: "English",
 };
 
 const DEFAULT_SCREENING: ScreeningSettings = {
   minMatchScore: "70%",
   showOnlyTopMatches: "ON",
-  skillsImportance: "High",
-  experienceImportance: "Medium",
-  certifications: "Low",
   autoRankCandidates: "ON",
   autoRejectLowMatches: "OFF",
 };
@@ -111,10 +132,9 @@ const DEFAULT_NOTIF: NotifSettings = {
   newCandidateApplied: "ON",
   candidateShortlisted: "ON",
   candidateRejected: "OFF",
+  candidateHired: "ON",
   topMatchesFound: "ON",
   lowMatchWarning: "ON",
-  weeklySummaryEmail: "ON",
-  monthlyHiringReport: "OFF",
 };
 
 const DEFAULT_PREF: PrefSettings = {
@@ -144,14 +164,18 @@ function StSelect({ value, onChange, options }: { value: string; onChange: (v: s
   );
 }
 
-function StInput({ value, onChange, type = "text", placeholder = "" }: {
+function StInput({ value, onChange, type = "text", placeholder = "", autoComplete, name, id }: {
   value: string; onChange: (v: string) => void; type?: string; placeholder?: string;
+  autoComplete?: string; name?: string; id?: string;
 }) {
   return (
     <input
       className="st-input"
       type={type}
+      id={id}
+      name={name}
       value={value}
+      autoComplete={autoComplete}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
     />
@@ -171,11 +195,16 @@ function Panel({ children, hint }: { children: React.ReactNode; hint?: string })
   );
 }
 
-function SaveBtn({ onClick, saving }: { onClick: () => void; saving?: boolean }) {
+function SaveBtn({ onClick, saving, label, savingLabel }: {
+  onClick: () => void;
+  saving?: boolean;
+  label?: string;
+  savingLabel?: string;
+}) {
   return (
     <div className="st-save-row">
       <button type="button" className="st-save-btn" onClick={onClick} disabled={saving}>
-        {saving ? "Saving…" : "Save Changes"}
+        {saving ? (savingLabel ?? "Saving…") : (label ?? "Save Changes")}
       </button>
     </div>
   );
@@ -183,13 +212,25 @@ function SaveBtn({ onClick, saving }: { onClick: () => void; saving?: boolean })
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 
-const TABS = ["Profile", "Account", "Screening", "Notifications", "Preferences", "Security"] as const;
-type Tab = (typeof TABS)[number];
+const TAB_KEYS = ["Profile", "Account", "Screening", "Notifications", "Preferences", "Security"] as const;
+type Tab = (typeof TAB_KEYS)[number];
+
+const TAB_I18N_KEYS: Record<Tab, `settings.tab.${string}`> = {
+  Profile: "settings.tab.profile",
+  Account: "settings.tab.account",
+  Screening: "settings.tab.screening",
+  Notifications: "settings.tab.notifications",
+  Preferences: "settings.tab.preferences",
+  Security: "settings.tab.security",
+} as const;
 
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
   const toast = useToast();
+  const t = useT();
+  const nav = useNavigate();
+  const { logout } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>("Profile");
 
   // Profile tab — always non-null (falls back to localStorage cache)
@@ -217,25 +258,46 @@ export default function SettingsPage() {
   const [newPwd, setNewPwd] = useState("");
   const [confirmPwd, setConfirmPwd] = useState("");
   const [pwdSaving, setPwdSaving] = useState(false);
-  const [twoFA, setTwoFA] = useState(() => loadLS<{ enabled: string }>("rezume.settings.security", { enabled: "ON" }).enabled);
+  const [twoFA, setTwoFA] = useState(() => loadLS<{ enabled: string }>("rezume.settings.security", { enabled: "OFF" }).enabled);
+  const [sessions, setSessions] = useState<AuthSessionRow[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [securitySaving, setSecuritySaving] = useState(false);
+  const [sessionsBusy, setSessionsBusy] = useState(false);
 
-  // Fetch profile from backend; merge onto the local fallback
+  const [deletePwd, setDeletePwd] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  /** After first click we show a toast; second click performs the API delete. */
+  const [deleteAwaitingConfirm, setDeleteAwaitingConfirm] = useState(false);
+
+  // Fetch profile from backend; merge onto local fallback without clobbering
+  // fields that were explicitly saved locally (backend may return empty strings).
   useEffect(() => {
     setProfileLoading(true);
     fetchMyProfile()
       .then((remote) => {
-        // Prefer remote data; keep local avatar if remote has none
-        setProfile((local) => ({
-          ...remote,
-          avatar_data: remote.avatar_data || local.avatar_data,
-        }));
-        saveLocalProfile({ ...buildFallbackProfile(), ...remote });
+        setProfile((local) => {
+          const merged = mergeProfile(local, remote);
+          saveLocalProfile(merged);
+          return merged;
+        });
+        if (typeof remote.two_factor_enabled === "boolean") {
+          setTwoFA(remote.two_factor_enabled ? "ON" : "OFF");
+        }
       })
       .catch(() => {
-        // Auth not configured or no token — stay with local fallback, that's fine
+        // Auth not configured or no token — stay with local fallback
       })
       .finally(() => setProfileLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (activeTab !== "Security") return;
+    setSessionsLoading(true);
+    fetchAuthSessions()
+      .then(setSessions)
+      .catch(() => setSessions([]))
+      .finally(() => setSessionsLoading(false));
+  }, [activeTab]);
 
   // Handlers
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -248,18 +310,17 @@ export default function SettingsPage() {
       const dataUrl = reader.result as string;
       const updated = { ...profile, avatar_data: dataUrl };
       setProfile(updated);
-      saveLocalProfile(updated);          // persist locally immediately
-      // Also push to backend (best-effort)
+      saveLocalProfile(updated);
       try {
         const remote = await updateMyProfile({ avatar_data: dataUrl });
-        setProfile((p) => ({ ...p, ...remote }));
-        saveLocalProfile({ ...updated, ...remote });
-        toast.success("Profile picture updated");
+        const merged = mergeProfile(updated, remote);
+        setProfile(merged);
+        saveLocalProfile(merged);
+        toast.success(t("profile.picUpdated"));
       } catch {
-        toast.success("Profile picture saved locally");
+        toast.success(t("profile.picLocal"));
       } finally {
         setAvatarUploading(false);
-        // Reset so the same file can be re-selected
         if (fileInputRef.current) fileInputRef.current.value = "";
       }
     };
@@ -272,7 +333,7 @@ export default function SettingsPage() {
 
   const saveProfile = async () => {
     setProfileSaving(true);
-    // Always persist locally
+    // Always persist locally first so fields survive page reloads
     saveLocalProfile(profile);
     try {
       const updated = await updateMyProfile({
@@ -284,14 +345,14 @@ export default function SettingsPage() {
         role_label: profile.role_label,
         avatar_data: profile.avatar_data ?? undefined,
       });
-      setProfile((p) => ({ ...p, ...updated }));
-      saveLocalProfile({ ...profile, ...updated });
+      const merged = mergeProfile(profile, updated);
+      setProfile(merged);
+      saveLocalProfile(merged);
       setEditingName(false);
-      toast.success("Profile saved");
+      toast.success(t("profile.saved"));
     } catch {
-      // Saved locally — user not on authenticated backend
       setEditingName(false);
-      toast.success("Profile saved locally");
+      toast.success(t("profile.savedLocally"));
     } finally {
       setProfileSaving(false);
     }
@@ -313,26 +374,118 @@ export default function SettingsPage() {
     }
   };
 
+  const refreshSessions = () => {
+    fetchAuthSessions()
+      .then(setSessions)
+      .catch(() => {});
+  };
+
+  const handleRevokeSession = async (row: AuthSessionRow) => {
+    setSessionsBusy(true);
+    try {
+      await deleteAuthSession(row.id);
+      if (row.is_current) {
+        logout();
+        nav("/login");
+        return;
+      }
+      refreshSessions();
+      toast.success(t("security.sessionRevoked"));
+    } catch (e) {
+      toast.error((e as Error).message || "Could not revoke session");
+    } finally {
+      setSessionsBusy(false);
+    }
+  };
+
+  const handleLogoutAllDevices = async () => {
+    setSessionsBusy(true);
+    try {
+      await deleteAllAuthSessions();
+      logout();
+      toast.success(t("security.signedOutAll"));
+      nav("/login");
+    } catch (e) {
+      toast.error((e as Error).message || "Could not sign out all devices");
+    } finally {
+      setSessionsBusy(false);
+    }
+  };
+
+  const saveSecuritySettings = async () => {
+    setSecuritySaving(true);
+    try {
+      const updated = await updateMyProfile({ two_factor_enabled: twoFA === "ON" });
+      const merged = mergeProfile(profile, updated);
+      setProfile(merged);
+      saveLocalProfile(merged);
+      saveLS("rezume.settings.security", { enabled: twoFA });
+      toast.success(t("security.saved"));
+    } catch (e) {
+      toast.error((e as Error).message || "Could not save security settings");
+    } finally {
+      setSecuritySaving(false);
+    }
+  };
+
   const pField = (k: keyof UserProfile) => (v: string) =>
     setProfile((p) => ({ ...p, [k]: v }));
+
+  const saveAccountSettings = () => {
+    saveLS("rezume.settings.account", account);
+    applyAppSettings();
+    // Notify the language context to re-read and update direction/language
+    window.dispatchEvent(new CustomEvent("rezume:language-changed"));
+    toast.success(t("account.saved"));
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!deletePwd.trim()) {
+      toast.error(t("profile.deleteAccountNeedPassword"));
+      return;
+    }
+    if (!deleteAwaitingConfirm) {
+      toast.info(t("profile.deleteAccountConfirm"), { title: t("profile.deleteAccountToastTitle") });
+      setDeleteAwaitingConfirm(true);
+      return;
+    }
+    setDeleteBusy(true);
+    try {
+      await deleteAccount(deletePwd);
+      try {
+        localStorage.removeItem(LOCAL_PROFILE_KEY);
+      } catch {
+        /* ignore */
+      }
+      logout();
+      toast.success(t("profile.deleteAccountSuccess"));
+      nav("/");
+    } catch (e) {
+      toast.error((e as Error).message || t("profile.deleteAccountFailed"));
+    } finally {
+      setDeleteBusy(false);
+      setDeletePwd("");
+      setDeleteAwaitingConfirm(false);
+    }
+  };
 
   return (
     <DashFrame>
       <div className="settings-page">
-        <h1 className="settings-title">Manage Your Account and System Preferences</h1>
+        <h1 className="settings-title">{t("settings.title")}</h1>
 
         <div className="settings-card">
           {/* Tab bar */}
           <div className="settings-tabs">
-            {TABS.map((tab, i) => (
+            {TAB_KEYS.map((tab, i) => (
               <button
                 key={tab}
                 type="button"
                 className={`settings-tab${activeTab === tab ? " active" : ""}`}
                 onClick={() => setActiveTab(tab)}
               >
-                {tab}
-                {i < TABS.length - 1 && <span className="settings-tab-sep" aria-hidden>|</span>}
+                {t(TAB_I18N_KEYS[tab] as Parameters<typeof t>[0])}
+                {i < TAB_KEYS.length - 1 && <span className="settings-tab-sep" aria-hidden>|</span>}
               </button>
             ))}
           </div>
@@ -341,7 +494,7 @@ export default function SettingsPage() {
           {activeTab === "Profile" && (
             <div className="st-content">
               {profileLoading && !profile.email && (
-                <p className="muted">Loading profile…</p>
+                <p className="muted">{t("common.loading")}</p>
               )}
               <>
                 <div className="st-profile-header">
@@ -364,7 +517,7 @@ export default function SettingsPage() {
                         autoFocus
                       />
                     ) : (
-                      <div className="st-profile-name">{profile.full_name || "(no name)"}</div>
+                      <div className="st-profile-name">{profile.full_name || t("profile.noName")}</div>
                     )}
                     <div className="st-profile-email">{profile.email || "—"}</div>
                     <div className="st-profile-role">{profile.role_label || "Recruiter"}</div>
@@ -374,7 +527,7 @@ export default function SettingsPage() {
                       disabled={avatarUploading}
                       onClick={() => fileInputRef.current?.click()}
                     >
-                      {avatarUploading ? "Uploading…" : "Upload Profile Picture"}
+                      {avatarUploading ? t("common.uploading") : t("common.upload")}
                     </button>
                     <input
                       ref={fileInputRef}
@@ -385,28 +538,77 @@ export default function SettingsPage() {
                     />
                   </div>
                   <button type="button" className="st-change-name-btn" onClick={() => setEditingName((v) => !v)}>
-                    {editingName ? "Cancel" : "Change name"}
+                    {editingName ? t("common.cancel") : t("common.changeName")}
                   </button>
                 </div>
 
                 <Panel>
-                  <SettingsRow label="Phone Number">
+                  <SettingsRow label={t("profile.phoneNumber")}>
                     <StInput value={profile.phone} onChange={pField("phone")} placeholder="e.g. 03001234567" />
                   </SettingsRow>
-                  <SettingsRow label="Address">
+                  <SettingsRow label={t("profile.address")}>
                     <StInput value={profile.address} onChange={pField("address")} placeholder="Street, City" />
                   </SettingsRow>
-                  <SettingsRow label="Email">
+                  <SettingsRow label={t("profile.email")}>
                     <input className="st-input st-input--readonly" value={profile.email} readOnly />
                   </SettingsRow>
-                  <SettingsRow label="Company">
+                  <SettingsRow label={t("profile.company")}>
                     <StInput value={profile.company} onChange={pField("company")} placeholder="Company name" />
                   </SettingsRow>
-                  <SettingsRow label="Available Hours">
+                  <SettingsRow label={t("profile.availableHours")}>
                     <StInput value={profile.available_hours} onChange={pField("available_hours")} placeholder="e.g. 10am – 7pm" />
                   </SettingsRow>
                 </Panel>
-                <SaveBtn onClick={saveProfile} saving={profileSaving} />
+                <SaveBtn onClick={saveProfile} saving={profileSaving} label={t("common.save")} savingLabel={t("common.saving")} />
+
+                {profile.id ? (
+                  <div className="st-delete-account">
+                    <h3 className="st-delete-account-title">{t("profile.deleteAccountTitle")}</h3>
+                    <p className="st-delete-account-hint muted">{t("profile.deleteAccountHint")}</p>
+                    <SettingsRow label={t("profile.deleteAccountPasswordLabel")}>
+                      <input
+                        className="st-input"
+                        type="password"
+                        autoComplete="current-password"
+                        value={deletePwd}
+                        onChange={(e) => {
+                          setDeletePwd(e.target.value);
+                          setDeleteAwaitingConfirm(false);
+                        }}
+                        placeholder={t("profile.deleteAccountPasswordPlaceholder")}
+                      />
+                    </SettingsRow>
+                    {deleteAwaitingConfirm ? (
+                      <p className="st-delete-account-toast-hint muted" role="status">
+                        {t("profile.deleteAccountToastHint")}
+                      </p>
+                    ) : null}
+                    <div className="st-delete-account-actions">
+                      {deleteAwaitingConfirm ? (
+                        <button
+                          type="button"
+                          className="st-delete-account-cancel"
+                          disabled={deleteBusy}
+                          onClick={() => setDeleteAwaitingConfirm(false)}
+                        >
+                          {t("profile.deleteAccountCancelConfirm")}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="st-delete-account-btn"
+                        disabled={deleteBusy || !deletePwd.trim()}
+                        onClick={() => void handleDeleteAccount()}
+                      >
+                        {deleteBusy
+                          ? t("profile.deleteAccountBusy")
+                          : deleteAwaitingConfirm
+                            ? t("profile.deleteAccountConfirmButton")
+                            : t("profile.deleteAccountButton")}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </>
             </div>
           )}
@@ -414,206 +616,252 @@ export default function SettingsPage() {
           {/* ── Account ── */}
           {activeTab === "Account" && (
             <div className="st-content">
-              <SectionTitle>General</SectionTitle>
-              <Panel hint="Changes apply on next page visit">
-                <SettingsRow label="Default Dashboard">
+              <SectionTitle>{t("account.general")}</SectionTitle>
+              <Panel hint={t("account.hint")}>
+                <SettingsRow label={t("account.defaultDashboard")}>
                   <StSelect value={account.defaultDashboard} onChange={(v) => setAccount((a) => ({ ...a, defaultDashboard: v }))}
                     options={["Dashboard Overview", "Candidates", "Jobs", "Reports"]} />
                 </SettingsRow>
-                <SettingsRow label="Candidates Per Page">
+                <SettingsRow label={t("account.candidatesPerPage")}>
                   <StSelect value={account.candidatesPerPage} onChange={(v) => setAccount((a) => ({ ...a, candidatesPerPage: v }))}
                     options={["5", "10", "20", "50"]} />
                 </SettingsRow>
-                <SettingsRow label="Default Top Matches">
+                <SettingsRow label={t("account.defaultTopMatches")}>
                   <StSelect value={account.defaultTopMatches} onChange={(v) => setAccount((a) => ({ ...a, defaultTopMatches: v }))}
                     options={["3", "5", "10", "20"]} />
                 </SettingsRow>
               </Panel>
 
-              <SectionTitle>Localization</SectionTitle>
+              <SectionTitle>{t("account.localization")}</SectionTitle>
               <Panel>
-                <SettingsRow label="Date Format">
-                  <StSelect value={account.dateFormat} onChange={(v) => setAccount((a) => ({ ...a, dateFormat: v }))}
-                    options={["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"]} />
-                </SettingsRow>
-                <SettingsRow label="Time Zone">
-                  <StSelect value={account.timeZone} onChange={(v) => setAccount((a) => ({ ...a, timeZone: v }))}
-                    options={["GMT +05:00", "GMT +00:00", "GMT -05:00", "GMT +01:00", "GMT +08:00"]} />
-                </SettingsRow>
-                <SettingsRow label="Language">
+                <SettingsRow label={t("account.language")}>
                   <StSelect value={account.language} onChange={(v) => setAccount((a) => ({ ...a, language: v }))}
                     options={["English", "Urdu", "Arabic", "French"]} />
                 </SettingsRow>
               </Panel>
-              <SaveBtn onClick={() => { saveLS("rezume.settings.account", account); applyAppSettings(); toast.success("Account settings saved"); }} />
+              <SaveBtn onClick={saveAccountSettings} label={t("common.save")} savingLabel={t("common.saving")} />
             </div>
           )}
 
           {/* ── Screening ── */}
           {activeTab === "Screening" && (
             <div className="st-content">
-              <SectionTitle>Matching Thresholds</SectionTitle>
-              <Panel hint="Filters candidates on the Matching page — candidates below the minimum score are hidden">
-                <SettingsRow label="Minimum Match Score">
+              <SectionTitle>{t("screening.thresholds")}</SectionTitle>
+              <Panel hint="Minimum Match Score: hides ranked candidates below this threshold on the Matching page (requires Auto Reject to be ON). Show Only Top Matches: when ON, only the top N candidates are displayed (N = Default Top Matches in Account settings); when OFF, all candidates passing other filters are shown.">
+                <SettingsRow label={t("screening.minScore")}>
                   <StSelect value={screening.minMatchScore} onChange={(v) => setScreening((s) => ({ ...s, minMatchScore: v }))}
-                    options={["50%", "60%", "70%", "80%", "90%"]} />
+                    options={["10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%"]} />
                 </SettingsRow>
-                <SettingsRow label="Show Only Top Matches">
+                <SettingsRow label={t("screening.showTopMatches")}>
                   <StSelect value={screening.showOnlyTopMatches} onChange={(v) => setScreening((s) => ({ ...s, showOnlyTopMatches: v }))}
                     options={["ON", "OFF"]} />
                 </SettingsRow>
               </Panel>
 
-              <SectionTitle>Scoring Weights</SectionTitle>
-              <Panel>
-                <SettingsRow label="Skills Importance">
-                  <StSelect value={screening.skillsImportance} onChange={(v) => setScreening((s) => ({ ...s, skillsImportance: v }))}
-                    options={["High", "Medium", "Low"]} />
-                </SettingsRow>
-                <SettingsRow label="Experience Importance">
-                  <StSelect value={screening.experienceImportance} onChange={(v) => setScreening((s) => ({ ...s, experienceImportance: v }))}
-                    options={["High", "Medium", "Low"]} />
-                </SettingsRow>
-                <SettingsRow label="Certifications">
-                  <StSelect value={screening.certifications} onChange={(v) => setScreening((s) => ({ ...s, certifications: v }))}
-                    options={["High", "Medium", "Low"]} />
-                </SettingsRow>
-              </Panel>
 
-              <SectionTitle>Automation</SectionTitle>
-              <Panel>
-                <SettingsRow label="Auto Rank Candidates">
+              <SectionTitle>{t("screening.automation")}</SectionTitle>
+              <Panel hint="Auto Rank: when ON, matching runs automatically as soon as you select a job on the Matching page — no need to click Match manually. Auto Reject: when ON, any ranked candidate whose match score is below the Minimum Match Score is hidden from results.">
+                <SettingsRow label={t("screening.autoRank")}>
                   <StSelect value={screening.autoRankCandidates} onChange={(v) => setScreening((s) => ({ ...s, autoRankCandidates: v }))}
                     options={["ON", "OFF"]} />
                 </SettingsRow>
-                <SettingsRow label="Auto Reject Low Matches">
+                <SettingsRow label={t("screening.autoReject")}>
                   <StSelect value={screening.autoRejectLowMatches} onChange={(v) => setScreening((s) => ({ ...s, autoRejectLowMatches: v }))}
                     options={["ON", "OFF"]} />
                 </SettingsRow>
               </Panel>
-              <SaveBtn onClick={() => { saveLS("rezume.settings.screening", screening); applyAppSettings(); toast.success("Screening settings saved — reload any open page to apply"); }} />
+              <SaveBtn onClick={() => { saveLS("rezume.settings.screening", screening); applyAppSettings(); toast.success(t("screening.saved")); }}
+                label={t("common.save")} savingLabel={t("common.saving")} />
             </div>
           )}
 
           {/* ── Notifications ── */}
           {activeTab === "Notifications" && (
             <div className="st-content">
-              <div className="st-notif-hint">Choose when you want to be notified</div>
+              <div className="st-notif-hint">{t("notif.hint")}</div>
 
-              <SectionTitle>Candidate Activity</SectionTitle>
+              <SectionTitle>{t("notif.candidateActivity")}</SectionTitle>
               <Panel>
-                <SettingsRow label="New Candidate Applied">
+                <SettingsRow label={t("notif.newApplied")}>
                   <StSelect value={notif.newCandidateApplied} onChange={(v) => setNotif((n) => ({ ...n, newCandidateApplied: v }))} options={["ON", "OFF"]} />
                 </SettingsRow>
-                <SettingsRow label="Candidate Shortlisted">
+                <SettingsRow label={t("notif.shortlisted")}>
                   <StSelect value={notif.candidateShortlisted} onChange={(v) => setNotif((n) => ({ ...n, candidateShortlisted: v }))} options={["ON", "OFF"]} />
                 </SettingsRow>
-                <SettingsRow label="Candidate Rejected">
+                <SettingsRow label={t("notif.rejected")}>
                   <StSelect value={notif.candidateRejected} onChange={(v) => setNotif((n) => ({ ...n, candidateRejected: v }))} options={["ON", "OFF"]} />
+                </SettingsRow>
+                <SettingsRow label={t("notif.hired")}>
+                  <StSelect value={notif.candidateHired} onChange={(v) => setNotif((n) => ({ ...n, candidateHired: v }))} options={["ON", "OFF"]} />
                 </SettingsRow>
               </Panel>
 
-              <SectionTitle>Alerts</SectionTitle>
+              <SectionTitle>{t("notif.alerts")}</SectionTitle>
               <Panel>
-                <SettingsRow label="Top Matches Found">
+                <SettingsRow label={t("notif.topMatchesFound")}>
                   <StSelect value={notif.topMatchesFound} onChange={(v) => setNotif((n) => ({ ...n, topMatchesFound: v }))} options={["ON", "OFF"]} />
                 </SettingsRow>
-                <SettingsRow label="Low Match Warning">
+                <SettingsRow label={t("notif.lowMatch")}>
                   <StSelect value={notif.lowMatchWarning} onChange={(v) => setNotif((n) => ({ ...n, lowMatchWarning: v }))} options={["ON", "OFF"]} />
                 </SettingsRow>
               </Panel>
 
-              <SectionTitle>Reports</SectionTitle>
-              <Panel>
-                <SettingsRow label="Weekly Summary Email">
-                  <StSelect value={notif.weeklySummaryEmail} onChange={(v) => setNotif((n) => ({ ...n, weeklySummaryEmail: v }))} options={["ON", "OFF"]} />
-                </SettingsRow>
-                <SettingsRow label="Monthly Hiring Report">
-                  <StSelect value={notif.monthlyHiringReport} onChange={(v) => setNotif((n) => ({ ...n, monthlyHiringReport: v }))} options={["ON", "OFF"]} />
-                </SettingsRow>
-              </Panel>
-              <SaveBtn onClick={() => { saveLS("rezume.settings.notif", notif); toast.success("Notification settings saved"); }} />
+              <SaveBtn onClick={() => { saveLS("rezume.settings.notif", notif); toast.success(t("notif.saved")); }}
+                label={t("common.save")} savingLabel={t("common.saving")} />
             </div>
           )}
 
           {/* ── Preferences ── */}
           {activeTab === "Preferences" && (
             <div className="st-content">
-              <SectionTitle>Interface</SectionTitle>
+              <SectionTitle>{t("pref.interface")}</SectionTitle>
               <Panel hint="Font size and theme are applied immediately on save">
-                <SettingsRow label="Theme">
+                <SettingsRow label={t("pref.theme")}>
                   <StSelect value={pref.theme} onChange={(v) => setPref((p) => ({ ...p, theme: v }))}
                     options={["Light / Dark", "Dark", "Light"]} />
                 </SettingsRow>
-                <SettingsRow label="Font Size">
+                <SettingsRow label={t("pref.fontSize")}>
                   <StSelect value={pref.fontSize} onChange={(v) => setPref((p) => ({ ...p, fontSize: v }))}
                     options={["Small", "Medium", "Large"]} />
                 </SettingsRow>
               </Panel>
 
-              <SectionTitle>Defaults</SectionTitle>
+              <SectionTitle>{t("pref.defaults")}</SectionTitle>
               <Panel hint="Sort order used when you first open each list page">
-                <SettingsRow label="Default Candidate Sort">
+                <SettingsRow label={t("pref.candidateSort")}>
                   <StSelect value={pref.defaultCandidateSort} onChange={(v) => setPref((p) => ({ ...p, defaultCandidateSort: v }))}
                     options={["Match Score", "Name", "Date Added", "Status"]} />
                 </SettingsRow>
-                <SettingsRow label="Default Client Sort">
+                <SettingsRow label={t("pref.clientSort")}>
                   <StSelect value={pref.defaultClientSort} onChange={(v) => setPref((p) => ({ ...p, defaultClientSort: v }))}
                     options={["Newest", "Name", "Status"]} />
                 </SettingsRow>
-                <SettingsRow label="Default Job Sort">
+                <SettingsRow label={t("pref.jobSort")}>
                   <StSelect value={pref.defaultJobSort} onChange={(v) => setPref((p) => ({ ...p, defaultJobSort: v }))}
                     options={["Priority Based", "Date Added", "Title", "Status"]} />
                 </SettingsRow>
               </Panel>
-              <SaveBtn onClick={() => { saveLS("rezume.settings.pref", pref); applyAppSettings(); toast.success("Preferences saved — theme and font applied"); }} />
+              <SaveBtn onClick={() => { saveLS("rezume.settings.pref", pref); applyAppSettings(); toast.success(t("pref.saved")); }}
+                label={t("common.save")} savingLabel={t("common.saving")} />
             </div>
           )}
 
           {/* ── Security ── */}
           {activeTab === "Security" && (
             <div className="st-content">
-              <SectionTitle>Password</SectionTitle>
+              <form className="st-security-form" autoComplete="on" onSubmit={(e) => e.preventDefault()}>
+                {/* First focusable login field for password managers — keeps email out of the header search */}
+                <label htmlFor="st-security-username" className="visually-hidden">
+                  {t("security.accountEmail")}
+                </label>
+                <input
+                  id="st-security-username"
+                  className="visually-hidden"
+                  type="email"
+                  name="username"
+                  autoComplete="username"
+                  readOnly
+                  tabIndex={-1}
+                  aria-hidden
+                  value={profile.email}
+                  onChange={() => {}}
+                />
+                <SectionTitle>{t("security.password")}</SectionTitle>
+                <Panel>
+                  <SettingsRow label={t("security.currentPwd")}>
+                    <StInput
+                      id="st-security-current-pw"
+                      name="current-password"
+                      value={currentPwd}
+                      onChange={setCurrentPwd}
+                      type="password"
+                      placeholder="••••••••"
+                      autoComplete="current-password"
+                    />
+                  </SettingsRow>
+                  <SettingsRow label={t("security.newPwd")}>
+                    <StInput
+                      id="st-security-new-pw"
+                      name="new-password"
+                      value={newPwd}
+                      onChange={setNewPwd}
+                      type="password"
+                      placeholder="••••••••"
+                      autoComplete="new-password"
+                    />
+                  </SettingsRow>
+                  <SettingsRow label={t("security.confirmPwd")}>
+                    <StInput
+                      id="st-security-confirm-pw"
+                      name="confirm-new-password"
+                      value={confirmPwd}
+                      onChange={setConfirmPwd}
+                      type="password"
+                      placeholder="••••••••"
+                      autoComplete="new-password"
+                    />
+                  </SettingsRow>
+                  <div className="st-row">
+                    <span />
+                    <button type="button" className="st-change-pwd-btn" onClick={handleChangePassword} disabled={pwdSaving}>
+                      {pwdSaving ? t("security.changingPwd") : t("security.changePwd")}
+                    </button>
+                  </div>
+                </Panel>
+
+                <SectionTitle>{t("security.twoFA")}</SectionTitle>
+                <Panel>
+                  <SettingsRow label={t("security.enable2fa")}>
+                    <StSelect value={twoFA} onChange={setTwoFA} options={["ON", "OFF"]} />
+                  </SettingsRow>
+                </Panel>
+              </form>
+
+              <SectionTitle>{t("security.sessions")}</SectionTitle>
               <Panel>
-                <SettingsRow label="Current Password">
-                  <StInput value={currentPwd} onChange={setCurrentPwd} type="password" placeholder="••••••••" />
-                </SettingsRow>
-                <SettingsRow label="New Password">
-                  <StInput value={newPwd} onChange={setNewPwd} type="password" placeholder="••••••••" />
-                </SettingsRow>
-                <SettingsRow label="Confirm Password">
-                  <StInput value={confirmPwd} onChange={setConfirmPwd} type="password" placeholder="••••••••" />
-                </SettingsRow>
+                {sessionsLoading ? (
+                  <p className="muted">{t("common.loading")}</p>
+                ) : sessions.length === 0 ? (
+                  <p className="muted">{t("security.noSessions")}</p>
+                ) : (
+                  <ul className="st-session-list">
+                    {sessions.map((s) => (
+                      <li key={s.id} className="st-session-row">
+                        <div className="st-session-meta">
+                          <div className="st-session-device">
+                            {s.device_label}
+                            {s.is_current ? <span className="st-session-badge">{t("security.thisDevice")}</span> : null}
+                          </div>
+                          <div className="st-session-loc muted">
+                            {[s.location_label, s.ip_address].filter(Boolean).join(" · ")}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="st-session-revoke"
+                          disabled={sessionsBusy}
+                          onClick={() => void handleRevokeSession(s)}
+                        >
+                          {t("security.revoke")}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 <div className="st-row">
                   <span />
-                  <button type="button" className="st-change-pwd-btn" onClick={handleChangePassword} disabled={pwdSaving}>
-                    {pwdSaving ? "Changing…" : "Change Password"}
+                  <button type="button" className="st-change-pwd-btn" disabled={sessionsBusy} onClick={() => void handleLogoutAllDevices()}>
+                    {t("security.logoutAll")}
                   </button>
                 </div>
               </Panel>
 
-              <SectionTitle>Two-Factor Authentication</SectionTitle>
-              <Panel>
-                <SettingsRow label="Enable 2FA">
-                  <StSelect value={twoFA} onChange={setTwoFA} options={["ON", "OFF"]} />
-                </SettingsRow>
-              </Panel>
-
-              <SectionTitle>Sessions</SectionTitle>
-              <Panel>
-                <SettingsRow label="Logged-in Devices">
-                  <span className="st-device-label">This device</span>
-                </SettingsRow>
-                <div className="st-row">
-                  <span />
-                  <button type="button" className="st-change-pwd-btn"
-                    onClick={() => { localStorage.removeItem("rezume.token"); localStorage.removeItem("rezume.email"); window.location.href = "/login"; }}>
-                    Log Out of All Devices
-                  </button>
-                </div>
-              </Panel>
-
-              <SaveBtn onClick={() => { saveLS("rezume.settings.security", { enabled: twoFA }); toast.success("Security settings saved"); }} />
+              <SaveBtn
+                onClick={() => void saveSecuritySettings()}
+                saving={securitySaving}
+                label={t("common.save")}
+                savingLabel={t("common.saving")}
+              />
             </div>
           )}
         </div>

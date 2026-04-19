@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
 
 from api.config import get_settings
 from api.database import Base, engine
-from api.db_migrate import ensure_extra_columns, ensure_indexes
+from api.db_migrate import backfill_workspaces, ensure_extra_columns, ensure_indexes
 from api.error_handlers import (
     http_exception_handler,
     rezume_api_error_handler,
@@ -34,7 +34,7 @@ from api.error_handlers import (
 )
 from api.errors import RezumeAPIError
 from api.logging_config import setup_logging
-from api.routers import auth, analytics, candidates, clients, feedback, health, ingestions, jobs, legacy_ml, meta, ml, rankings, uploads
+from api.routers import auth, analytics, candidate_portal, candidates, clients, feedback, health, inbox, ingestions, jobs, legacy_ml, meta, ml, rankings, uploads
 from api.slow_limiter import limiter
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -44,10 +44,13 @@ _log = logging.getLogger("rezume.api")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
+    # Fresh settings read on boot (lru_cache is empty after process start; clear avoids stale tests).
+    get_settings.cache_clear()
     if not os.environ.get("REZUME_TESTING"):
         try:
             Base.metadata.create_all(bind=engine)
             ensure_extra_columns(engine)
+            backfill_workspaces(engine)
             ensure_indexes(engine)
         except Exception as e:
             _log.error(
@@ -58,6 +61,18 @@ async def lifespan(app: FastAPI):
             )
             raise
     settings = get_settings()
+    if (settings.smtp_host or "").strip():
+        _log.info(
+            "SMTP configured: host=%r port=%s ssl=%s starttls=%s user=%r from=%r",
+            settings.smtp_host.strip(),
+            settings.smtp_port,
+            getattr(settings, "smtp_ssl", False),
+            settings.smtp_use_tls,
+            settings.smtp_user,
+            (settings.smtp_from or settings.smtp_user or ""),
+        )
+    else:
+        _log.warning("SMTP_HOST is empty — verification/reset codes are only written to API logs, not emailed.")
     if not settings.skip_model_warmup:
         try:
             from src.inference.service import warmup_match_ranker, warmup_role_classifier
@@ -115,7 +130,9 @@ def create_app() -> FastAPI:
     prefix = settings.api_prefix
     app.include_router(ml.router, prefix=prefix)
     app.include_router(auth.router, prefix=prefix)
+    app.include_router(candidate_portal.router, prefix=prefix)
     app.include_router(meta.router, prefix=prefix)
+    app.include_router(inbox.router, prefix=prefix)
     app.include_router(analytics.router, prefix=prefix)
     app.include_router(clients.router, prefix=prefix)
     app.include_router(jobs.router, prefix=prefix)

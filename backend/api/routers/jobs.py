@@ -6,22 +6,24 @@ from uuid import UUID
 import mimetypes
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import or_
+from sqlalchemy import case, or_
 from sqlalchemy.orm import Session
 
 from api.database import get_db
-from api.dependencies import require_user_if_auth_enabled
+from api.dependencies import get_current_user_optional, require_user_if_auth_enabled
 from api.errors import RezumeAPIError
 from datetime import datetime
 
 from sqlalchemy import func
 
-from api.models import Candidate, Client, Job, JobApplicant, JobAttachment, JobCandidateRanking, JobCandidateSbertScore
+from api.models import Candidate, Client, Job, JobApplicant, JobAttachment, JobCandidateRanking, JobCandidateSbertScore, User
 from api.schemas import JobAttachmentRead, JobCreate, JobRead, JobUpdate, RankingExplanationOut, StoredRankingRow
 from api.services.resume_ingest import MAX_UPLOAD_BYTES, _storage_root  # reuse upload dir helper
+from api.services.workspace_scope import ensure_workspace_for_recruiter
 from api.services.applicant_status_effective import (
     applicant_tracker_counts,
     effective_applicant_status,
@@ -30,9 +32,26 @@ from api.services.applicant_status_effective import (
 )
 from api.services.candidate_display import display_full_name_from_db
 from api.services.candidate_title_db import resolved_display_title
+from api.services.activity_log import log_activity
 from api.database import engine
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+def _log_pipeline_notification(db: Session, job: Job, cand: Candidate, st: str) -> None:
+    """Activity feed + toasts for hired / rejected / shortlisted / selected."""
+    name = display_full_name_from_db(cand.full_name)
+    label = (job.title or "").strip() or job.external_id
+    ext = (job.external_id or "").strip()
+    href = f"/jobs?job={quote(ext, safe='')}" if ext else "/jobs"
+    s = (st or "").strip().lower()
+    if s in ("shortlisted", "selected"):
+        log_activity(db, kind="shortlist", message=f"{name} shortlisted for {label}", href=href)
+    elif s == "rejected":
+        log_activity(db, kind="reject", message=f"{name} marked not a fit for {label}", href=href)
+    elif s == "hired":
+        log_activity(db, kind="hired", message=f"{name} hired for {label}", href=href)
+
 
 _JOB_ID_RE = re.compile(r"^J(\d+)$", re.IGNORECASE)
 _JOB_STATUSES = {"active", "on_hold", "completed", "cancelled"}
@@ -78,6 +97,36 @@ def _job_read(job: Job) -> JobRead:
     return jr
 
 
+def _recruiter_workspace_id(db: Session, user: Optional[User]) -> Optional[UUID]:
+    if user is None or getattr(user, "account_role", "recruiter") == "candidate":
+        return None
+    return ensure_workspace_for_recruiter(db, user)
+
+
+def _apply_recruiter_job_scope(db: Session, job: Job, user: Optional[User]) -> None:
+    """Recruiters cannot read other workspaces' jobs (404). Candidates may read any job (apply flow)."""
+    w = _recruiter_workspace_id(db, user)
+    if w is None:
+        return
+    jw = getattr(job, "workspace_id", None)
+    if jw is not None and jw != w:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+
+def _ensure_job_mutable(db: Session, job: Job, user: Optional[User]) -> None:
+    if user is None:
+        return
+    if getattr(user, "account_role", "recruiter") == "candidate":
+        raise HTTPException(status_code=403, detail="Candidates cannot modify jobs")
+    w = _recruiter_workspace_id(db, user)
+    if w is not None and getattr(job, "workspace_id", None) is not None and job.workspace_id != w:
+        raise HTTPException(status_code=403, detail="You can only modify jobs in your workspace")
+    if getattr(job, "workspace_id", None) is None:
+        owner = getattr(job, "created_by_user_id", None)
+        if owner is not None and owner != user.id:
+            raise HTTPException(status_code=403, detail="You can only modify jobs you created")
+
+
 def _safe_filename(name: str) -> str:
     return "".join(c if (c.isalnum() or c in ("-", "_", ".", " ")) else "_" for c in (name or "file")).strip()[:160]
 
@@ -94,8 +143,17 @@ _ALLOWED_ATTACH_CT = {
 
 
 @router.get("", response_model=list[JobRead])
-def list_jobs(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    q = db.query(Job).order_by(Job.created_at.desc()).offset(skip).limit(limit)
+def list_jobs(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
+    q = db.query(Job).order_by(Job.created_at.desc())
+    w = _recruiter_workspace_id(db, user)
+    if w is not None:
+        q = q.filter(Job.workspace_id == w)
+    q = q.offset(skip).limit(limit)
     return [_job_read(j) for j in q.all()]
 
 
@@ -108,6 +166,7 @@ def list_jobs_page(
     client_id: str = "",
     sort: str = "created_desc",
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
 ):
     """
     Server-side jobs listing with filters.
@@ -119,6 +178,9 @@ def list_jobs_page(
     srt = (sort or "created_desc").strip().lower()
 
     base = db.query(Job)
+    w = _recruiter_workspace_id(db, user)
+    if w is not None:
+        base = base.filter(Job.workspace_id == w)
     if needle:
         like = f"%{needle}%"
         base = base.filter(
@@ -149,6 +211,26 @@ def list_jobs_page(
         base = base.order_by(Job.title.asc())
     elif srt == "title_desc":
         base = base.order_by(Job.title.desc())
+    elif srt == "urgency_desc":
+        # Priority Based: high → medium → low → (empty/unknown)
+        urgency_order = case(
+            (Job.recruitment_urgency == "high", 1),
+            (Job.recruitment_urgency == "medium", 2),
+            (Job.recruitment_urgency == "low", 3),
+            else_=4,
+        )
+        base = base.order_by(urgency_order, Job.created_at.desc())
+    elif srt == "status_asc":
+        # Status order: active → on_hold/inactive → completed → cancelled
+        status_order = case(
+            (Job.status == "active", 1),
+            (Job.status == "on_hold", 2),
+            (Job.status == "inactive", 2),
+            (Job.status == "completed", 3),
+            (Job.status == "cancelled", 4),
+            else_=5,
+        )
+        base = base.order_by(status_order, Job.created_at.desc())
     else:
         base = base.order_by(Job.created_at.desc())
 
@@ -168,7 +250,12 @@ def list_jobs_page(
 
 
 @router.get("/{external_id}/candidates")
-def candidates_for_job(external_id: str, limit: int = 200, db: Session = Depends(get_db)):
+def candidates_for_job(
+    external_id: str,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     """
     Ranked candidates for a job (stored matches), ordered by rank/score.
     Uses external job id (e.g., J001) to match existing UI + data model.
@@ -176,6 +263,7 @@ def candidates_for_job(external_id: str, limit: int = 200, db: Session = Depends
     job = db.query(Job).filter(Job.external_id == external_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _apply_recruiter_job_scope(db, job, user)
     lim = max(1, min(int(limit or 200), 500))
     rows = (
         db.query(JobCandidateRanking)
@@ -211,31 +299,52 @@ def candidates_for_job(external_id: str, limit: int = 200, db: Session = Depends
 
 
 @router.get("/by-external/{external_id}", response_model=JobRead)
-def get_job_by_external_id(external_id: str, db: Session = Depends(get_db)):
+def get_job_by_external_id(
+    external_id: str,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     job = db.query(Job).filter(Job.external_id == external_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _apply_recruiter_job_scope(db, job, user)
     return _job_read(job)
 
 
 @router.get("/{job_uuid}", response_model=JobRead)
-def get_job(job_uuid: UUID, db: Session = Depends(get_db)):
+def get_job(
+    job_uuid: UUID,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     job = db.query(Job).filter(Job.id == job_uuid).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _apply_recruiter_job_scope(db, job, user)
     return _job_read(job)
 
 
 @router.post("", response_model=JobRead, status_code=201)
-def create_job(body: JobCreate, background: BackgroundTasks, db: Session = Depends(get_db)):
+def create_job(
+    body: JobCreate,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
+    if user is not None and getattr(user, "account_role", "recruiter") == "candidate":
+        raise HTTPException(status_code=403, detail="Candidates cannot create jobs")
     ext = (body.external_id or "").strip().upper()
     if not ext:
         ext = _next_job_external_id(db)
     existing = db.query(Job).filter(Job.external_id == ext).first()
     if existing:
         raise HTTPException(status_code=409, detail="Job with this external_id already exists")
+    wid: Optional[UUID] = None
+    if user is not None and getattr(user, "account_role", "recruiter") != "candidate":
+        wid = ensure_workspace_for_recruiter(db, user)
     job = Job(
         external_id=ext,
+        workspace_id=wid,
         client_id=body.client_id,
         title=body.title,
         department=body.department,
@@ -249,6 +358,7 @@ def create_job(body: JobCreate, background: BackgroundTasks, db: Session = Depen
         min_experience=body.min_experience,
         education_required=body.education_required or "any",
         status=_norm_job_status(body.status or "active"),
+        created_by_user_id=user.id if user is not None else None,
     )
     if job.status not in _JOB_STATUSES:
         raise HTTPException(status_code=422, detail="status must be one of: active, on_hold, completed, cancelled")
@@ -267,10 +377,17 @@ def create_job(body: JobCreate, background: BackgroundTasks, db: Session = Depen
 
 
 @router.patch("/by-external/{external_id}", response_model=JobRead)
-def update_job_by_external_id(external_id: str, body: JobUpdate, background: BackgroundTasks, db: Session = Depends(get_db)):
+def update_job_by_external_id(
+    external_id: str,
+    body: JobUpdate,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     job = db.query(Job).filter(Job.external_id == external_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _ensure_job_mutable(db, job, user)
 
     if body.title is not None:
         job.title = body.title
@@ -314,23 +431,33 @@ def update_job_by_external_id(external_id: str, body: JobUpdate, background: Bac
 
 
 @router.delete("/by-external/{external_id}", status_code=204)
-def delete_job_by_external_id(external_id: str, db: Session = Depends(get_db)):
+def delete_job_by_external_id(
+    external_id: str,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     job = db.query(Job).filter(Job.external_id == external_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _ensure_job_mutable(db, job, user)
     db.delete(job)
     db.commit()
     return None
 
 
 @router.get("/{external_id}/stats")
-def job_applicant_stats(external_id: str, db: Session = Depends(get_db)):
+def job_applicant_stats(
+    external_id: str,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     """
     Applicant tracker counts for one job (single source of truth: job_applicants table).
     """
     job = db.query(Job).filter(Job.external_id == external_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _apply_recruiter_job_scope(db, job, user)
     pairs = (
         db.query(JobApplicant.status, Candidate.created_at)
         .join(Candidate, Candidate.id == JobApplicant.candidate_id)
@@ -338,26 +465,34 @@ def job_applicant_stats(external_id: str, db: Session = Depends(get_db)):
         .all()
     )
     agg = applicant_tracker_counts([(str(st or "new"), cat) for st, cat in pairs])
+    iv = int(agg["interviewing"])
     return {
         "job_external_id": external_id,
         "total": int(agg["total"]),
         "new": int(agg["new"]),
         "screened": int(agg["screened"]),
         "shortlisted": int(agg["shortlisted"]),
-        "interviewed": int(agg["interviewed"]),
+        "interviewing": iv,
+        "interviewed": iv,
         "hired": int(agg["hired"]),
         "rejected": int(agg["rejected"]),
     }
 
 
 @router.get("/{external_id}/applicants")
-def list_job_applicants(external_id: str, limit: int = 500, db: Session = Depends(get_db)):
+def list_job_applicants(
+    external_id: str,
+    limit: int = 500,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     """
     All applicants for a job (JobApplicant), with match scores when available.
     """
     job = db.query(Job).filter(Job.external_id == external_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _apply_recruiter_job_scope(db, job, user)
     lim = max(1, min(int(limit or 500), 2000))
     apps = (
         db.query(JobApplicant, Candidate)
@@ -391,7 +526,13 @@ def list_job_applicants(external_id: str, limit: int = 500, db: Session = Depend
 
 
 @router.patch("/{external_id}/applicants/{candidate_external_id}/status")
-def update_applicant_status(external_id: str, candidate_external_id: str, body: dict, db: Session = Depends(get_db)):
+def update_applicant_status(
+    external_id: str,
+    candidate_external_id: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     """
     Update a candidate's pipeline status for one job.
     Single source of truth: job_applicants row.
@@ -399,6 +540,7 @@ def update_applicant_status(external_id: str, candidate_external_id: str, body: 
     job = db.query(Job).filter(Job.external_id == external_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _ensure_job_mutable(db, job, user)
     cand = db.query(Candidate).filter(Candidate.external_id == candidate_external_id).first()
     if not cand:
         raise HTTPException(status_code=404, detail="Candidate not found")
@@ -414,6 +556,7 @@ def update_applicant_status(external_id: str, candidate_external_id: str, body: 
         .filter(JobApplicant.job_id == job.id, JobApplicant.candidate_id == cand.id)
         .first()
     )
+    previous = (app.status or "").strip().lower() if app else None
     if not app:
         app = JobApplicant(job_id=job.id, candidate_id=cand.id, status=st, updated_at=now)
         db.add(app)
@@ -423,6 +566,8 @@ def update_applicant_status(external_id: str, candidate_external_id: str, body: 
     # Keep candidates.status in sync so candidates page + dashboard reflect this change.
     sync_candidate_status_from_applicants(db, cand)
     db.commit()
+    if previous is None or previous != st:
+        _log_pipeline_notification(db, job, cand, st)
     return {"job_external_id": external_id, "candidate_external_id": candidate_external_id, "status": st}
 
 
@@ -430,11 +575,13 @@ def update_applicant_status(external_id: str, candidate_external_id: str, body: 
 def list_job_attachments(
     external_job_id: str,
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
     _: object = Depends(require_user_if_auth_enabled),
 ):
     job = db.query(Job).filter(Job.external_id == external_job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _apply_recruiter_job_scope(db, job, user)
     rows = (
         db.query(JobAttachment)
         .filter(JobAttachment.job_id == job.id)
@@ -459,11 +606,13 @@ def upload_job_attachment(
     external_job_id: str,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
     _: object = Depends(require_user_if_auth_enabled),
 ):
     job = db.query(Job).filter(Job.external_id == external_job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _ensure_job_mutable(db, job, user)
     if not file.filename:
         raise RezumeAPIError("MISSING_FILENAME", "Missing filename.", 400)
 
@@ -514,11 +663,13 @@ def download_job_attachment(
     external_job_id: str,
     attachment_id: UUID,
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
     _: object = Depends(require_user_if_auth_enabled),
 ):
     job = db.query(Job).filter(Job.external_id == external_job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _apply_recruiter_job_scope(db, job, user)
     row = (
         db.query(JobAttachment)
         .filter(JobAttachment.id == attachment_id, JobAttachment.job_id == job.id)
@@ -543,11 +694,13 @@ def delete_job_attachment(
     external_job_id: str,
     attachment_id: UUID,
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
     _: object = Depends(require_user_if_auth_enabled),
 ):
     job = db.query(Job).filter(Job.external_id == external_job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _ensure_job_mutable(db, job, user)
     row = (
         db.query(JobAttachment)
         .filter(JobAttachment.id == attachment_id, JobAttachment.job_id == job.id)

@@ -58,7 +58,6 @@ export default function IngestPage() {
       const st = await fetchIngestionBatchStatus(res.batch_id);
       setStatus(st);
       setPolling(true);
-      toast.success("Upload received. Processing…");
     } catch (e) {
       toast.error((e as Error).message);
     } finally {

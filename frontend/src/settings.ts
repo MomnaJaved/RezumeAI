@@ -19,8 +19,6 @@ export type AccountSettings = {
   defaultDashboard: string;
   candidatesPerPage: string;
   defaultTopMatches: string;
-  dateFormat: string;
-  timeZone: string;
   language: string;
 };
 
@@ -29,8 +27,6 @@ export function getAccountSettings(): AccountSettings {
     defaultDashboard: "Dashboard Overview",
     candidatesPerPage: "10",
     defaultTopMatches: "3",
-    dateFormat: "DD/MM/YYYY",
-    timeZone: "GMT +05:00",
     language: "English",
   });
 }
@@ -50,9 +46,6 @@ export function getDefaultTopMatches(): number {
 export type ScreeningSettings = {
   minMatchScore: string;
   showOnlyTopMatches: string;
-  skillsImportance: string;
-  experienceImportance: string;
-  certifications: string;
   autoRankCandidates: string;
   autoRejectLowMatches: string;
 };
@@ -61,9 +54,6 @@ export function getScreeningSettings(): ScreeningSettings {
   return getLS("rezume.settings.screening", {
     minMatchScore: "70%",
     showOnlyTopMatches: "ON",
-    skillsImportance: "High",
-    experienceImportance: "Medium",
-    certifications: "Low",
     autoRankCandidates: "ON",
     autoRejectLowMatches: "OFF",
   });
@@ -78,6 +68,41 @@ export function getMinMatchScore(): number {
 
 export function getShowOnlyTopMatches(): boolean {
   return getScreeningSettings().showOnlyTopMatches === "ON";
+}
+
+/** When ON, candidates below the minimum match score are hidden on the Matching page. */
+export function getAutoRejectLowMatches(): boolean {
+  return getScreeningSettings().autoRejectLowMatches === "ON";
+}
+
+/**
+ * When ON, matching is triggered automatically as soon as a job is selected
+ * on the Matching page (no need to click the Match button manually).
+ */
+export function getAutoRankCandidates(): boolean {
+  return getScreeningSettings().autoRankCandidates === "ON";
+}
+
+// ── Notification settings ─────────────────────────────────────────────────────
+
+export type NotifSettings = {
+  newCandidateApplied: string;
+  candidateShortlisted: string;
+  candidateRejected: string;
+  candidateHired: string;
+  topMatchesFound: string;
+  lowMatchWarning: string;
+};
+
+export function getNotifSettings(): NotifSettings {
+  return getLS("rezume.settings.notif", {
+    newCandidateApplied: "ON",
+    candidateShortlisted: "ON",
+    candidateRejected: "OFF",
+    candidateHired: "ON",
+    topMatchesFound: "ON",
+    lowMatchWarning: "ON",
+  });
 }
 
 // ── Preferences settings ──────────────────────────────────────────────────────
@@ -98,6 +123,18 @@ export function getPrefSettings(): PrefSettings {
     defaultClientSort: "Newest",
     defaultJobSort: "Priority Based",
   });
+}
+
+/** Maps the Default Job Sort label → API sort key for JobsPage. */
+export function getDefaultJobSortKey(): string {
+  const label = getPrefSettings().defaultJobSort;
+  const map: Record<string, string> = {
+    "Priority Based": "urgency_desc",
+    "Date Added": "created_desc",
+    "Title": "title_asc",
+    "Status": "status_asc",
+  };
+  return map[label] ?? "created_desc";
 }
 
 /** Maps the human sort label → CandidatesPage sort key. */

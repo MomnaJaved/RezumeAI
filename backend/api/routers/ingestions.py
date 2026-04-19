@@ -189,7 +189,7 @@ def _process_one_ingestion(ingestion_id: UUID, engine: Engine) -> None:
         # User-facing notification (history/log). Best-effort.
         try:
             label = display_full_name_from_db(cand.full_name) if cand else UNKNOWN_CANDIDATE
-            log_activity(db, kind="success", message=f"{label} added to the pool", href="/candidates")
+            log_activity(db, kind="candidate_added", message=f"{label} added to the pool", href="/candidates")
         except Exception:
             pass
     except Exception as e:

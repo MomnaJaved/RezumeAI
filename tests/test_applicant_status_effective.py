@@ -34,5 +34,5 @@ def test_applicant_tracker_counts_merges_interviewing():
     agg = applicant_tracker_counts(pairs)
     assert agg["total"] == 3
     assert agg["new"] == 1
-    assert agg["interviewed"] == 1
+    assert agg["interviewing"] == 1
     assert agg["rejected"] == 1

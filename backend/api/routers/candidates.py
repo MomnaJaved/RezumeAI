@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+from typing import Optional
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID
@@ -10,20 +11,40 @@ from fastapi import Query
 from fastapi import Response
 from fastapi import Body
 from fastapi.responses import FileResponse
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from api.database import get_db
-from api.dependencies import require_user_if_auth_enabled
-from api.models import Candidate, Client, Job, JobApplicant, JobCandidateRanking, JobCandidateSbertScore
+from api.dependencies import get_current_user_optional, require_user_if_auth_enabled
+from api.models import Candidate, Client, Job, JobApplicant, JobCandidateRanking, JobCandidateSbertScore, User
 from api.schemas import CandidateCreate, CandidateRead, CandidateReadWithScores, CandidateUpdate
 from api.services.activity_log import log_activity
 from api.services.candidate_competition_score import compute_competition_payloads_for_list
 from api.services.candidate_serialization import candidate_read_dict, resolve_candidate_headline
 from api.services.applicant_status_effective import STORAGE_APPLICANT_STATUSES, effective_applicant_status, sync_candidate_status_from_applicants
+from api.services.workspace_scope import candidate_query_filtered_for_workspace, ensure_workspace_for_recruiter
 from src.parsing.name_extractor import UNKNOWN_CANDIDATE
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
+
+
+def _ensure_candidate_self_or_recruiter(c: Candidate, user: Optional[User]) -> None:
+    if user is None:
+        return
+    if getattr(user, "account_role", "recruiter") == "candidate":
+        if getattr(c, "user_id", None) != user.id:
+            raise HTTPException(status_code=403, detail="You can only access your own candidate profile")
+
+
+def _ensure_recruiter_sees_candidate(db: Session, c: Candidate, user: Optional[User]) -> None:
+    if user is None or getattr(user, "account_role", "") == "candidate":
+        return
+    w = ensure_workspace_for_recruiter(db, user)
+    if w is None:
+        return
+    q = candidate_query_filtered_for_workspace(db.query(Candidate).filter(Candidate.id == c.id), w)
+    if q.first() is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
 
 
 def _best_job_enrichment_map(db: Session, job_external_ids: set[str]) -> dict[str, dict[str, str]]:
@@ -64,8 +85,18 @@ def _serialize_candidate_read(db: Session, c: Candidate, *, enrich: dict[str, st
 
 
 @router.get("", response_model=list[CandidateRead])
-def list_candidates(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    q = db.query(Candidate).order_by(Candidate.created_at.desc()).offset(skip).limit(limit)
+def list_candidates(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
+    q = db.query(Candidate).filter(or_(Candidate.status.is_(None), func.lower(Candidate.status) != "hired"))
+    if user is not None and getattr(user, "account_role", "") != "candidate":
+        w = ensure_workspace_for_recruiter(db, user)
+        if w is not None:
+            q = candidate_query_filtered_for_workspace(q, w)
+    q = q.order_by(Candidate.created_at.desc()).offset(skip).limit(limit)
     return [_serialize_candidate_read(db, c) for c in q.all()]
 
 
@@ -78,6 +109,7 @@ def list_candidates_page(
     role: str = "",
     sort: str = "created_desc",
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
 ):
     """
     Server-side paginated candidates listing with lightweight filters.
@@ -88,7 +120,11 @@ def list_candidates_page(
     rl = (role or "").strip().lower()
     srt = (sort or "created_desc").strip().lower()
 
-    base = db.query(Candidate)
+    base = db.query(Candidate).filter(or_(Candidate.status.is_(None), func.lower(Candidate.status) != "hired"))
+    if user is not None and getattr(user, "account_role", "") != "candidate":
+        w = ensure_workspace_for_recruiter(db, user)
+        if w is not None:
+            base = candidate_query_filtered_for_workspace(base, w)
     if needle:
         like = f"%{needle}%"
         base = base.filter(
@@ -135,7 +171,12 @@ def list_candidates_page(
 
 
 @router.get("/scoreboard", response_model=list[CandidateReadWithScores])
-def list_candidates_scoreboard(skip: int = 0, limit: int = 500, db: Session = Depends(get_db)):
+def list_candidates_scoreboard(
+    skip: int = 0,
+    limit: int = 500,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     """
     **Candidates page only:** cohort-relative profile percentiles plus mean cross-encoder match
     vs all jobs in the DB. Expensive; do not use for generic listing.
@@ -144,13 +185,12 @@ def list_candidates_scoreboard(skip: int = 0, limit: int = 500, db: Session = De
     # Hard cap to prevent pathological slow requests; frontend should paginate.
     limit = max(1, min(int(limit or 50), 100))
     skip = max(0, int(skip or 0))
-    page = (
-        db.query(Candidate)
-        .order_by(Candidate.created_at.desc())
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
+    cq = db.query(Candidate)
+    if user is not None and getattr(user, "account_role", "") != "candidate":
+        w = ensure_workspace_for_recruiter(db, user)
+        if w is not None:
+            cq = candidate_query_filtered_for_workspace(cq, w)
+    page = cq.order_by(Candidate.created_at.desc()).offset(skip).limit(limit).all()
 
     # Best match across jobs is cached on Candidate to keep this endpoint fast.
     best_by_id = {c.id: float(getattr(c, "best_job_match_score", 0.0) or 0.0) for c in page}
@@ -186,10 +226,15 @@ def list_candidates_scoreboard(skip: int = 0, limit: int = 500, db: Session = De
 
 
 @router.get("/by-external/{external_id}", response_model=CandidateRead)
-def get_candidate_by_external_id(external_id: str, db: Session = Depends(get_db)):
+def get_candidate_by_external_id(
+    external_id: str,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     c = db.query(Candidate).filter(Candidate.external_id == external_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Candidate not found")
+    _ensure_recruiter_sees_candidate(db, c, user)
     jid = (getattr(c, "best_job_external_id", "") or "").strip()
     extra = _best_job_enrichment_map(db, {jid}).get(jid, {}) if jid else {}
     mapped = {
@@ -207,11 +252,13 @@ def get_candidate_by_external_id(external_id: str, db: Session = Depends(get_db)
 def download_candidate_file(
     external_id: str,
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
     _: object = Depends(require_user_if_auth_enabled),
 ):
     c = db.query(Candidate).filter(Candidate.external_id == external_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Candidate not found")
+    _ensure_recruiter_sees_candidate(db, c, user)
     p = Path((getattr(c, "storage_path", "") or "").strip())
     if not p or not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="Resume file not found")
@@ -228,11 +275,17 @@ def download_candidate_file(
 
 
 @router.get("/{candidate_uuid}/with-scores", response_model=CandidateReadWithScores)
-def get_candidate_with_scores(candidate_uuid: UUID, db: Session = Depends(get_db)):
+def get_candidate_with_scores(
+    candidate_uuid: UUID,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     """Full candidate row plus competition scores (same computation as GET /candidates/scoreboard)."""
     c = db.query(Candidate).filter(Candidate.id == candidate_uuid).first()
     if not c:
         raise HTTPException(status_code=404, detail="Candidate not found")
+    _ensure_candidate_self_or_recruiter(c, user)
+    _ensure_recruiter_sees_candidate(db, c, user)
     cohort = db.query(Candidate).order_by(Candidate.created_at.desc()).all()
     scores_by_id = compute_competition_payloads_for_list(db, cohort)
     base = candidate_read_dict(c)
@@ -256,7 +309,12 @@ def get_candidate_with_scores(candidate_uuid: UUID, db: Session = Depends(get_db
 
 
 @router.get("/{candidate_uuid}/top-matches")
-def candidate_top_matches(candidate_uuid: UUID, limit: int = 3, db: Session = Depends(get_db)):
+def candidate_top_matches(
+    candidate_uuid: UUID,
+    limit: int = 3,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     """
     Top job matches for a candidate across all jobs based on stored rankings.
     Does NOT compute any new model scores; it reads the existing matches table.
@@ -264,15 +322,19 @@ def candidate_top_matches(candidate_uuid: UUID, limit: int = 3, db: Session = De
     c = db.query(Candidate).filter(Candidate.id == candidate_uuid).first()
     if not c:
         raise HTTPException(status_code=404, detail="Candidate not found")
+    _ensure_candidate_self_or_recruiter(c, user)
+    _ensure_recruiter_sees_candidate(db, c, user)
     lim = max(1, min(int(limit or 3), 20))
-    rows = (
+    rq = (
         db.query(JobCandidateRanking, Job)
         .join(Job, Job.id == JobCandidateRanking.job_id)
         .filter(JobCandidateRanking.candidate_id == c.id)
-        .order_by(JobCandidateRanking.cross_encoder_score.desc())
-        .limit(lim)
-        .all()
     )
+    if user is not None and getattr(user, "account_role", "") != "candidate":
+        w = ensure_workspace_for_recruiter(db, user)
+        if w is not None:
+            rq = rq.filter(Job.workspace_id == w)
+    rows = rq.order_by(JobCandidateRanking.cross_encoder_score.desc()).limit(lim).all()
     items = []
     for r, j in rows:
         items.append(
@@ -288,7 +350,12 @@ def candidate_top_matches(candidate_uuid: UUID, limit: int = 3, db: Session = De
 
 
 @router.get("/{candidate_uuid}/matches")
-def candidate_matches(candidate_uuid: UUID, limit: int = 20, db: Session = Depends(get_db)):
+def candidate_matches(
+    candidate_uuid: UUID,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     """
     Latest persisted match scores for a candidate across all jobs.
     Always reads from job_candidate_rankings — never recomputes.
@@ -299,15 +366,19 @@ def candidate_matches(candidate_uuid: UUID, limit: int = 20, db: Session = Depen
     c = db.query(Candidate).filter(Candidate.id == candidate_uuid).first()
     if not c:
         raise HTTPException(status_code=404, detail="Candidate not found")
+    _ensure_candidate_self_or_recruiter(c, user)
+    _ensure_recruiter_sees_candidate(db, c, user)
     lim = max(1, min(int(limit or 20), 100))
-    rows = (
+    mq = (
         db.query(JobCandidateRanking, Job)
         .join(Job, Job.id == JobCandidateRanking.job_id)
         .filter(JobCandidateRanking.candidate_id == c.id)
-        .order_by(JobCandidateRanking.cross_encoder_score.desc())
-        .limit(lim)
-        .all()
     )
+    if user is not None and getattr(user, "account_role", "") != "candidate":
+        w = ensure_workspace_for_recruiter(db, user)
+        if w is not None:
+            mq = mq.filter(Job.workspace_id == w)
+    rows = mq.order_by(JobCandidateRanking.cross_encoder_score.desc()).limit(lim).all()
     items = []
     for r, j in rows:
         expl = None
@@ -339,7 +410,11 @@ def candidate_matches(candidate_uuid: UUID, limit: int = 20, db: Session = Depen
 
 
 @router.get("/{candidate_uuid}/job-evaluations")
-def candidate_job_evaluations(candidate_uuid: UUID, db: Session = Depends(get_db)):
+def candidate_job_evaluations(
+    candidate_uuid: UUID,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     """
     Per-job evaluation transparency: retrieval (SBERT) and cross-encoder scores when present,
     even when the candidate did not reach the final ranked shortlist.
@@ -349,6 +424,10 @@ def candidate_job_evaluations(candidate_uuid: UUID, db: Session = Depends(get_db
     c = db.query(Candidate).filter(Candidate.id == candidate_uuid).first()
     if not c:
         raise HTTPException(status_code=404, detail="Candidate not found")
+    _ensure_recruiter_sees_candidate(db, c, user)
+    w = None
+    if user is not None and getattr(user, "account_role", "") != "candidate":
+        w = ensure_workspace_for_recruiter(db, user)
 
     by_job: dict = {}
 
@@ -368,29 +447,38 @@ def candidate_job_evaluations(candidate_uuid: UUID, db: Session = Depends(get_db
             }
         return by_job[jid]
 
-    for app, job in (
-        db.query(JobApplicant, Job).join(Job, Job.id == JobApplicant.job_id).filter(JobApplicant.candidate_id == c.id).all()
-    ):
+    app_q = (
+        db.query(JobApplicant, Job)
+        .join(Job, Job.id == JobApplicant.job_id)
+        .filter(JobApplicant.candidate_id == c.id)
+    )
+    if w is not None:
+        app_q = app_q.filter(Job.workspace_id == w)
+    for app, job in app_q.all():
         row = ensure_row(job)
         st = (app.status or "new").strip().lower()
         row["applicant_status"] = st
         row["applicant_status_effective"] = effective_applicant_status(st, c.created_at)
 
-    for sb, job in (
+    sb_q = (
         db.query(JobCandidateSbertScore, Job)
         .join(Job, Job.id == JobCandidateSbertScore.job_id)
         .filter(JobCandidateSbertScore.candidate_id == c.id)
-        .all()
-    ):
+    )
+    if w is not None:
+        sb_q = sb_q.filter(Job.workspace_id == w)
+    for sb, job in sb_q.all():
         row = ensure_row(job)
         row["retrieval_similarity"] = float(sb.cosine_similarity or 0.0)
 
-    for rnk, job in (
+    rnk_q = (
         db.query(JobCandidateRanking, Job)
         .join(Job, Job.id == JobCandidateRanking.job_id)
         .filter(JobCandidateRanking.candidate_id == c.id)
-        .all()
-    ):
+    )
+    if w is not None:
+        rnk_q = rnk_q.filter(Job.workspace_id == w)
+    for rnk, job in rnk_q.all():
         row = ensure_row(job)
         row["cross_encoder_score"] = float(rnk.cross_encoder_score or 0.0)
         row["rank_position"] = int(rnk.rank_position or 0)
@@ -443,10 +531,17 @@ def set_candidate_status(
 
 
 @router.patch("/{candidate_uuid}", response_model=CandidateRead)
-def patch_candidate(candidate_uuid: UUID, body: CandidateUpdate, db: Session = Depends(get_db)):
+def patch_candidate(
+    candidate_uuid: UUID,
+    body: CandidateUpdate,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     c = db.query(Candidate).filter(Candidate.id == candidate_uuid).first()
     if not c:
         raise HTTPException(status_code=404, detail="Candidate not found")
+    _ensure_candidate_self_or_recruiter(c, user)
+    _ensure_recruiter_sees_candidate(db, c, user)
     upd = body.model_dump(exclude_unset=True)
     if "status" in upd and upd["status"] is not None:
         upd["status"] = str(upd["status"]).strip()[:64] or "new"
@@ -543,10 +638,16 @@ def compare_candidates(body: dict = Body(...), db: Session = Depends(get_db)):
 
 
 @router.get("/{candidate_uuid}", response_model=CandidateRead)
-def get_candidate(candidate_uuid: UUID, db: Session = Depends(get_db)):
+def get_candidate(
+    candidate_uuid: UUID,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     c = db.query(Candidate).filter(Candidate.id == candidate_uuid).first()
     if not c:
         raise HTTPException(status_code=404, detail="Candidate not found")
+    _ensure_candidate_self_or_recruiter(c, user)
+    _ensure_recruiter_sees_candidate(db, c, user)
     jid = (getattr(c, "best_job_external_id", "") or "").strip()
     extra = _best_job_enrichment_map(db, {jid}).get(jid, {}) if jid else {}
     mapped = {
@@ -585,7 +686,7 @@ def create_candidate(body: CandidateCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(cand)
     name = (cand.full_name or "").strip() or UNKNOWN_CANDIDATE
-    log_activity(db, kind="success", message=f"{name} added to the pool", href="/candidates")
+    log_activity(db, kind="candidate_added", message=f"{name} added to the pool", href="/candidates")
     return cand
 
 

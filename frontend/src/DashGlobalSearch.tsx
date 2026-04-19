@@ -94,6 +94,7 @@ export default function DashGlobalSearch() {
       <input
         type="search"
         className="dash-global-search-input"
+        name="rezume_dash_search"
         placeholder="Search pages, CVs, jobs, settings…"
         value={q}
         onChange={(e) => {
@@ -106,6 +107,12 @@ export default function DashGlobalSearch() {
         aria-expanded={open}
         aria-controls="dash-global-search-list"
         autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="none"
+        spellCheck={false}
+        data-lpignore="true"
+        data-1p-ignore="true"
+        data-form-type="other"
       />
       {open ? (
         filtered.length > 0 ? (

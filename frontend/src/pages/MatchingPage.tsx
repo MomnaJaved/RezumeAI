@@ -6,6 +6,7 @@ import {
   fetchJobsPage,
   fetchSavedRankings,
   fetchStage1Pool,
+  logActivity,
   triggerMatchCandidates,
   updateJobShortlist,
   type Job,
@@ -14,7 +15,36 @@ import {
 } from "../api";
 import { useSearchParams } from "react-router-dom";
 import { useToast } from "../toast";
-import { getDefaultTopMatches, getMinMatchScore, getShowOnlyTopMatches } from "../settings";
+import { getAutoRankCandidates, getAutoRejectLowMatches, getDefaultTopMatches, getMinMatchScore, getNotifSettings, getShowOnlyTopMatches } from "../settings";
+import { useT } from "../i18n";
+
+// Top-K options: covers the settings choices (3,5,10,20) plus extended options
+const TOP_K_OPTIONS = [3, 5, 10, 20, 25, 50] as const;
+
+/** After a match run, log a low_match activity if any candidates scored below threshold. */
+async function checkAndLogLowMatch(
+  rankings: JobSavedRankingRow[],
+  jobTitle: string,
+  jobExternalId: string,
+): Promise<void> {
+  if (!getNotifSettings().lowMatchWarning || getNotifSettings().lowMatchWarning !== "ON") return;
+  const threshold = getMinMatchScore() / 100;
+  if (threshold <= 0) return;
+  const lowCount = rankings.filter((r) => {
+    const score = r.cross_encoder_score ?? r.sbert_similarity ?? 0;
+    return score < threshold;
+  }).length;
+  if (lowCount === 0) return;
+  try {
+    await logActivity(
+      "low_match",
+      `Low match warning: ${lowCount} candidate${lowCount > 1 ? "s" : ""} scored below ${getMinMatchScore()}% for "${jobTitle || jobExternalId}"`,
+      `/jobs?job=${encodeURIComponent(jobExternalId)}`,
+    );
+  } catch {
+    // Non-critical — never block the UI
+  }
+}
 
 type SortKey = "rank_asc" | "score_desc" | "match_desc" | "name_asc";
 
@@ -30,6 +60,7 @@ function sbertPct(score: number) {
 
 export default function MatchingPage() {
   const toast = useToast();
+  const t = useT();
   const [sp, setSp] = useSearchParams();
   const [q, setQ] = useState("");
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -42,7 +73,8 @@ export default function MatchingPage() {
   const [loadingRankings, setLoadingRankings] = useState(false);
   const [topK, setTopK] = useState<number>(() => {
     const fromUrl = Number(sp.get("top"));
-    return fromUrl > 0 ? fromUrl : getDefaultTopMatches();
+    // Minimum 3 must always be shown; URL param overrides default when present
+    return fromUrl > 0 ? Math.max(3, fromUrl) : Math.max(3, getDefaultTopMatches());
   });
   const [sortBy, setSortBy] = useState<SortKey>((sp.get("sort") as SortKey) || "rank_asc");
   const [busyRefresh] = useState(false);
@@ -56,6 +88,12 @@ export default function MatchingPage() {
   const [compareFields, setCompareFields] = useState<Set<string>>(new Set(["skills", "experience"]));
   const [showCompare, setShowCompare] = useState(false);
   const [shortlistedIds, setShortlistedIds] = useState<Set<string>>(new Set());
+
+  // Read settings once per render — must be before any useEffect that references them
+  const minScorePct = getMinMatchScore();
+  const showOnlyTop = getShowOnlyTopMatches();
+  const autoReject = getAutoRejectLowMatches();
+  const autoRank = getAutoRankCandidates();
 
   useEffect(() => {
     let cancelled = false;
@@ -157,6 +195,31 @@ export default function MatchingPage() {
     };
   }, [selectedJob, toast]);
 
+  // Auto Rank: when enabled in Screening settings, trigger matching automatically
+  // whenever a new job is selected (rankings are empty = no previous run).
+  useEffect(() => {
+    if (!selectedJob || !autoRank || rankings.length > 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        setMatchingAll(true);
+        const res = await triggerMatchCandidates(selectedJob, topK);
+        if (cancelled) return;
+        const newRankings = res.rankings || [];
+        setRankings(newRankings);
+        setTopInsight((res.top_candidate_insight || "").trim() || null);
+        setSortBy("rank_asc");
+        void checkAndLogLowMatch(newRankings, job?.title ?? "", selectedJob);
+      } catch {
+        // Fail silently for auto-rank; user can still click Match manually
+      } finally {
+        if (!cancelled) setMatchingAll(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedJob, autoRank]);
+
   const rankByCandidateId = useMemo(() => {
     const m = new Map<string, JobSavedRankingRow>();
     for (const r of rankings || []) {
@@ -164,9 +227,6 @@ export default function MatchingPage() {
     }
     return m;
   }, [rankings]);
-
-  const minScorePct = getMinMatchScore(); // e.g. 70
-  const showOnlyTop = getShowOnlyTopMatches();
 
   const visibleRows = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -177,11 +237,13 @@ export default function MatchingPage() {
           const hay = `${r.candidate_name || ""} ${r.candidate_title || ""} ${r.candidate_role || ""} ${r.skills_summary || ""}`.toLowerCase();
           if (!hay.includes(needle)) return false;
         }
-        // Minimum match score filter (Screening settings)
-        const rankRow = rankByCandidateId.get(r.candidate_id);
-        if (rankRow) {
-          const scorePct = Math.round((rankRow.cross_encoder_score ?? 0) * 100);
-          if (scorePct < minScorePct) return false;
+        // Minimum match score filter — only active when Auto Reject is ON
+        if (autoReject) {
+          const rankRow = rankByCandidateId.get(r.candidate_id);
+          if (rankRow) {
+            const scorePct = Math.round((rankRow.cross_encoder_score ?? 0) * 100);
+            if (scorePct < minScorePct) return false;
+          }
         }
         return true;
       })
@@ -299,7 +361,7 @@ export default function MatchingPage() {
       topExtra={
         <div className="cand-toolbar">
           <div className="cand-toolbar-row">
-            <div className="cand-count">Matching</div>
+            <div className="cand-count">{t("matching.title")}</div>
             <div className="cand-search">
               <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by job title…" />
             </div>
@@ -317,7 +379,7 @@ export default function MatchingPage() {
               aria-label="Job picker"
               disabled={jobLoading}
             >
-              <option value="all">{jobLoading ? "Loading jobs…" : "Select job"}</option>
+              <option value="all">{jobLoading ? t("matching.loadingJobs") : t("matching.selectJob")}</option>
               {jobs.map((j) => (
                 <option key={j.external_id} value={j.external_id}>
                   {j.title || j.external_id}
@@ -327,11 +389,11 @@ export default function MatchingPage() {
           </div>
 
           <div className="cand-toolbar-row">
-            <span className="cand-toolbar-label muted">Filter By</span>
+            <span className="cand-toolbar-label muted">{t("matching.filterBy")}</span>
             <select
               value={String(topK)}
               onChange={(e) => {
-                const v = Number(e.target.value) || 5;
+                const v = Math.max(3, Number(e.target.value) || 3);
                 setTopK(v);
                 setSp((prev) => {
                   const next = new URLSearchParams(prev);
@@ -341,9 +403,9 @@ export default function MatchingPage() {
               }}
               aria-label="Top matches"
             >
-              {[5, 10, 25, 50].map((n) => (
+              {TOP_K_OPTIONS.map((n) => (
                 <option key={n} value={n}>
-                  Top Matches {n}
+                  {t("matching.topMatches")} {n}
                 </option>
               ))}
             </select>
@@ -360,10 +422,10 @@ export default function MatchingPage() {
               }}
               aria-label="Sort by"
             >
-              <option value="rank_asc">Sort by Rank</option>
-              <option value="score_desc">Sort by Score</option>
-              <option value="match_desc">Sort by Match</option>
-              <option value="name_asc">Sort by Name (A–Z)</option>
+              <option value="rank_asc">{t("matching.sortByRank")}</option>
+              <option value="score_desc">{t("matching.sortByScore")}</option>
+              <option value="match_desc">{t("matching.sortByMatch")}</option>
+              <option value="name_asc">{t("matching.sortByName")}</option>
             </select>
             <span style={{ marginLeft: "auto" }} />
             <button
@@ -375,7 +437,8 @@ export default function MatchingPage() {
                 try {
                   setMatchingAll(true);
                   const res = await triggerMatchCandidates(selectedJob, topK);
-                  setRankings(res.rankings || []);
+                  const newRankings = res.rankings || [];
+                  setRankings(newRankings);
                   setTopInsight((res.top_candidate_insight || "").trim() || null);
                   setSortBy("rank_asc");
                   setSp((prev) => {
@@ -384,6 +447,7 @@ export default function MatchingPage() {
                     return nextSp;
                   });
                   toast.success("Matches saved — scores updated across all views.");
+                  void checkAndLogLowMatch(newRankings, job?.title ?? "", selectedJob);
                 } catch (e) {
                   toast.error((e as Error).message || "Failed to match candidates");
                 } finally {
@@ -391,7 +455,7 @@ export default function MatchingPage() {
                 }
               }}
             >
-              {matchingAll ? "Matching…" : "Match"}
+              {matchingAll ? t("matching.matching") : t("matching.match")}
             </button>
             <button
               type="button"
@@ -399,7 +463,7 @@ export default function MatchingPage() {
               disabled={loadingRankings || rankings.length === 0}
               onClick={exportPdf}
             >
-              Export Results
+              {t("matching.exportResults")}
             </button>
           </div>
         </div>
@@ -408,13 +472,13 @@ export default function MatchingPage() {
       {!selectedJob ? (
         <div className="dash-panel">
           <p className="muted" style={{ margin: 0 }}>
-            Select a job to view matches.
+            {t("matching.selectJobPrompt")}
           </p>
         </div>
       ) : (
         <div className="job-overview-grid" style={{ gridTemplateColumns: "180px 1fr", alignItems: "stretch" }}>
           <div className="job-card" style={{ display: "flex", flexDirection: "column" }}>
-            <div className="job-card-title">Job Description</div>
+            <div className="job-card-title">{t("matching.jobDescription")}</div>
             <div className="muted" style={{ marginBottom: 10 }}>
               <div>
                 <strong>Job Title:</strong> {job?.title || "—"}
@@ -450,12 +514,12 @@ export default function MatchingPage() {
           </div>
 
           <div className="job-card" style={{ display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
-            <div className="job-card-title">Candidates</div>
+            <div className="job-card-title">{t("matching.candidates")}</div>
 
             {loadingPool ? (
-              <div className="muted" style={{ flex: 1 }}>Loading…</div>
+              <div className="muted" style={{ flex: 1 }}>{t("common.loading")}</div>
             ) : pool.length === 0 ? (
-              <div className="muted" style={{ flex: 1 }}>No candidates in pool yet (SBERT stage-1 cache empty).</div>
+              <div className="muted" style={{ flex: 1 }}>{t("matching.noPool")}</div>
             ) : (
               <div className="job-table-wrap job-table-wrap--scroll" style={{ flex: 1 }}>
                 <table className="job-table">
@@ -499,10 +563,10 @@ export default function MatchingPage() {
                                     setResumeOpen(true);
                                   }}
                                 >
-                                  View resume
+                                  {t("matching.viewResume")}
                                 </button>
                                 <a className="job-link-btn" href={`/candidates/lookup/${encodeURIComponent(r.candidate_id)}`}>
-                                  View profile »
+                                  {t("matching.viewProfile")}
                                 </a>
                               </div>
                             </td>
@@ -522,7 +586,7 @@ export default function MatchingPage() {
                 {rankings.length >= 2 && (
                   <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", flexWrap: "wrap", marginBottom: 12 }}>
                     <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "rgba(203,213,225,0.85)", whiteSpace: "nowrap" }}>
-                      Compare top
+                      {t("matching.compareTop")}
                     </span>
                     <select
                       value={String(compareCount)}
@@ -567,7 +631,7 @@ export default function MatchingPage() {
                       disabled={compareFields.size === 0}
                       onClick={() => setShowCompare(true)}
                     >
-                      Compare Candidates
+                      {t("matching.compareCandidates")}
                     </button>
                   </div>
                 )}
@@ -646,7 +710,7 @@ export default function MatchingPage() {
                   {/* Top candidate insight */}
                   {(topInsight || rankOneRow) && (
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="job-card-title" style={{ marginBottom: 6 }}>Top candidate insight</div>
+                      <div className="job-card-title" style={{ marginBottom: 6 }}>{t("matching.topInsight")}</div>
                       <p className="muted" style={{ lineHeight: 1.65, margin: 0, fontSize: "0.88rem" }}>
                         {topInsight ||
                           (rankOneRow

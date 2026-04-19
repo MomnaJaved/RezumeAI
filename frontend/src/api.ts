@@ -9,17 +9,46 @@ async function authedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
   return fetch(input, { ...init, headers });
 }
 
+function formatFastApiDetail(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((item) => {
+        if (item && typeof item === "object" && "msg" in item && typeof (item as { msg: unknown }).msg === "string") {
+          return (item as { msg: string }).msg;
+        }
+        return null;
+      })
+      .filter(Boolean) as string[];
+    if (msgs.length) return msgs.join(" ");
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      return "Request failed";
+    }
+  }
+  if (detail && typeof detail === "object" && "message" in detail && typeof (detail as { message: unknown }).message === "string") {
+    return (detail as { message: string }).message;
+  }
+  try {
+    return typeof detail === "undefined" ? "" : JSON.stringify(detail);
+  } catch {
+    return "Request failed";
+  }
+}
+
 async function parseJson<T>(res: Response): Promise<T> {
   const text = await res.text();
   if (!res.ok) {
     let detail = text;
     try {
-      const j = JSON.parse(text) as { detail?: string };
-      if (j.detail) detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+      const j = JSON.parse(text) as { detail?: unknown; error?: string };
+      if (j.detail !== undefined && j.detail !== null) detail = formatFastApiDetail(j.detail);
+      else if (typeof j.error === "string" && j.error.trim()) detail = j.error.trim();
     } catch {
       /* plain text */
     }
-    throw new Error(detail || res.statusText);
+    throw new Error((detail || "").trim() || res.statusText);
   }
   return text ? (JSON.parse(text) as T) : ({} as T);
 }
@@ -592,7 +621,9 @@ export async function fetchJobApplicantStats(jobExternalId: string) {
     new: number;
     screened: number;
     shortlisted: number;
-    interviewed: number;
+    interviewing: number;
+    /** @deprecated same as interviewing */
+    interviewed?: number;
     hired: number;
     rejected: number;
   }>(res);
@@ -700,6 +731,102 @@ export type ActivityNotification = {
   href?: string;
 };
 
+export type InboxTab = "all" | "alerts" | "candidates";
+
+export type InboxItem = {
+  id: string;
+  kind: string;
+  message: string;
+  at: string;
+  href?: string | null;
+  read: boolean;
+  tabs: string[];
+  direct: boolean;
+  sender_email?: string | null;
+  direction?: string | null;
+  peer_email?: string | null;
+  chat_scope?: string | null;
+  peer_display_name?: string | null;
+  peer_profile_path?: string | null;
+};
+
+export async function fetchInbox(): Promise<InboxItem[]> {
+  const res = await authedFetch(`${base}/api/v1/inbox`);
+  return parseJson<InboxItem[]>(res);
+}
+
+export async function inboxMarkRead(ids: string[]): Promise<{ updated: number }> {
+  const res = await authedFetch(`${base}/api/v1/inbox/mark-read`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  return parseJson(res);
+}
+
+export async function inboxMarkUnread(ids: string[]): Promise<{ updated: number }> {
+  const res = await authedFetch(`${base}/api/v1/inbox/mark-unread`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  return parseJson(res);
+}
+
+export async function inboxMarkAllRead(tab: InboxTab): Promise<{ updated: number }> {
+  const res = await authedFetch(`${base}/api/v1/inbox/mark-all-read`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tab }),
+  });
+  return parseJson(res);
+}
+
+export async function inboxMarkAllUnread(tab: InboxTab): Promise<{ updated: number }> {
+  const res = await authedFetch(`${base}/api/v1/inbox/mark-all-unread`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tab }),
+  });
+  return parseJson(res);
+}
+
+export async function inboxSendMessage(body: {
+  to_email: string;
+  body: string;
+  subject?: string;
+  chat_scope?: "general" | "candidates" | "clients";
+}): Promise<InboxItem> {
+  const res = await authedFetch(`${base}/api/v1/inbox/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
+export async function inboxDeleteMessage(messageId: string, mode: "everyone" | "me"): Promise<void> {
+  const id = messageId.startsWith("msg-") ? messageId.slice(4) : messageId;
+  const res = await authedFetch(`${base}/api/v1/inbox/messages/${encodeURIComponent(id)}/delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  if (!res.ok) await parseJson(res);
+}
+
+export async function inboxDeleteThread(body: {
+  peer_email: string;
+  chat_scope: "general" | "candidates" | "clients";
+}): Promise<{ deleted: number }> {
+  const res = await authedFetch(`${base}/api/v1/inbox/thread/delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
 export type DashboardData = {
   overview: {
     candidates_total: number;
@@ -729,6 +856,8 @@ export type UserProfile = {
   available_hours: string;
   role_label: string;
   avatar_data: string | null;
+  two_factor_enabled?: boolean;
+  account_role?: string;
 };
 
 export async function fetchMyProfile(): Promise<UserProfile> {
@@ -736,7 +865,7 @@ export async function fetchMyProfile(): Promise<UserProfile> {
   return parseJson<UserProfile>(res);
 }
 
-export async function updateMyProfile(data: Partial<Omit<UserProfile, "id" | "email">>): Promise<UserProfile> {
+export async function updateMyProfile(data: Partial<Omit<UserProfile, "id" | "email">> & { two_factor_enabled?: boolean }): Promise<UserProfile> {
   const res = await authedFetch(`${base}/api/v1/auth/me`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -757,6 +886,25 @@ export async function changePassword(current_password: string, new_password: str
   }
 }
 
+/** Permanently delete the signed-in account (requires correct password). */
+export async function deleteAccount(password: string): Promise<void> {
+  const res = await authedFetch(`${base}/api/v1/auth/delete-account`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+  if (!res.ok) {
+    let detail = "Account deletion failed";
+    try {
+      const err = await res.json();
+      detail = formatFastApiDetail(err.detail) || detail;
+    } catch {
+      /* plain */
+    }
+    throw new Error(detail);
+  }
+}
+
 export type ReportsKpi = {
   total_jobs: number;
   total_candidates: number;
@@ -769,7 +917,8 @@ export type ReportsPipeline = {
   screened: number;
   shortlisted: number;
   interviewing: number;
-  selected: number;
+  /** Legacy; always 0 — selected is folded into shortlisted (same as dashboard). */
+  selected?: number;
   hired: number;
   rejected: number;
   total: number;
@@ -812,6 +961,15 @@ export async function fetchActivityNotifications(): Promise<ActivityNotification
   const res = await authedFetch(`${base}/api/v1/meta/activity`);
   const j = await parseJson<{ notifications: ActivityNotification[] }>(res);
   return j.notifications;
+}
+
+/** Log a custom activity event visible in the inbox and notification feed. */
+export async function logActivity(kind: string, message: string, href?: string): Promise<void> {
+  await authedFetch(`${base}/api/v1/meta/log`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind, message, href: href ?? "" }),
+  });
 }
 
 export type DashboardPipelineStage = {
@@ -1057,8 +1215,25 @@ export async function submitRankingFeedback(payload: {
   return parseJson(res);
 }
 
-export async function registerUser(email: string, password: string): Promise<{ status: string }> {
+export async function registerUser(
+  email: string,
+  password: string,
+  account_role: "recruiter" | "candidate" = "recruiter",
+): Promise<{ status: string }> {
   const res = await fetch(`${base}/api/v1/auth/register-start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, account_role }),
+  });
+  return parseJson(res);
+}
+
+export type LoginResult =
+  | { access_token: string; requires_otp?: false; otp_challenge_id?: null; account_role?: string | null }
+  | { requires_otp: true; otp_challenge_id: string; access_token?: null };
+
+export async function loginUser(email: string, password: string): Promise<LoginResult> {
+  const res = await fetch(`${base}/api/v1/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -1066,13 +1241,130 @@ export async function registerUser(email: string, password: string): Promise<{ s
   return parseJson(res);
 }
 
-export async function loginUser(email: string, password: string): Promise<{ access_token: string }> {
-  const res = await fetch(`${base}/api/v1/auth/login`, {
+export async function requestForgotPassword(email: string): Promise<{ status: string }> {
+  const res = await fetch(`${base}/api/v1/auth/forgot-password`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email }),
   });
   return parseJson(res);
+}
+
+export async function resetPasswordWithCode(email: string, code: string, new_password: string): Promise<{ status: string }> {
+  const res = await fetch(`${base}/api/v1/auth/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, code, new_password }),
+  });
+  return parseJson(res);
+}
+
+export async function completeLoginOtp(challengeId: string, code: string): Promise<{ access_token: string; account_role?: string | null }> {
+  const res = await fetch(`${base}/api/v1/auth/login-otp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ challenge_id: challengeId, code }),
+  });
+  return parseJson(res);
+}
+
+export type CandidateMe = {
+  linked: boolean;
+  candidate_id: string | null;
+  external_id: string | null;
+  full_name: string;
+  title?: string;
+  status?: string;
+  best_job_match_score?: number | null;
+  best_job_external_id?: string;
+  email: string;
+};
+
+export async function fetchCandidateMe(): Promise<CandidateMe> {
+  const res = await authedFetch(`${base}/api/v1/candidate/me`);
+  return parseJson(res);
+}
+
+export type CandidateJobListItem = {
+  id: string;
+  external_id: string;
+  title: string;
+  department: string;
+  work_location: string;
+  job_type: string;
+  salary_range: string;
+  client_display: string;
+  created_at: string;
+};
+
+export async function fetchCandidateJobs(params: {
+  role_q?: string;
+  work_location?: string;
+  country?: string;
+  city?: string;
+  skip?: number;
+  limit?: number;
+}): Promise<{ total: number; items: CandidateJobListItem[] }> {
+  const sp = new URLSearchParams();
+  if (params.role_q) sp.set("role_q", params.role_q);
+  if (params.work_location) sp.set("work_location", params.work_location);
+  if (params.country) sp.set("country", params.country);
+  if (params.city) sp.set("city", params.city);
+  if (params.skip != null) sp.set("skip", String(params.skip));
+  if (params.limit != null) sp.set("limit", String(params.limit));
+  const res = await authedFetch(`${base}/api/v1/candidate/jobs?${sp.toString()}`);
+  return parseJson(res);
+}
+
+export async function candidateApplyToJob(externalId: string): Promise<{ status: string; applicant_status?: string }> {
+  const res = await authedFetch(`${base}/api/v1/candidate/jobs/${encodeURIComponent(externalId)}/apply`, {
+    method: "POST",
+  });
+  return parseJson(res);
+}
+
+export type CandidateApplicationRow = {
+  job_external_id: string;
+  job_title: string;
+  company: string;
+  status: string;
+  updated_at: string;
+};
+
+export async function fetchCandidateApplications(): Promise<{ items: CandidateApplicationRow[] }> {
+  const res = await authedFetch(`${base}/api/v1/candidate/applications`);
+  return parseJson(res);
+}
+
+export type AuthSessionRow = {
+  id: string;
+  device_label: string;
+  location_label: string;
+  ip_address: string;
+  created_at: string;
+  last_seen_at: string;
+  is_current: boolean;
+};
+
+export async function fetchAuthSessions(): Promise<AuthSessionRow[]> {
+  const res = await authedFetch(`${base}/api/v1/auth/sessions`);
+  return parseJson(res);
+}
+
+export async function deleteAuthSession(sessionId: string): Promise<void> {
+  const res = await authedFetch(`${base}/api/v1/auth/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(t || "Failed to revoke session");
+  }
+}
+
+export async function deleteAllAuthSessions(): Promise<void> {
+  const res = await authedFetch(`${base}/api/v1/auth/sessions`, { method: "DELETE" });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(t || "Failed to sign out all devices");
+  }
 }
 
 export async function verifyEmailCode(email: string, code: string): Promise<{ status: string }> {

@@ -4,6 +4,7 @@ import { fetchClients, fetchJobsPage, type ClientDto, type Job } from "../api";
 import DashFrame from "../DashFrame";
 import JobModal from "../components/JobModal";
 import { useToast } from "../toast";
+import { getDefaultJobSortKey } from "../settings";
 
 export default function JobsPage() {
   const toast = useToast();
@@ -14,7 +15,7 @@ export default function JobsPage() {
   const [clients, setClients] = useState<ClientDto[]>([]);
   const [clientId, setClientId] = useState("all");
   const [status, setStatus] = useState("all");
-  const [sortBy, setSortBy] = useState("created_desc");
+  const [sortBy, setSortBy] = useState(() => getDefaultJobSortKey());
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
 
@@ -114,10 +115,12 @@ export default function JobsPage() {
               <option value="cancelled">Cancelled</option>
             </select>
             <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort order">
+              <option value="urgency_desc">Priority Based</option>
               <option value="created_desc">Newest</option>
               <option value="created_asc">Oldest</option>
-              <option value="title_asc">A–Z</option>
-              <option value="title_desc">Z–A</option>
+              <option value="title_asc">Title A–Z</option>
+              <option value="title_desc">Title Z–A</option>
+              <option value="status_asc">Status</option>
             </select>
           </div>
         </div>

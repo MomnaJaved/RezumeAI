@@ -1,7 +1,7 @@
 """Shared FastAPI dependencies (auth)."""
 from __future__ import annotations
 
-from typing import Annotated, Optional
+from typing import Optional
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
@@ -12,6 +12,7 @@ from api.config import get_settings
 from api.database import get_db
 from api.models import User
 from api.security import decode_token
+from api.services.workspace_scope import workspace_id_for_recruiter_user
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -33,7 +34,7 @@ def get_current_user_optional(
 
 
 def require_user_if_auth_enabled(
-    user: Annotated[Optional[User], Depends(get_current_user_optional)],
+    user: Optional[User] = Depends(get_current_user_optional),
 ) -> Optional[User]:
     settings = get_settings()
     if not settings.require_auth:
@@ -45,3 +46,26 @@ def require_user_if_auth_enabled(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user
+
+
+def recruiter_meta_scope(
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+) -> Optional[UUID]:
+    """
+    When REQUIRE_AUTH is off, return None (global aggregates for shared/local DBs).
+    When on, require a logged-in recruiter and return their workspace id for scoped dashboard APIs.
+    """
+    settings = get_settings()
+    if not settings.require_auth:
+        return None
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    role = (getattr(user, "account_role", None) or "recruiter").strip().lower()
+    if role == "candidate":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Recruiter access required")
+    return workspace_id_for_recruiter_user(db, user)

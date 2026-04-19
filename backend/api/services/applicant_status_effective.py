@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -173,3 +174,37 @@ def global_applicant_status_created_pairs(db: "Session") -> list[tuple[str | Non
     pairs: list[tuple[str | None, datetime | None]] = [(str(st or "new"), cat) for st, cat in job_rows]
     pairs.extend([(str(st or "new"), cat) for st, cat in orphan_rows])
     return pairs
+
+
+def applicant_pairs_for_job_ids(db: "Session", job_ids: list[UUID]) -> list[tuple[str | None, datetime | None]]:
+    """Applicant rows limited to specific jobs (e.g. reports filters)."""
+    from api.models import Candidate, JobApplicant
+
+    if not job_ids:
+        return []
+    job_rows = (
+        db.query(JobApplicant.status, Candidate.created_at)
+        .join(Candidate, Candidate.id == JobApplicant.candidate_id)
+        .filter(JobApplicant.job_id.in_(job_ids))
+        .all()
+    )
+    return [(str(st or "new"), cat) for st, cat in job_rows]
+
+
+def recruiter_applicant_status_created_pairs(db: "Session", workspace_id: UUID) -> list[tuple[str | None, datetime | None]]:
+    """
+    Applicant pipeline rows for **one recruiter workspace**: applications only to jobs in that workspace.
+
+    Does not include global "orphan" candidates (no job_applicant row) — those are pool-wide,
+    not attributable to a single workspace's jobs.
+    """
+    from api.models import Candidate, Job, JobApplicant
+
+    job_rows = (
+        db.query(JobApplicant.status, Candidate.created_at)
+        .join(Candidate, Candidate.id == JobApplicant.candidate_id)
+        .join(Job, Job.id == JobApplicant.job_id)
+        .filter(Job.workspace_id == workspace_id)
+        .all()
+    )
+    return [(str(st or "new"), cat) for st, cat in job_rows]

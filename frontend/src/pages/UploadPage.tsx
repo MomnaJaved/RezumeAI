@@ -20,7 +20,9 @@ async function copyToClipboard(text: string): Promise<void> {
   await navigator.clipboard.writeText(text);
 }
 
-export default function UploadPage() {
+export type UploadPageVariant = "recruiter" | "candidate";
+
+export default function UploadPage({ variant = "recruiter" }: { variant?: UploadPageVariant }) {
   const toast = useToast();
   const [files, setFiles] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -41,13 +43,14 @@ export default function UploadPage() {
   >([]);
 
   useEffect(() => {
+    if (variant === "candidate") return;
     fetchJobs()
       .then((list) => {
         setJobs(list);
         setJobId((prev) => (prev || (list[0]?.external_id ?? "")));
       })
       .catch(() => setJobs([]));
-  }, []);
+  }, [variant]);
 
   const resetOutcome = useCallback(() => {
     setCandidate(null);
@@ -111,7 +114,9 @@ export default function UploadPage() {
         setUploadMeta({ status: last.status, textLen: last.textLen });
       }
       if (failLines.length === 0) {
-        if (files.length === 1 && ok[0]) {
+        if (variant === "candidate") {
+          toast.success("Your profile was updated from your resume.");
+        } else if (files.length === 1 && ok[0]) {
           toast.success(
             ok[0].status === "created" ? "Candidate created in the database." : "Existing candidate updated.",
           );
@@ -130,6 +135,7 @@ export default function UploadPage() {
   }
 
   async function runRank(persist: boolean) {
+    if (variant === "candidate") return;
     if (!jobId.trim()) {
       toast.error("Pick a job.");
       return;
@@ -162,15 +168,27 @@ export default function UploadPage() {
     }
   }
 
+  const isCandidate = variant === "candidate";
+
   return (
-    <div>
-      <h1>Add candidates</h1>
-      <p className="muted">
-        Upload <strong>one or many</strong> resumes in a single batch. Supported: <strong>PDF</strong>,{" "}
-        <strong>DOCX</strong>, <strong>TXT</strong>, and common <strong>images</strong> (PNG, JPEG, WebP, …).
-        Scanned pages need{" "}
-        <a href="https://github.com/tesseract-ocr/tesseract">Tesseract</a> and <code>pytesseract</code> on the
-        server. Text is stored with PII placeholders; skills and role are inferred automatically.
+    <div className="dash-upload-page">
+      <h1 className="dash-title">{isCandidate ? "Your resume" : "Add candidates"}</h1>
+      <p className="muted dash-upload-lead">
+        {isCandidate ? (
+          <>
+            Upload your CV so recruiters can find you in the pool. Supported: <strong>PDF</strong>, <strong>DOCX</strong>,{" "}
+            <strong>TXT</strong>, and common <strong>images</strong>. Parsed text is stored with PII placeholders; skills
+            and role are inferred automatically. You can replace your resume anytime.
+          </>
+        ) : (
+          <>
+            Upload <strong>one or many</strong> resumes in a single batch. Supported: <strong>PDF</strong>,{" "}
+            <strong>DOCX</strong>, <strong>TXT</strong>, and common <strong>images</strong> (PNG, JPEG, WebP, …). Scanned
+            pages need{" "}
+            <a href="https://github.com/tesseract-ocr/tesseract">Tesseract</a> and <code>pytesseract</code> on the server.
+            Text is stored with PII placeholders; skills and role are inferred automatically.
+          </>
+        )}
       </p>
 
       <div
@@ -184,11 +202,12 @@ export default function UploadPage() {
         onDrop={onDrop}
       >
         <p>
-          <strong>Drop resume files here</strong> or choose below (multiple files allowed).
+          <strong>Drop {isCandidate ? "your resume" : "resume files"} here</strong> or choose below
+          {isCandidate ? "." : " (multiple files allowed)."}
         </p>
         <input
           type="file"
-          multiple
+          multiple={!isCandidate}
           className="upload-input"
           accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,.tif,.tiff,.webp,.bmp,application/pdf"
           onChange={(e) => {
@@ -226,14 +245,14 @@ export default function UploadPage() {
 
       <div style={{ marginTop: "1rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
         <button type="button" className="primary" disabled={loading || !files.length} onClick={() => void submitUpload()}>
-          {loading ? "Parsing…" : "Parse & save to database"}
+          {loading ? "Parsing…" : isCandidate ? "Save to my profile" : "Parse & save to database"}
         </button>
-        <Link to="/jobs">View jobs</Link>
+        <Link to={isCandidate ? "/candidate/jobs" : "/jobs"}>{isCandidate ? "Browse jobs" : "View jobs"}</Link>
       </div>
 
       {candidate && uploadMeta ? (
         <section className="card" style={{ marginTop: "1.25rem" }}>
-          <h2 style={{ marginTop: 0 }}>Last parsed candidate</h2>
+          <h2 style={{ marginTop: 0 }}>{isCandidate ? "Profile updated" : "Last parsed candidate"}</h2>
           <dl className="field-grid">
             <dt>External ID</dt>
             <dd className="mono-row">
@@ -266,84 +285,86 @@ export default function UploadPage() {
         </section>
       ) : null}
 
-      <section className="card" style={{ marginTop: "1.5rem" }}>
-        <h2 style={{ marginTop: 0 }}>Rank against a job (database mode)</h2>
-        <p className="muted">
-          Best automated prior for fit: cross-encoder on the <strong>full database pool</strong> (includes this
-          upload). No SBERT shortlist, so nobody is dropped before scoring. Open a job for more actions:{" "}
-          {jobId ? <Link to={`/jobs/${encodeURIComponent(jobId)}`}>job {jobId}</Link> : <Link to="/jobs">jobs</Link>}.
-        </p>
-        <label htmlFor="job-select">Job</label>
-        <select
-          id="job-select"
-          value={jobId}
-          onChange={(e) => setJobId(e.target.value)}
-          disabled={!jobs.length}
-        >
-          {jobs.length === 0 ? (
-            <option value="">No jobs in DB — sync CSV or create via API</option>
-          ) : (
-            jobs.map((j) => (
-              <option key={j.id} value={j.external_id}>
-                {j.external_id} — {j.title || "untitled"}
-              </option>
-            ))
-          )}
-        </select>
-        <div style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-          <button
-            type="button"
-            disabled={rankLoading || !jobId || !jobs.length}
-            onClick={() => void runRank(false)}
+      {!isCandidate ? (
+        <section className="card" style={{ marginTop: "1.5rem" }}>
+          <h2 style={{ marginTop: 0 }}>Rank against a job (database mode)</h2>
+          <p className="muted">
+            Best automated prior for fit: cross-encoder on the <strong>full database pool</strong> (includes this
+            upload). No SBERT shortlist, so nobody is dropped before scoring. Open a job for more actions:{" "}
+            {jobId ? <Link to={`/jobs/${encodeURIComponent(jobId)}`}>job {jobId}</Link> : <Link to="/jobs">jobs</Link>}.
+          </p>
+          <label htmlFor="job-select">Job</label>
+          <select
+            id="job-select"
+            value={jobId}
+            onChange={(e) => setJobId(e.target.value)}
+            disabled={!jobs.length}
           >
-            {rankLoading ? "Ranking…" : "Preview top 50"}
-          </button>
-          <button
-            type="button"
-            className="primary"
-            disabled={rankLoading || !jobId || !jobs.length}
-            onClick={() => void runRank(true)}
-          >
-            Save ranking to DB
-          </button>
-        </div>
-        {rankPreview.length > 0 ? (
-          <div style={{ marginTop: "1rem", overflow: "auto" }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Candidate</th>
-                  <th>Name</th>
-                  <th>Score</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rankPreview.map((row) => (
-                  <tr
-                    key={row.candidate_external_id}
-                    style={
-                      candidate && row.candidate_external_id === candidate.external_id
-                        ? { background: "#eff6ff" }
-                        : undefined
-                    }
-                  >
-                    <td>{row.rank_position}</td>
-                    <td className="muted mono-tiny">{row.candidate_external_id}</td>
-                    <td>{row.candidate_name || "—"}</td>
-                    <td>{row.cross_encoder_score.toFixed(4)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {candidate ? (
-              <p className="muted" style={{ marginTop: "0.5rem" }}>
-                Highlighted row = the candidate you just uploaded (if they appear in the top 50).
-              </p>
-            ) : null}
+            {jobs.length === 0 ? (
+              <option value="">No jobs in DB — sync CSV or create via API</option>
+            ) : (
+              jobs.map((j) => (
+                <option key={j.id} value={j.external_id}>
+                  {j.external_id} — {j.title || "untitled"}
+                </option>
+              ))
+            )}
+          </select>
+          <div style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+            <button
+              type="button"
+              disabled={rankLoading || !jobId || !jobs.length}
+              onClick={() => void runRank(false)}
+            >
+              {rankLoading ? "Ranking…" : "Preview top 50"}
+            </button>
+            <button
+              type="button"
+              className="primary"
+              disabled={rankLoading || !jobId || !jobs.length}
+              onClick={() => void runRank(true)}
+            >
+              Save ranking to DB
+            </button>
           </div>
-        ) : null}
-      </section>
+          {rankPreview.length > 0 ? (
+            <div style={{ marginTop: "1rem", overflow: "auto" }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Candidate</th>
+                    <th>Name</th>
+                    <th>Score</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rankPreview.map((row) => (
+                    <tr
+                      key={row.candidate_external_id}
+                      style={
+                        candidate && row.candidate_external_id === candidate.external_id
+                          ? { background: "#eff6ff" }
+                          : undefined
+                      }
+                    >
+                      <td>{row.rank_position}</td>
+                      <td className="muted mono-tiny">{row.candidate_external_id}</td>
+                      <td>{row.candidate_name || "—"}</td>
+                      <td>{row.cross_encoder_score.toFixed(4)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {candidate ? (
+                <p className="muted" style={{ marginTop: "0.5rem" }}>
+                  Highlighted row = the candidate you just uploaded (if they appear in the top 50).
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
     </div>
   );
 }

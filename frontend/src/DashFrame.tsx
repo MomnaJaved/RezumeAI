@@ -2,6 +2,8 @@ import { Link, NavLink, useLocation } from "react-router-dom";
 import React, { useEffect, useRef, useState } from "react";
 import DashGlobalSearch from "./DashGlobalSearch";
 import { useAuth } from "./auth";
+import { useT } from "./i18n";
+import { useNotifications } from "./notifications";
 
 function Icon({
   name,
@@ -70,10 +72,11 @@ function Icon({
         </svg>
       );
     case "settings":
+      /* Feather “settings” / gear: center hub + outer cog (24×24 viewBox, scales to 18px). */
       return (
         <svg {...common}>
-          <path d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7z" />
-          <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.87l.05.05a2 2 0 0 1-1.41 3.41h-.1a1.7 1.7 0 0 0-1.6 1.16 2 2 0 0 1-3.82 0 1.7 1.7 0 0 0-1.6-1.16h-.1A2 2 0 0 1 5.26 17l.05-.05A1.7 1.7 0 0 0 5.6 15a1.7 1.7 0 0 0-1.1-1.28A2 2 0 0 1 5.6 10.3 1.7 1.7 0 0 0 5.3 8.43l-.05-.05A2 2 0 0 1 6.66 5h.1a1.7 1.7 0 0 0 1.6-1.16 2 2 0 0 1 3.82 0A1.7 1.7 0 0 0 13.78 5h.1a2 2 0 0 1 1.41 3.41l-.05.05A1.7 1.7 0 0 0 15.5 10.3 1.7 1.7 0 0 0 16.6 11.6a2 2 0 0 1 0 3.4A1.7 1.7 0 0 0 15.5 16.3" />
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
         </svg>
       );
     case "inbox":
@@ -98,6 +101,7 @@ function Icon({
 
 function DashOverflowMenu() {
   const { email, logout } = useAuth();
+  const t = useT();
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -134,7 +138,7 @@ function DashOverflowMenu() {
             </div>
           ) : null}
           <Link to="/settings" className="dash-menu-link" role="menuitem" onClick={() => setOpen(false)}>
-            Settings
+            {t("nav.settings")}
           </Link>
           <button
             type="button"
@@ -145,7 +149,7 @@ function DashOverflowMenu() {
               logout();
             }}
           >
-            Log out
+            {t("nav.logout")}
           </button>
         </div>
       ) : null}
@@ -155,6 +159,8 @@ function DashOverflowMenu() {
 
 export default function DashFrame({ topExtra, children }: { topExtra?: React.ReactNode; children: React.ReactNode }) {
   const loc = useLocation();
+  const t = useT();
+  const { inboxUnreadDmTotal } = useNotifications();
   const hideGlobalSearch = loc.pathname === "/candidates" || loc.pathname.startsWith("/candidates/");
 
   return (
@@ -162,28 +168,33 @@ export default function DashFrame({ topExtra, children }: { topExtra?: React.Rea
       <aside className="dash-sidebar">
         <nav className="dash-nav">
           <NavLink to="/dashboard" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="dashboard" /> Dashboard
+            <Icon name="dashboard" /> {t("nav.dashboard")}
           </NavLink>
           <NavLink end to="/candidates" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="candidates" /> Candidates
+            <Icon name="candidates" /> {t("nav.candidates")}
           </NavLink>
           <NavLink to="/clients" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="clients" /> Clients
+            <Icon name="clients" /> {t("nav.clients")}
           </NavLink>
           <NavLink to="/jobs" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="jobs" /> Jobs
+            <Icon name="jobs" /> {t("nav.jobs")}
           </NavLink>
           <NavLink to="/reports" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="reports" /> Reports
+            <Icon name="reports" /> {t("nav.reports")}
           </NavLink>
           <NavLink to="/settings" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="settings" /> Settings
+            <Icon name="settings" /> {t("nav.settings")}
           </NavLink>
           <NavLink to="/inbox" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="inbox" /> Inbox
+            <Icon name="inbox" /> {t("nav.inbox")}
+            {inboxUnreadDmTotal > 0 ? (
+              <span className="dash-nav-badge" aria-label={`${inboxUnreadDmTotal} unread messages`}>
+                {inboxUnreadDmTotal > 99 ? "99+" : inboxUnreadDmTotal}
+              </span>
+            ) : null}
           </NavLink>
           <NavLink to="/matching" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="matching" /> Matching
+            <Icon name="matching" /> {t("nav.matching")}
           </NavLink>
         </nav>
       </aside>

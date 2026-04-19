@@ -17,6 +17,7 @@ from api.services.applicant_status_effective import (
     effective_applicant_status,
     effective_candidate_status,
     global_applicant_status_created_pairs,
+    recruiter_applicant_status_created_pairs,
     stage_bucket_for_dashboard,
 )
 from api.services.candidate_competition_score import compute_profile_scores_0_100
@@ -25,6 +26,38 @@ from api.services.candidate_title_display import polish_candidate_title, polish_
 from api.services.candidate_title_db import resolved_display_title
 
 _log = logging.getLogger("rezume.api")
+
+
+def _candidate_ids_applied_to_workspace_jobs(db: Session, workspace_id: UUID) -> list[UUID]:
+    rows = (
+        db.query(JobApplicant.candidate_id)
+        .join(Job, Job.id == JobApplicant.job_id)
+        .filter(Job.workspace_id == workspace_id)
+        .distinct()
+        .all()
+    )
+    return [r[0] for r in rows if r[0] is not None]
+
+
+def _candidates_by_ids_ordered(db: Session, cand_ids: list[UUID], *, columns_only: bool, limit: int) -> list[Candidate]:
+    if not cand_ids:
+        return []
+    uniq: list[UUID] = []
+    seen: set[UUID] = set()
+    for cid in cand_ids:
+        if cid not in seen:
+            seen.add(cid)
+            uniq.append(cid)
+    q = db.query(Candidate)
+    if columns_only:
+        q = q.options(load_only(*_PIPELINE_COLUMNS))
+    out: list[Candidate] = []
+    for i in range(0, len(uniq), _CAND_ID_IN_CHUNK):
+        chunk = uniq[i : i + _CAND_ID_IN_CHUNK]
+        out.extend(q.filter(Candidate.id.in_(chunk)).all())
+    out.sort(key=lambda c: c.created_at or datetime.min, reverse=True)
+    return out[:limit]
+
 
 # Cap for *preview avatars* / recent applicant scan only. Pipeline **counts** must include every row.
 _MAX_PIPELINE_PREVIEW_APPLICANTS = 1200
@@ -44,7 +77,7 @@ _PIPELINE_STAGES: list[tuple[str, str]] = [
     ("new", "New Applicants"),
     ("screened", "Screened"),
     ("shortlisted", "Short Listed"),
-    ("interviewed", "Interviewed"),
+    ("interviewing", "Interviewing"),
     ("rejected", "Rejected"),
     ("hired", "Hired"),
 ]
@@ -136,12 +169,16 @@ def _preview_rows_for_cohort(
 
 
 
-def build_dashboard_widgets(db: Session) -> dict[str, Any]:
-    # Applicant tracker (global): every job_applicant row, plus candidates with no job_applicant row
-    # (their stage is `candidates.status` on the profile — otherwise the dashboard stays empty).
+def build_dashboard_widgets(db: Session, recruiter_workspace_id: Optional[UUID] = None) -> dict[str, Any]:
+    # Without recruiter_workspace_id: global tracker (legacy / REQUIRE_AUTH off).
+    # With recruiter_workspace_id: only applications to jobs in that workspace.
     stage_order = [k for k, _ in _PIPELINE_STAGES]
     try:
-        agg = applicant_tracker_counts(global_applicant_status_created_pairs(db))
+        if recruiter_workspace_id is not None:
+            pairs = recruiter_applicant_status_created_pairs(db, recruiter_workspace_id)
+        else:
+            pairs = global_applicant_status_created_pairs(db)
+        agg = applicant_tracker_counts(pairs)
         counts: dict[str, int] = {k: int(agg.get(k, 0)) for k in stage_order}
     except Exception as e:
         _log.warning("dashboard_widgets pipeline aggregate: %s", e)
@@ -152,12 +189,10 @@ def build_dashboard_widgets(db: Session) -> dict[str, Any]:
 
     # Avatars / "people" chips: keep a bounded recent scan for responsiveness.
     try:
-        apps_preview = (
-            db.query(JobApplicant)
-            .order_by(JobApplicant.updated_at.desc())
-            .limit(_MAX_PIPELINE_PREVIEW_APPLICANTS)
-            .all()
-        )
+        q = db.query(JobApplicant)
+        if recruiter_workspace_id is not None:
+            q = q.join(Job, Job.id == JobApplicant.job_id).filter(Job.workspace_id == recruiter_workspace_id)
+        apps_preview = q.order_by(JobApplicant.updated_at.desc()).limit(_MAX_PIPELINE_PREVIEW_APPLICANTS).all()
     except Exception as e:
         _log.warning("dashboard_widgets applicants(preview): %s", e)
         apps_preview = []
@@ -184,20 +219,22 @@ def build_dashboard_widgets(db: Session) -> dict[str, Any]:
                 }
             )
 
-    # Profile-only candidates (no job application row): still show avatars when job preview is empty.
-    try:
-        has_app = exists().where(JobApplicant.candidate_id == Candidate.id)
-        orphan_cands = (
-            db.query(Candidate)
-            .options(load_only(*_PIPELINE_COLUMNS))
-            .filter(~has_app)
-            .order_by(Candidate.created_at.desc())
-            .limit(500)
-            .all()
-        )
-    except Exception as e:
-        _log.warning("dashboard_widgets orphan pipeline preview: %s", e)
-        orphan_cands = []
+    # Profile-only candidates (no job application row): global dashboard only (not per-recruiter).
+    orphan_cands: list[Candidate] = []
+    if recruiter_workspace_id is None:
+        try:
+            has_app = exists().where(JobApplicant.candidate_id == Candidate.id)
+            orphan_cands = (
+                db.query(Candidate)
+                .options(load_only(*_PIPELINE_COLUMNS))
+                .filter(~has_app)
+                .order_by(Candidate.created_at.desc())
+                .limit(500)
+                .all()
+            )
+        except Exception as e:
+            _log.warning("dashboard_widgets orphan pipeline preview: %s", e)
+            orphan_cands = []
 
     for c in orphan_cands:
         sk = _stage_key_for_applicant(c.status, c.created_at)
@@ -227,10 +264,13 @@ def build_dashboard_widgets(db: Session) -> dict[str, Any]:
         )
 
     # --- Jobs pie: lifecycle status breakdown ---
-    total_jobs = int(db.query(Job).count())
+    jq = db.query(Job)
+    if recruiter_workspace_id is not None:
+        jq = jq.filter(Job.workspace_id == recruiter_workspace_id)
+    total_jobs = int(jq.count())
     by_status = {"active": 0, "on_hold": 0, "completed": 0, "cancelled": 0}
     try:
-        rows = db.query(Job.status).all()
+        rows = jq.with_entities(Job.status).all()
         for (st,) in rows:
             s = (st or "active").strip().lower()
             if s == "inactive":
@@ -268,9 +308,13 @@ def build_dashboard_widgets(db: Session) -> dict[str, Any]:
             segments.append({"key": k, "label": lab, "count": n, "pct": pct, "color": col})
         pie = {"segments": segments, "total": total_jobs}
 
-    # --- Candidate preview: profile cohort percentiles only (same number as candidates list / profile chip).
+    # --- Candidate preview: cohort for profile percentiles ---
     try:
-        cohort = db.query(Candidate).order_by(Candidate.created_at.desc()).all()
+        if recruiter_workspace_id is not None:
+            ids = _candidate_ids_applied_to_workspace_jobs(db, recruiter_workspace_id)
+            cohort = _candidates_by_ids_ordered(db, ids, columns_only=False, limit=_MAX_CANDIDATE_PREVIEW_POOL)
+        else:
+            cohort = db.query(Candidate).order_by(Candidate.created_at.desc()).all()
     except Exception as e:
         _log.warning("dashboard_widgets cohort for scores: %s", e)
         cohort = []
@@ -279,20 +323,24 @@ def build_dashboard_widgets(db: Session) -> dict[str, Any]:
     profile_by_id: dict[UUID, float] = {}
     job_fit_by_id: dict[UUID, float] = {}
     try:
-        prof = compute_profile_scores_0_100(cohort)
+        prof = compute_profile_scores_0_100(cohort) if cohort else []
         profile_by_id = {c.id: prof[i] for i, c in enumerate(cohort)}
     except Exception as e:
         _log.warning("dashboard_widgets profile scores: %s", e)
 
     # Candidate preview remains based on candidate recency + stages (best-effort).
     try:
-        candidates = (
-            db.query(Candidate)
-            .options(load_only(*_PIPELINE_COLUMNS))
-            .order_by(Candidate.created_at.desc())
-            .limit(_MAX_CANDIDATE_PREVIEW_POOL)
-            .all()
-        )
+        if recruiter_workspace_id is not None:
+            ids = _candidate_ids_applied_to_workspace_jobs(db, recruiter_workspace_id)
+            candidates = _candidates_by_ids_ordered(db, ids, columns_only=True, limit=_MAX_CANDIDATE_PREVIEW_POOL)
+        else:
+            candidates = (
+                db.query(Candidate)
+                .options(load_only(*_PIPELINE_COLUMNS))
+                .order_by(Candidate.created_at.desc())
+                .limit(_MAX_CANDIDATE_PREVIEW_POOL)
+                .all()
+            )
     except Exception as e:
         _log.warning("dashboard_widgets candidates: %s", e)
         candidates = []
@@ -330,20 +378,24 @@ def build_dashboard_widgets(db: Session) -> dict[str, Any]:
     }
 
 
-def build_dashboard_preview_job_breadth_scores(db: Session) -> dict[str, Any]:
+def build_dashboard_preview_job_breadth_scores(db: Session, recruiter_workspace_id: Optional[UUID] = None) -> dict[str, Any]:
     """
     Same candidate preview rows as GET /meta/dashboard/widgets (profile cohort scores for the table).
     Kept for API compatibility; does not run the cross-encoder job-breadth pass.
     """
     try:
-        cohort = db.query(Candidate).order_by(Candidate.created_at.desc()).all()
+        if recruiter_workspace_id is not None:
+            ids = _candidate_ids_applied_to_workspace_jobs(db, recruiter_workspace_id)
+            cohort = _candidates_by_ids_ordered(db, ids, columns_only=False, limit=_MAX_CANDIDATE_PREVIEW_POOL)
+        else:
+            cohort = db.query(Candidate).order_by(Candidate.created_at.desc()).all()
     except Exception as e:
         _log.warning("dashboard_preview_job_breadth cohort: %s", e)
         cohort = []
 
     profile_by_id: dict[UUID, float] = {}
     try:
-        prof = compute_profile_scores_0_100(cohort)
+        prof = compute_profile_scores_0_100(cohort) if cohort else []
         profile_by_id = {c.id: prof[i] for i, c in enumerate(cohort)}
     except Exception as e:
         _log.warning("dashboard_preview_job_breadth profile scores: %s", e)

@@ -12,12 +12,12 @@ const DATE_PRESETS: { label: string; value: string; days?: number }[] = [
   { label: "Last year", value: "1y", days: 365 },
 ];
 
+/** Same buckets as dashboard applicant tracker (shortlisted includes “selected” applicants). */
 const PIPELINE_STAGES = [
   { key: "new",          label: "New",          color: "rgba(56,189,248,0.85)"  },
   { key: "screened",     label: "Screened",     color: "rgba(56,189,248,0.68)"  },
   { key: "shortlisted",  label: "Shortlisted",  color: "rgba(99,102,241,0.85)"  },
   { key: "interviewing", label: "Interviewing", color: "rgba(168,85,247,0.8)"   },
-  { key: "selected",     label: "Selected",     color: "rgba(251,191,36,0.85)"  },
   { key: "hired",        label: "Hired",        color: "rgba(134,239,172,0.85)" },
   { key: "rejected",     label: "Rejected",     color: "rgba(248,113,113,0.75)" },
 ] as const;

@@ -155,6 +155,8 @@ class JobRead(BaseModel):
     education_required: str
     status: str
     created_at: datetime
+    created_by_user_id: Optional[UUID] = None
+    workspace_id: Optional[UUID] = None
 
 
 # --- Job attachments ---
@@ -351,6 +353,14 @@ class IngestionStatusOut(BaseModel):
 class UserRegisterIn(BaseModel):
     email: str = Field(..., min_length=3, max_length=320)
     password: str = Field(..., min_length=8, max_length=128)
+    account_role: str = Field(default="recruiter", description="recruiter | candidate")
+
+
+class LoginCredentialsIn(BaseModel):
+    """Sign-in body: allow short passwords so the API can return 401 instead of 422."""
+
+    email: str = Field(..., min_length=3, max_length=320)
+    password: str = Field(..., min_length=1, max_length=128)
 
 
 class RegisterStartResponse(BaseModel):
@@ -369,6 +379,32 @@ class VerifyEmailCodeResponse(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    account_role: Optional[str] = None
+
+
+class LoginResult(BaseModel):
+    """Password step: either a token, or an OTP challenge for 2FA users."""
+
+    access_token: Optional[str] = None
+    token_type: str = "bearer"
+    requires_otp: bool = False
+    otp_challenge_id: Optional[str] = None
+    account_role: Optional[str] = None
+
+
+class LoginOtpCompleteIn(BaseModel):
+    challenge_id: str = Field(..., min_length=1, max_length=64)
+    code: str = Field(..., min_length=4, max_length=12)
+
+
+class UserSessionOut(BaseModel):
+    id: str
+    device_label: str
+    location_label: str
+    ip_address: str
+    created_at: str
+    last_seen_at: str
+    is_current: bool
 
 
 class UserProfileOut(BaseModel):
@@ -381,6 +417,9 @@ class UserProfileOut(BaseModel):
     available_hours: str
     role_label: str
     avatar_data: Optional[str] = None
+    two_factor_enabled: bool = False
+    account_role: str = "recruiter"
+    workspace_id: Optional[str] = None
 
 
 class UserProfileUpdate(BaseModel):
@@ -391,11 +430,36 @@ class UserProfileUpdate(BaseModel):
     available_hours: Optional[str] = None
     role_label: Optional[str] = None
     avatar_data: Optional[str] = None
+    two_factor_enabled: Optional[bool] = None
 
 
 class ChangePasswordIn(BaseModel):
     current_password: str = Field(..., min_length=1)
     new_password: str = Field(..., min_length=8, max_length=128)
+
+
+class DeleteAccountIn(BaseModel):
+    """Confirm account deletion with the current password."""
+
+    password: str = Field(..., min_length=1, max_length=256)
+
+
+class ForgotPasswordIn(BaseModel):
+    email: str = Field(..., min_length=3, max_length=320)
+
+
+class ForgotPasswordResponse(BaseModel):
+    status: str = "ok"
+
+
+class ResetPasswordIn(BaseModel):
+    email: str = Field(..., min_length=3, max_length=320)
+    code: str = Field(..., min_length=4, max_length=12)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+class ResetPasswordResponse(BaseModel):
+    status: str = "password_reset"
 
 
 # --- Human-in-the-loop (ranking feedback) ---
@@ -427,3 +491,53 @@ class HumanFeedbackRead(BaseModel):
     rank_position_shown: Optional[int]
     model_score_at_feedback: Optional[float]
     created_at: datetime
+
+
+# --- Inbox (activity + messages + read state) ---
+class InboxItemOut(BaseModel):
+    id: str
+    kind: str
+    message: str
+    at: str
+    href: Optional[str] = None
+    read: bool
+    tabs: List[str] = Field(default_factory=list)
+    direct: bool = False
+    sender_email: Optional[str] = None
+    direction: Optional[str] = None  # in | out
+    peer_email: Optional[str] = None
+    chat_scope: Optional[str] = None
+    peer_display_name: Optional[str] = None
+    peer_profile_path: Optional[str] = None
+
+
+class InboxIdsBody(BaseModel):
+    ids: List[str] = Field(default_factory=list)
+
+
+class InboxTabBody(BaseModel):
+    tab: str = Field(default="all", description="all | alerts | candidates")
+
+
+class InboxSendIn(BaseModel):
+    to_email: str = Field(..., min_length=3, max_length=320)
+    body: str = Field(..., min_length=1, max_length=20000)
+    subject: str = Field(default="", max_length=512)
+    chat_scope: str = Field(default="general", description="general | candidates | clients")
+
+
+class InboxMarkResult(BaseModel):
+    updated: int
+
+
+class InboxThreadDeleteIn(BaseModel):
+    peer_email: str = Field(..., min_length=3, max_length=320)
+    chat_scope: str = Field(..., description="general | candidates | clients")
+
+
+class InboxThreadDeleteResult(BaseModel):
+    deleted: int
+
+
+class InboxMessageDeleteIn(BaseModel):
+    mode: str = Field(..., description="everyone | me")

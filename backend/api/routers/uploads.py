@@ -125,6 +125,12 @@ def upload_resume(
         db.refresh(cand)
         note = "created"
 
+    if _ is not None and getattr(_, "account_role", "recruiter") == "candidate":
+        db.query(Candidate).filter(Candidate.user_id == _.id, Candidate.id != cand.id).update({"user_id": None}, synchronize_session=False)
+        cand.user_id = _.id
+        db.commit()
+        db.refresh(cand)
+
     _log.info("Resume upload %s external_id=%s bytes=%s", note, cand.external_id, len(content))
     return ResumeUploadResponse(
         status=note,

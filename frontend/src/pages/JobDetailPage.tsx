@@ -46,14 +46,29 @@ export default function JobDetailPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     setError(null);
     setJob(null);
+    setSaved(null);
+    setPreview([]);
+    setDbPreview([]);
     fetchJobByExternalId(externalId)
-      .then(setJob)
-      .catch(() => setJob(null));
+      .then((j) => {
+        if (!cancelled) setJob(j);
+      })
+      .catch(() => {
+        if (!cancelled) setJob(null);
+      });
     fetchSavedRankings(externalId)
-      .then((r) => setSaved(r.rankings.map(mapSavedRow)))
-      .catch(() => setSaved(null));
+      .then((r) => {
+        if (!cancelled) setSaved(r.rankings.map(mapSavedRow));
+      })
+      .catch(() => {
+        if (!cancelled) setSaved(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [externalId]);
 
   async function runPreview() {
