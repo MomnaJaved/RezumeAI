@@ -53,18 +53,26 @@ def recruiter_meta_scope(
     user: Optional[User] = Depends(get_current_user_optional),
 ) -> Optional[UUID]:
     """
-    When REQUIRE_AUTH is off, return None (global aggregates for shared/local DBs).
-    When on, require a logged-in recruiter and return their workspace id for scoped dashboard APIs.
+    Resolve the workspace id for dashboard / analytics aggregates.
+
+    - Authenticated recruiter: always scope to their workspace, regardless of
+      ``REQUIRE_AUTH``. This matches the behaviour of the candidates/jobs
+      routers and prevents a fresh account from seeing data that belongs to
+      other tenants in the shared database.
+    - No user with ``REQUIRE_AUTH=true``: 401 (protected deployment).
+    - No user with ``REQUIRE_AUTH=false``: return None so legacy/anonymous
+      clients (e.g. unit tests, older scripts) still get global counts.
+    - Candidate account: 403 — these endpoints are recruiter-only.
     """
     settings = get_settings()
-    if not settings.require_auth:
-        return None
     if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        if settings.require_auth:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return None
     role = (getattr(user, "account_role", None) or "recruiter").strip().lower()
     if role == "candidate":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Recruiter access required")

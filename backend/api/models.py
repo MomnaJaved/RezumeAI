@@ -105,6 +105,18 @@ class Candidate(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    # Tenant attribution: the recruiter workspace that uploaded this candidate.
+    # NULL for legacy rows or self-registered candidate accounts; rows that are
+    # linked to any job (applicant/ranking/shortlist) remain visible via that
+    # join too, so this column is additive — never a substitute for the
+    # existing visibility predicate.
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # Recruiter who uploaded this candidate (kept for audit + workspace fallback).
+    created_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     # Matches candidate_id in candidates_enriched.csv
     external_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     # Display name (from CV filename or manual); may differ from professional title below
@@ -335,6 +347,19 @@ class ResumeIngestion(Base):
     error: Mapped[str] = mapped_column(Text, default="")
 
     candidate_external_id: Mapped[str] = mapped_column(String(64), default="")
+
+    # Workspace attribution captured at upload time so the background worker
+    # (which gets a fresh DB session, no Request) can stamp the resulting
+    # Candidate row. NULL means "uploaded before multi-tenant scoping" or a
+    # candidate self-ingest; the worker treats NULL as no scope.
+    #
+    # We intentionally do NOT mirror ``created_by_user_id`` here: the uploading
+    # user's identity is only needed on the final ``Candidate`` row; carrying
+    # it on every ingestion row would require another migration column with
+    # no consumer.
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

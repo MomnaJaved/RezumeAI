@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm import sessionmaker
 
 from api.database import get_db
-from api.dependencies import require_user_if_auth_enabled
+from api.dependencies import get_current_user_optional, require_user_if_auth_enabled
 from api.errors import RezumeAPIError
 from api.models import Candidate, ResumeIngestion, User
 from api.schemas import (
@@ -29,6 +29,7 @@ from api.services.resume_ingest import ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, _st
 from api.services.sbert_shortlist import embed_text
 from api.services.activity_log import log_activity
 from api.services.candidate_display import display_full_name_from_db
+from api.services.workspace_scope import ensure_workspace_for_recruiter
 from src.parsing.name_extractor import UNKNOWN_CANDIDATE
 from api.slow_limiter import limiter
 
@@ -119,6 +120,11 @@ def _process_one_ingestion(ingestion_id: UUID, engine: Engine) -> None:
         _touch_updated(ing)
         db.commit()
 
+        # Workspace ownership was captured on the ingestion row at request
+        # time — carry it onto the candidate so the uploader's workspace sees
+        # the new profile even before it's attached to a job.
+        ing_workspace_id = getattr(ing, "workspace_id", None)
+
         # Upsert candidate
         ext_id = parsed["external_id"]
         existing = db.query(Candidate).filter(Candidate.external_id == ext_id).first()
@@ -140,6 +146,9 @@ def _process_one_ingestion(ingestion_id: UUID, engine: Engine) -> None:
                 existing.contact_email = parsed["contact_email"]
             if not getattr(existing, "status", ""):
                 existing.status = "new"
+            # Claim unowned candidates; don't overwrite another workspace's ownership.
+            if ing_workspace_id is not None and getattr(existing, "workspace_id", None) is None:
+                existing.workspace_id = ing_workspace_id
             cand = existing
         else:
             cand = Candidate(
@@ -158,6 +167,7 @@ def _process_one_ingestion(ingestion_id: UUID, engine: Engine) -> None:
                 certifications=parsed.get("certifications") or "",
                 contact_email=parsed.get("contact_email") or "",
                 status="new",
+                workspace_id=ing_workspace_id,
             )
             db.add(cand)
 
@@ -213,6 +223,7 @@ def ingest_bulk_resumes(
     background: BackgroundTasks,
     files: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
     _: Optional[User] = Depends(require_user_if_auth_enabled),
 ):
     """
@@ -221,6 +232,12 @@ def ingest_bulk_resumes(
     """
     if not files:
         raise RezumeAPIError("NO_FILES", "No files uploaded.", 400)
+
+    # Resolve the uploading recruiter's workspace once so every ingestion row
+    # in this batch carries it; the background worker reads it off the row.
+    upload_workspace_id = None
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        upload_workspace_id = ensure_workspace_for_recruiter(db, user)
 
     batch_id = uuid4()
     root = _storage_root() / "ingestions" / "raw" / str(batch_id)
@@ -232,7 +249,13 @@ def ingest_bulk_resumes(
     for f in files:
         fn = f.filename or ""
         if not fn:
-            row = ResumeIngestion(batch_id=batch_id, source="bulk_upload", status="failed", error="Missing filename")
+            row = ResumeIngestion(
+                batch_id=batch_id,
+                source="bulk_upload",
+                status="failed",
+                error="Missing filename",
+                workspace_id=upload_workspace_id,
+            )
             db.add(row)
             db.commit()
             db.refresh(row)
@@ -248,6 +271,7 @@ def ingest_bulk_resumes(
                 filename=fn,
                 content_type=f.content_type or "",
                 error=f"Unsupported file type: {ext}",
+                workspace_id=upload_workspace_id,
             )
             db.add(row)
             db.commit()
@@ -264,6 +288,7 @@ def ingest_bulk_resumes(
                 filename=fn,
                 content_type=ct,
                 error=f"Content-Type not accepted: {ct}",
+                workspace_id=upload_workspace_id,
             )
             db.add(row)
             db.commit()
@@ -280,6 +305,7 @@ def ingest_bulk_resumes(
                 filename=fn,
                 content_type=ct,
                 error="File too large",
+                workspace_id=upload_workspace_id,
             )
             db.add(row)
             db.commit()
@@ -299,6 +325,7 @@ def ingest_bulk_resumes(
             filename=fn,
             content_type=ct,
             storage_path=str(disk_path),
+            workspace_id=upload_workspace_id,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )
@@ -321,11 +348,16 @@ def ingest_resume_text(
     body: IngestionCreateText,
     background: BackgroundTasks,
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
     _: Optional[User] = Depends(require_user_if_auth_enabled),
 ):
     """
     Text ingestion (Chrome extension / LinkedIn copy-paste / OCR text already extracted on-device).
     """
+    upload_workspace_id = None
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        upload_workspace_id = ensure_workspace_for_recruiter(db, user)
+
     batch_id = body.batch_id or uuid4()
     row = ResumeIngestion(
         batch_id=batch_id,
@@ -334,6 +366,7 @@ def ingest_resume_text(
         filename=body.filename or "resume.txt",
         content_type="text/plain",
         input_text=body.text.strip(),
+        workspace_id=upload_workspace_id,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
     )

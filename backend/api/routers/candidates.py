@@ -662,10 +662,22 @@ def get_candidate(
 
 
 @router.post("", response_model=CandidateRead, status_code=201)
-def create_candidate(body: CandidateCreate, db: Session = Depends(get_db)):
+def create_candidate(
+    body: CandidateCreate,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     existing = db.query(Candidate).filter(Candidate.external_id == body.external_id).first()
     if existing:
         raise HTTPException(status_code=409, detail="Candidate with this external_id already exists")
+    # Attribute to the creating recruiter's workspace so this profile appears
+    # in their Candidates list / dashboard immediately, without requiring a
+    # subsequent job link.
+    ws_id = None
+    uid = None
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        ws_id = ensure_workspace_for_recruiter(db, user)
+        uid = user.id
     cand = Candidate(
         external_id=body.external_id,
         full_name=body.full_name,
@@ -681,6 +693,8 @@ def create_candidate(body: CandidateCreate, db: Session = Depends(get_db)):
         education_lines=body.education_lines,
         status=(body.status or "new")[:64],
         contact_email=(body.contact_email or "").strip()[:320],
+        workspace_id=ws_id,
+        created_by_user_id=uid,
     )
     db.add(cand)
     db.commit()

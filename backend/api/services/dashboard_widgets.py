@@ -12,6 +12,7 @@ from sqlalchemy import exists
 from sqlalchemy.orm import Session, load_only
 
 from api.models import Candidate, Job, JobApplicant, JobCandidateRanking
+from api.services.workspace_scope import candidate_visibility_predicate
 from api.services.applicant_status_effective import (
     applicant_tracker_counts,
     effective_applicant_status,
@@ -34,6 +35,22 @@ def _candidate_ids_applied_to_workspace_jobs(db: Session, workspace_id: UUID) ->
         .join(Job, Job.id == JobApplicant.job_id)
         .filter(Job.workspace_id == workspace_id)
         .distinct()
+        .all()
+    )
+    return [r[0] for r in rows if r[0] is not None]
+
+
+def _candidate_ids_visible_to_workspace(db: Session, workspace_id: UUID) -> list[UUID]:
+    """
+    Every candidate a recruiter's workspace should see on the dashboard:
+    applicants/rankings/shortlist on workspace jobs, plus profiles uploaded
+    directly into the workspace (``Candidate.workspace_id``). Without the
+    second set, freshly uploaded candidates would disappear from the
+    dashboard cohort until they were attached to a job.
+    """
+    rows = (
+        db.query(Candidate.id)
+        .filter(candidate_visibility_predicate(workspace_id))
         .all()
     )
     return [r[0] for r in rows if r[0] is not None]
@@ -219,22 +236,27 @@ def build_dashboard_widgets(db: Session, recruiter_workspace_id: Optional[UUID] 
                 }
             )
 
-    # Profile-only candidates (no job application row): global dashboard only (not per-recruiter).
+    # Profile-only candidates (no JobApplicant row): surface them in the
+    # pipeline preview too, so a fresh upload shows up under "New Applicants"
+    # before it's been attached to a job.
+    #   - Global dashboard (no workspace): every candidate without a job link.
+    #   - Recruiter dashboard: only the recruiter's *own* workspace-owned
+    #     orphans; we must not spill candidates from other tenants here even
+    #     if they happen to have no applicant rows anywhere.
     orphan_cands: list[Candidate] = []
-    if recruiter_workspace_id is None:
-        try:
-            has_app = exists().where(JobApplicant.candidate_id == Candidate.id)
-            orphan_cands = (
-                db.query(Candidate)
-                .options(load_only(*_PIPELINE_COLUMNS))
-                .filter(~has_app)
-                .order_by(Candidate.created_at.desc())
-                .limit(500)
-                .all()
-            )
-        except Exception as e:
-            _log.warning("dashboard_widgets orphan pipeline preview: %s", e)
-            orphan_cands = []
+    try:
+        has_app = exists().where(JobApplicant.candidate_id == Candidate.id)
+        oq = (
+            db.query(Candidate)
+            .options(load_only(*_PIPELINE_COLUMNS))
+            .filter(~has_app)
+        )
+        if recruiter_workspace_id is not None:
+            oq = oq.filter(Candidate.workspace_id == recruiter_workspace_id)
+        orphan_cands = oq.order_by(Candidate.created_at.desc()).limit(500).all()
+    except Exception as e:
+        _log.warning("dashboard_widgets orphan pipeline preview: %s", e)
+        orphan_cands = []
 
     for c in orphan_cands:
         sk = _stage_key_for_applicant(c.status, c.created_at)
@@ -311,7 +333,7 @@ def build_dashboard_widgets(db: Session, recruiter_workspace_id: Optional[UUID] 
     # --- Candidate preview: cohort for profile percentiles ---
     try:
         if recruiter_workspace_id is not None:
-            ids = _candidate_ids_applied_to_workspace_jobs(db, recruiter_workspace_id)
+            ids = _candidate_ids_visible_to_workspace(db, recruiter_workspace_id)
             cohort = _candidates_by_ids_ordered(db, ids, columns_only=False, limit=_MAX_CANDIDATE_PREVIEW_POOL)
         else:
             cohort = db.query(Candidate).order_by(Candidate.created_at.desc()).all()
@@ -331,7 +353,7 @@ def build_dashboard_widgets(db: Session, recruiter_workspace_id: Optional[UUID] 
     # Candidate preview remains based on candidate recency + stages (best-effort).
     try:
         if recruiter_workspace_id is not None:
-            ids = _candidate_ids_applied_to_workspace_jobs(db, recruiter_workspace_id)
+            ids = _candidate_ids_visible_to_workspace(db, recruiter_workspace_id)
             candidates = _candidates_by_ids_ordered(db, ids, columns_only=True, limit=_MAX_CANDIDATE_PREVIEW_POOL)
         else:
             candidates = (
@@ -385,7 +407,7 @@ def build_dashboard_preview_job_breadth_scores(db: Session, recruiter_workspace_
     """
     try:
         if recruiter_workspace_id is not None:
-            ids = _candidate_ids_applied_to_workspace_jobs(db, recruiter_workspace_id)
+            ids = _candidate_ids_visible_to_workspace(db, recruiter_workspace_id)
             cohort = _candidates_by_ids_ordered(db, ids, columns_only=False, limit=_MAX_CANDIDATE_PREVIEW_POOL)
         else:
             cohort = db.query(Candidate).order_by(Candidate.created_at.desc()).all()

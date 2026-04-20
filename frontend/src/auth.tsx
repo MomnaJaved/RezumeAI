@@ -5,6 +5,15 @@ const TOKEN_KEY = "rezume.token";
 const EMAIL_KEY = "rezume.email";
 const ACCOUNT_ROLE_KEY = "rezume.account_role";
 
+/**
+ * Keys under "rezume.*" that are session/auth markers — never wiped on their
+ * own. Any *other* "rezume.*" key is treated as per-user cached data (profile,
+ * settings, per-job notes, etc.) and must be cleared when the active account
+ * changes, otherwise the new user sees the previous user's data.
+ */
+const AUTH_STORAGE_KEYS = new Set<string>([TOKEN_KEY, EMAIL_KEY, ACCOUNT_ROLE_KEY]);
+const USER_STORAGE_PREFIX = "rezume.";
+
 export type AccountRole = "recruiter" | "candidate";
 
 type AuthContextValue = {
@@ -22,6 +31,26 @@ function roleFromStorage(): AccountRole | null {
   const r = localStorage.getItem(ACCOUNT_ROLE_KEY);
   if (r === "candidate" || r === "recruiter") return r;
   return null;
+}
+
+/**
+ * Remove every "rezume.*" key except the auth markers. Call on logout or when
+ * a different email signs in — prevents leaking the previous account's cached
+ * profile, settings, and per-job notes into the new session.
+ */
+function purgeUserScopedStorage(): void {
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(USER_STORAGE_PREFIX) && !AUTH_STORAGE_KEYS.has(k)) {
+        keys.push(k);
+      }
+    }
+    for (const k of keys) localStorage.removeItem(k);
+  } catch {
+    /* storage unavailable — nothing to purge */
+  }
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -67,6 +96,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       email,
       accountRole,
       login: (t: string, e?: string, ar?: AccountRole | null) => {
+        // If a *different* account is signing in (or this is a fresh login
+        // after we lost the email marker), drop any cached per-user data so
+        // the new session cannot inherit the previous user's profile, saved
+        // settings, or per-job notes from localStorage.
+        const prevEmail = localStorage.getItem(EMAIL_KEY);
+        const nextEmail = e ? e.trim().toLowerCase() : "";
+        const prevEmailNorm = prevEmail ? prevEmail.trim().toLowerCase() : "";
+        if (!prevEmailNorm || (nextEmail && prevEmailNorm !== nextEmail)) {
+          purgeUserScopedStorage();
+        }
+
         localStorage.setItem(TOKEN_KEY, t);
         setToken(t);
         if (e) {
@@ -78,6 +118,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setAccountRole(role);
       },
       logout: () => {
+        purgeUserScopedStorage();
         localStorage.removeItem(TOKEN_KEY);
         localStorage.removeItem(EMAIL_KEY);
         localStorage.removeItem(ACCOUNT_ROLE_KEY);

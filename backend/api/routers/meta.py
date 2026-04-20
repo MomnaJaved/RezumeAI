@@ -16,7 +16,7 @@ from api.dependencies import get_current_user_optional, recruiter_meta_scope
 from api.models import Candidate, Job, JobApplicant, ResumeIngestion, User
 from api.paths import repo_root
 from api.services.activity_feed import build_activity_notifications
-from api.services.workspace_scope import ensure_workspace_for_recruiter
+from api.services.workspace_scope import candidate_visibility_predicate, ensure_workspace_for_recruiter
 from api.services.activity_log import log_activity
 from api.services.dashboard_widgets import build_dashboard_preview_job_breadth_scores, build_dashboard_widgets
 
@@ -83,20 +83,26 @@ def activity_feed(
 ):
     """
     Lightweight poll endpoint for live notifications (same items as dashboard feed for recruiters).
-    Candidate accounts get an empty list (they do not receive other recruiters' job/ranking alerts).
+
+    Scoping rules (mirrors :func:`recruiter_meta_scope`):
+    - Authenticated recruiter → only activity for jobs in their workspace, even
+      when ``REQUIRE_AUTH`` is off (prevents cross-tenant leakage on a shared DB).
+    - Candidate accounts → empty list.
+    - No user with ``REQUIRE_AUTH=true`` → 401.
+    - No user with ``REQUIRE_AUTH=false`` → global feed (legacy clients / tests).
     """
     settings = get_settings()
-    if settings.require_auth:
-        if user is None:
+    if user is None:
+        if settings.require_auth:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
-        role = (getattr(user, "account_role", None) or "recruiter").strip().lower()
-        if role == "candidate":
-            return {"notifications": []}
-        wid = ensure_workspace_for_recruiter(db, user)
-        return {
-            "notifications": build_activity_notifications(db, limit=60, recruiter_workspace_id=wid),
-        }
-    return {"notifications": build_activity_notifications(db, limit=60, recruiter_workspace_id=None)}
+        return {"notifications": build_activity_notifications(db, limit=60, recruiter_workspace_id=None)}
+    role = (getattr(user, "account_role", None) or "recruiter").strip().lower()
+    if role == "candidate":
+        return {"notifications": []}
+    wid = ensure_workspace_for_recruiter(db, user)
+    return {
+        "notifications": build_activity_notifications(db, limit=60, recruiter_workspace_id=wid),
+    }
 
 
 class LogActivityBody(BaseModel):
@@ -126,20 +132,16 @@ def dashboard(
 
     if recruiter_workspace_id is not None:
         jobs_total = db.query(Job).filter(Job.status == "active", Job.workspace_id == recruiter_workspace_id).count()
-        candidates_total = (
-            db.query(func.count(func.distinct(JobApplicant.candidate_id)))
-            .select_from(JobApplicant)
-            .join(Job, Job.id == JobApplicant.job_id)
-            .filter(Job.workspace_id == recruiter_workspace_id)
-            .scalar()
-            or 0
-        )
+        # Count every candidate visible to this workspace — owned directly
+        # (uploaded by this recruiter) OR linked via any job in the workspace.
+        # Counting only via JobApplicant excluded freshly uploaded candidates
+        # that hadn't been attached to a job yet, so a new account that had
+        # uploaded resumes would still see 0 candidates on the dashboard.
+        vis = candidate_visibility_predicate(recruiter_workspace_id)
+        candidates_total = db.query(func.count(Candidate.id)).filter(vis).scalar() or 0
         new_candidates_24h = (
-            db.query(func.count(func.distinct(JobApplicant.candidate_id)))
-            .select_from(JobApplicant)
-            .join(Job, Job.id == JobApplicant.job_id)
-            .join(Candidate, Candidate.id == JobApplicant.candidate_id)
-            .filter(Job.workspace_id == recruiter_workspace_id, Candidate.created_at >= since_24h)
+            db.query(func.count(Candidate.id))
+            .filter(vis, Candidate.created_at >= since_24h)
             .scalar()
             or 0
         )

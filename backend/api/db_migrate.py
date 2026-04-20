@@ -5,6 +5,8 @@ Called once from app lifespan after create_all.
 from __future__ import annotations
 
 import logging
+import uuid
+from typing import Optional
 
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
@@ -171,6 +173,24 @@ def ensure_extra_columns(engine: Engine) -> None:
         else:
             alters.append("ALTER TABLE candidates ADD COLUMN user_id VARCHAR(36)")
 
+    # Multi-tenant ownership on candidates (and mirror on resume_ingestions so
+    # the background worker can stamp the workspace when the HTTP request is long gone).
+    if existing_cand and "workspace_id" not in existing_cand:
+        if dialect == "postgresql":
+            alters.append("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS workspace_id UUID")
+        else:
+            alters.append("ALTER TABLE candidates ADD COLUMN workspace_id VARCHAR(36)")
+    if existing_cand and "created_by_user_id" not in existing_cand:
+        if dialect == "postgresql":
+            alters.append("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS created_by_user_id UUID")
+        else:
+            alters.append("ALTER TABLE candidates ADD COLUMN created_by_user_id VARCHAR(36)")
+    if existing_ing and "workspace_id" not in existing_ing:
+        if dialect == "postgresql":
+            alters.append("ALTER TABLE resume_ingestions ADD COLUMN IF NOT EXISTS workspace_id UUID")
+        else:
+            alters.append("ALTER TABLE resume_ingestions ADD COLUMN workspace_id VARCHAR(36)")
+
     if existing_jobs and "created_by_user_id" not in existing_jobs:
         if dialect == "postgresql":
             alters.append("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS created_by_user_id UUID")
@@ -272,6 +292,33 @@ def backfill_workspaces(engine: Engine) -> None:
                 if j:
                     cl.workspace_id = j.workspace_id
             db.commit()
+
+        # Candidates: infer workspace from any existing applicant/ranking/shortlist
+        # link. A candidate that has no job link at all stays NULL — it's a true
+        # orphan from before scoping existed; we deliberately don't guess a
+        # workspace for it, otherwise fresh tenants would inherit unrelated
+        # resumes on first boot.
+        existing_cand = _cols(engine, "candidates")
+        if existing_cand and "workspace_id" in existing_cand:
+            from api.models import Candidate, JobApplicant, JobCandidateRanking, JobShortlistedCandidate
+
+            def _pick_workspace(cand_id) -> Optional[uuid.UUID]:  # type: ignore[name-defined]
+                for Link in (JobApplicant, JobCandidateRanking, JobShortlistedCandidate):
+                    row = (
+                        db.query(Job.workspace_id)
+                        .join(Link, Link.job_id == Job.id)
+                        .filter(Link.candidate_id == cand_id, Job.workspace_id.isnot(None))
+                        .first()
+                    )
+                    if row and row[0] is not None:
+                        return row[0]
+                return None
+
+            for cand in db.query(Candidate).filter(Candidate.workspace_id.is_(None)).all():  # noqa: E711
+                ws_id = _pick_workspace(cand.id)
+                if ws_id is not None:
+                    cand.workspace_id = ws_id
+            db.commit()
     except Exception as e:
         _log.warning("backfill_workspaces: %s", e)
         db.rollback()
@@ -303,6 +350,9 @@ def ensure_indexes(engine: Engine) -> None:
     stmts.append("CREATE INDEX IF NOT EXISTS idx_jobs_workspace_id ON jobs (workspace_id)")
     stmts.append("CREATE INDEX IF NOT EXISTS idx_users_workspace_id ON users (workspace_id)")
     stmts.append("CREATE INDEX IF NOT EXISTS idx_clients_workspace_id ON clients (workspace_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_candidates_workspace_id ON candidates (workspace_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_candidates_created_by_user_id ON candidates (created_by_user_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_ingestions_workspace_id ON resume_ingestions (workspace_id)")
 
     # Clients
     stmts.append("CREATE INDEX IF NOT EXISTS idx_clients_status ON clients (status)")

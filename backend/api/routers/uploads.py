@@ -8,11 +8,12 @@ from fastapi import APIRouter, Depends, File, Request, UploadFile
 from sqlalchemy.orm import Session
 
 from api.database import get_db
-from api.dependencies import require_user_if_auth_enabled
+from api.dependencies import get_current_user_optional, require_user_if_auth_enabled
 from api.errors import RezumeAPIError
 from api.models import Candidate, User
 from api.schemas import CandidateRead, ResumeUploadResponse
 from api.services.resume_ingest import ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, parse_upload
+from api.services.workspace_scope import ensure_workspace_for_recruiter
 from api.slow_limiter import limiter
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
@@ -36,6 +37,7 @@ def upload_resume(
     request: Request,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
     _: Optional[User] = Depends(require_user_if_auth_enabled),
 ):
     """
@@ -78,6 +80,16 @@ def upload_resume(
         _log.exception("parse_upload failed: %s", e)
         raise RezumeAPIError("INFERENCE_ERROR", "Resume processing failed.", 503) from e
 
+    # Resolve the uploading recruiter's workspace up-front so both new and
+    # existing-but-unowned candidate rows get stamped. Without this, uploaded
+    # resumes stay invisible to the recruiter who uploaded them (the dashboard
+    # and /candidates lists are workspace-scoped).
+    recruiter_workspace_id = None
+    recruiter_user_id = None
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        recruiter_workspace_id = ensure_workspace_for_recruiter(db, user)
+        recruiter_user_id = user.id
+
     existing = db.query(Candidate).filter(Candidate.external_id == parsed["external_id"]).first()
     if existing:
         existing.full_name = parsed["full_name"]
@@ -98,6 +110,13 @@ def upload_resume(
         # Keep existing.status unless it's empty (back-compat).
         if not getattr(existing, "status", ""):
             existing.status = "new"
+        # Only *claim* unowned candidates. If another workspace already owns
+        # this external_id we don't silently re-assign it — that would let one
+        # tenant yank another tenant's row by guessing the external id.
+        if recruiter_workspace_id is not None and getattr(existing, "workspace_id", None) is None:
+            existing.workspace_id = recruiter_workspace_id
+            if getattr(existing, "created_by_user_id", None) is None:
+                existing.created_by_user_id = recruiter_user_id
         db.commit()
         db.refresh(existing)
         cand = existing
@@ -119,15 +138,17 @@ def upload_resume(
             certifications=parsed.get("certifications") or "",
             contact_email=parsed.get("contact_email") or "",
             status="new",
+            workspace_id=recruiter_workspace_id,
+            created_by_user_id=recruiter_user_id,
         )
         db.add(cand)
         db.commit()
         db.refresh(cand)
         note = "created"
 
-    if _ is not None and getattr(_, "account_role", "recruiter") == "candidate":
-        db.query(Candidate).filter(Candidate.user_id == _.id, Candidate.id != cand.id).update({"user_id": None}, synchronize_session=False)
-        cand.user_id = _.id
+    if user is not None and getattr(user, "account_role", "recruiter") == "candidate":
+        db.query(Candidate).filter(Candidate.user_id == user.id, Candidate.id != cand.id).update({"user_id": None}, synchronize_session=False)
+        cand.user_id = user.id
         db.commit()
         db.refresh(cand)
 

@@ -49,12 +49,22 @@ def workspace_id_for_recruiter_user(db: Session, user: User) -> UUID:
     return w
 
 
-def candidate_query_filtered_for_workspace(base_query, workspace_id: UUID):
+def candidate_visibility_predicate(workspace_id: UUID):
     """
-    Restrict a Candidate query to profiles that appear in this workspace
-    (applicant, ranking, or shortlist on any job in the workspace).
+    Boolean SQL expression that's true for candidates visible to ``workspace_id``.
+
+    A candidate is visible if *any* of the following hold:
+      1. They were uploaded into this workspace (``candidates.workspace_id`` match).
+         This covers fresh uploads that haven't been attached to a job yet —
+         without it, a brand-new recruiter who just uploaded resumes would see
+         an empty Candidates page even though the upload succeeded.
+      2. They appear as an applicant / ranking / shortlist row on any job in
+         this workspace. This preserves the old behaviour for candidates who
+         arrived via a job but have no direct ownership stamp (e.g. legacy
+         data, candidates re-shared across workspaces by linking them to a job).
     """
-    vis = or_(
+    return or_(
+        Candidate.workspace_id == workspace_id,
         exists()
         .where(
             JobApplicant.candidate_id == Candidate.id,
@@ -74,7 +84,14 @@ def candidate_query_filtered_for_workspace(base_query, workspace_id: UUID):
             Job.workspace_id == workspace_id,
         ),
     )
-    return base_query.filter(vis)
+
+
+def candidate_query_filtered_for_workspace(base_query, workspace_id: UUID):
+    """
+    Restrict a Candidate query to profiles visible to ``workspace_id``.
+    See :func:`candidate_visibility_predicate` for the visibility rules.
+    """
+    return base_query.filter(candidate_visibility_predicate(workspace_id))
 
 
 def jobs_in_workspace_query(db: Session, workspace_id: UUID):
