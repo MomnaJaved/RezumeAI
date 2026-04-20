@@ -14,7 +14,6 @@ import ResumePreviewModal from "../components/ResumePreviewModal";
 import { useToast } from "../toast";
 import { candidateAvatarInitials, candidateDisplayName, candidateMailtoSubjectLine } from "../candidateDisplayName";
 import { formatCandidateExperience } from "../experienceDisplay";
-import { candidateListProfileScore } from "../candidateListScore";
 import {
   deleteCandidateByExternalId,
   fetchCandidate,
@@ -649,6 +648,12 @@ export default function CandidateDetailPage() {
                       </span>
                       <span className={`cand-status ${st}`} title="Includes automatic transition from New after 7 days.">
                         {statusLabel(c.status_effective || c.status)}
+                      </span>
+                      <span
+                        className={`cand-pool-badge ${c.is_public ? "pool-public" : "pool-private"}`}
+                        title={c.is_public ? "Applied via candidate portal" : "Uploaded by recruiter"}
+                      >
+                        {c.is_public ? "Public" : "Private"}
                       </span>
                       {(c.role_label || "").trim() ? (
                         <span className="cand-detail-pill muted">{c.role_label}</span>
