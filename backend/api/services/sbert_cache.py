@@ -11,6 +11,13 @@ from api.services.candidate_title_db import resolved_display_title
 
 _log = logging.getLogger("rezume.api")
 
+# Per-job diagnostic from the most recent ``refresh_sbert_for_job`` call.
+# Keyed by Job.id (UUID) so concurrent refreshes for different jobs don't
+# clobber each other. Used by the match-candidates endpoint to turn a silent
+# "wrote 0 rows" into an actionable 404. Only read immediately after a call.
+LAST_REFRESH_DIAGNOSTIC: dict = {}
+
+
 def refresh_sbert_for_job_id(engine, job_id, top_k: int = 200) -> int:
     """
     Background-task friendly entrypoint that creates its own DB session.
@@ -56,13 +63,22 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
     Recompute SBERT cosine similarities for a job vs all candidates with embeddings,
     persist top_k to JobCandidateSbertScore with rank_position.
     Returns number of stored rows.
+
+    The per-job diagnostic (why the shortlist ended up empty, if it did) is
+    written into the module-level ``LAST_REFRESH_DIAGNOSTIC`` cache keyed by
+    job id, so the rank endpoint can surface a precise 404 reason without
+    re-running the whole pass.
     """
     from api.services.sbert_shortlist import bytes_to_vec, embed_text
     from api.services.smart_filter import passes_filters
 
     k = max(1, min(int(top_k or 200), 2000))
+    diag = {"candidates_total": 0, "with_embedding": 0, "dim_mismatch": 0, "filtered_out": 0, "passed": 0, "job_text_empty": False}
+    LAST_REFRESH_DIAGNOSTIC[job.id] = diag
+
     job_text = (ml_ranking.build_job_text_from_db(job) or "").strip()
     if not job_text:
+        diag["job_text_empty"] = True
         return 0
     q = embed_text(job_text)
 
@@ -70,6 +86,8 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
     import os
     sbert_threshold = float(os.environ.get("REZUME_MATCH_SBERT_THRESHOLD", "0.05") or "0.05")
     skills_overlap_threshold = float(os.environ.get("REZUME_MATCH_SKILLS_OVERLAP", "0.20") or "0.20")
+    diag["sbert_threshold"] = sbert_threshold
+    diag["skills_overlap_threshold"] = skills_overlap_threshold
 
     # Compute cosine sim for all candidates with embeddings, then FILTER, then shortlist Top-K.
     qv = q.astype("float32", copy=False)
@@ -78,6 +96,7 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
     filtered: list[tuple[str, float]] = []  # (candidate_external_id, cosine)
     by_ext: dict[str, Candidate] = {}
     for c in db.query(Candidate).all():
+        diag["candidates_total"] += 1
         if not ensure_candidate_embedding(db, c):
             continue
         b = getattr(c, "embedding_sbert", None)
@@ -85,7 +104,9 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
             continue
         v = bytes_to_vec(b)
         if v.size != qv.size:
+            diag["dim_mismatch"] += 1
             continue
+        diag["with_embedding"] += 1
         denom = float((__import__("numpy").linalg.norm(v) + 1e-12) * qn)
         sim = float(v.dot(qv) / denom)
 
@@ -101,7 +122,9 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
             skills_overlap_threshold=skills_overlap_threshold,
         )
         if not d.passed:
+            diag["filtered_out"] += 1
             continue
+        diag["passed"] += 1
         filtered.append((c.external_id, sim))
         by_ext[c.external_id] = c
 

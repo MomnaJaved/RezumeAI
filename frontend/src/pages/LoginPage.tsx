@@ -196,18 +196,10 @@ export default function LoginPage() {
               placeholder="000000"
             />
           </div>
-          <div className="landing-auth-actions">
+          <div className="landing-auth-role-actions" style={{ marginTop: "1.35rem" }}>
             <button
               type="button"
-              className="btn btn-primary"
-              disabled={busy || otpCode.trim().length < 4}
-              onClick={() => void submitOtp()}
-            >
-              {busy ? "Verifying…" : "Verify and sign in"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost landing-auth-back"
+              className="landing-auth-role-action-btn ghost"
               disabled={busy}
               onClick={() => {
                 setOtpChallengeId(null);
@@ -215,6 +207,14 @@ export default function LoginPage() {
               }}
             >
               Back
+            </button>
+            <button
+              type="button"
+              className="landing-auth-role-action-btn primary"
+              disabled={busy || otpCode.trim().length < 4}
+              onClick={() => void submitOtp()}
+            >
+              {busy ? "Verifying…" : "Verify and sign in →"}
             </button>
           </div>
         </>
@@ -382,18 +382,18 @@ export default function LoginPage() {
             </p>
           </div>
 
-          <div className="landing-auth-actions">
+          <div className="landing-auth-role-actions" style={{ marginTop: "1.35rem" }}>
+            <Link to="/" className="landing-auth-role-action-btn ghost">
+              Back to home
+            </Link>
             <button
               type="button"
-              className="btn btn-primary"
+              className="landing-auth-role-action-btn primary"
               disabled={busy || !email.trim() || !password}
               onClick={() => void submitPassword()}
             >
-              {busy ? "Signing in…" : "Sign in"}
+              {busy ? "Signing in…" : "Sign in →"}
             </button>
-            <Link to="/" className="btn btn-ghost landing-auth-back">
-              Back to home
-            </Link>
           </div>
         </>
       )}

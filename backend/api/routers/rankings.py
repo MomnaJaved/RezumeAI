@@ -4,12 +4,15 @@ import json
 import logging
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from api.database import get_db
-from api.models import Candidate, Job, JobApplicant, JobCandidateRanking, JobCandidateSbertScore, JobShortlistedCandidate
+from api.dependencies import get_current_user_optional, require_user_if_auth_enabled
+from api.models import Candidate, Job, JobApplicant, JobCandidateRanking, JobCandidateSbertScore, JobShortlistedCandidate, User
 from api.schemas import JobRankingsResponse, RankingExplanationOut, StoredRankingRow
 from api.services import ml_ranking
 from api.services.candidate_best_job_cache import refresh_candidate_best_job_cache
@@ -19,11 +22,32 @@ from api.services.ranking_explain import build_ranking_explanation
 from api.services.ranking_insight_sync import clear_job_ranking_insight_cache, refresh_job_ranking_top_insight, shortlisted_candidate_ids
 from api.services.top_candidate_insight import build_top_candidate_insight_paragraph
 from api.services.ranking_run import rank_for_external_job_id
+from api.services.workspace_scope import candidate_query_filtered_for_workspace, ensure_workspace_for_recruiter
 from src.inference.service import classify_role, match_scores_batch
 
 _log = logging.getLogger("rezume.api")
 
 router = APIRouter(prefix="/jobs", tags=["rankings"])
+
+
+def _require_job_in_workspace(db: Session, external_job_id: str, user: Optional[User]) -> Job:
+    """
+    Load job and enforce workspace ownership for recruiter accounts.
+    Returns the job; raises 404 if missing or belongs to a different workspace.
+    """
+    job = db.query(Job).filter(Job.external_id == external_job_id).first()
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Job {external_job_id} not in database.",
+        )
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        w = ensure_workspace_for_recruiter(db, user)
+        if w is not None:
+            job_ws = getattr(job, "workspace_id", None)
+            if job_ws is not None and job_ws != w:
+                raise HTTPException(status_code=404, detail=f"Job {external_job_id} not in database.")
+    return job
 
 
 def _snapshot_role(cand: Candidate, r: dict) -> str:
@@ -43,16 +67,28 @@ def rank_and_save(
     external_job_id: str,
     top_k: int = 50,
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
 ):
     """
     Runs SBERT + cross-encoder pipeline and persists results to PostgreSQL.
+    Scores are stored with workspace_id for per-recruiter isolation.
+    Matching ONLY adds/updates scores — it does not delete candidates.
     """
-    job = db.query(Job).filter(Job.external_id == external_job_id).first()
-    if not job:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Job {external_job_id} not in database. POST /api/v1/jobs first or run sync script.",
-        )
+    job = _require_job_in_workspace(db, external_job_id, user)
+    recruiter_ws = None
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        recruiter_ws = ensure_workspace_for_recruiter(db, user)
+
+    # Always force a fresh SBERT pass when matching is explicitly triggered so
+    # that candidates who applied *after* the last match run are included.
+    # The stale-cache guard in rank_for_external_job_id only refreshes when the
+    # cache is empty, which would leave new applicants invisible.
+    try:
+        from api.services.sbert_cache import refresh_sbert_for_job
+        refresh_sbert_for_job(db, job, top_k=max(200, int(top_k or 50)))
+    except Exception as e:
+        _log.warning("SBERT refresh failed before rank_and_save for %s: %s", external_job_id, e)
 
     try:
         _, rows = rank_for_external_job_id(db, external_job_id, top_k)
@@ -68,22 +104,12 @@ def rank_and_save(
             detail="No candidates scored for this job (empty shortlist or missing data).",
         )
 
-    # Ensure JobApplicant rows exist for this job (single source of truth).
+    # Only delete rankings for this job+workspace so other recruiters' scores are untouched.
     now = datetime.utcnow()
-    for r in rows:
-        cand = db.query(Candidate).filter(Candidate.external_id == r["candidate_id"]).first()
-        if not cand:
-            continue
-        existing_app = (
-            db.query(JobApplicant)
-            .filter(JobApplicant.job_id == job.id, JobApplicant.candidate_id == cand.id)
-            .first()
-        )
-        if not existing_app:
-            db.add(JobApplicant(job_id=job.id, candidate_id=cand.id, status="new", updated_at=now))
-    db.commit()
-
-    db.query(JobCandidateRanking).filter(JobCandidateRanking.job_id == job.id).delete()
+    ranking_q = db.query(JobCandidateRanking).filter(JobCandidateRanking.job_id == job.id)
+    if recruiter_ws is not None:
+        ranking_q = ranking_q.filter(JobCandidateRanking.workspace_id == recruiter_ws)
+    ranking_q.delete(synchronize_session=False)
     db.commit()
 
     run_at = now
@@ -102,6 +128,7 @@ def rank_and_save(
         jr = JobCandidateRanking(
             job_id=job.id,
             candidate_id=cand.id,
+            workspace_id=recruiter_ws,
             rank_position=pos,
             cross_encoder_score=float(adj["final_score"]),
             sbert_similarity=r["sbert_similarity"],
@@ -145,14 +172,18 @@ def rank_and_save(
 
 
 @router.get("/{external_job_id}/stage1-pool")
-def stage1_pool(external_job_id: str, limit: int = 50, db: Session = Depends(get_db)):
+def stage1_pool(
+    external_job_id: str,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
+):
     """
     Stage-1 pool for shortlisting: comes from SBERT cache.
     NEVER returns SBERT scores to the UI.
     """
-    job = db.query(Job).filter(Job.external_id == external_job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = _require_job_in_workspace(db, external_job_id, user)
     lim = max(1, min(int(limit or 50), 500))
     rows = (
         db.query(JobCandidateSbertScore, Candidate)
@@ -187,16 +218,21 @@ def stage1_pool(external_job_id: str, limit: int = 50, db: Session = Depends(get
                 "is_shortlisted": str(cand.id) in shortlisted,
                 # Pipeline status (candidates.status — source of truth).
                 "candidate_status": str(cand.status or "new").strip().lower(),
+                # Pool type: True = public (portal applicant), False = private (recruiter upload).
+                "is_public": bool(getattr(cand, "is_public", False)),
             }
         )
     return {"job_external_id": external_job_id, "items": items}
 
 
 @router.get("/{external_job_id}/shortlist")
-def get_shortlist(external_job_id: str, db: Session = Depends(get_db)):
-    job = db.query(Job).filter(Job.external_id == external_job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+def get_shortlist(
+    external_job_id: str,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
+):
+    job = _require_job_in_workspace(db, external_job_id, user)
     rows = (
         db.query(JobShortlistedCandidate, Candidate)
         .join(Candidate, Candidate.id == JobShortlistedCandidate.candidate_id)
@@ -223,14 +259,18 @@ def get_shortlist(external_job_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{external_job_id}/shortlist")
-def mutate_shortlist(external_job_id: str, body: dict, db: Session = Depends(get_db)):
+def mutate_shortlist(
+    external_job_id: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
+):
     """
     Body:
       { add: ["C001", ...], remove: ["C002", ...] } (candidate external ids)
     """
-    job = db.query(Job).filter(Job.external_id == external_job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = _require_job_in_workspace(db, external_job_id, user)
     add = body.get("add") or []
     rem = body.get("remove") or []
     add_set = {str(x).strip() for x in add if str(x).strip()}
@@ -281,17 +321,24 @@ def mutate_shortlist(external_job_id: str, body: dict, db: Session = Depends(get
         clear_job_ranking_insight_cache(db, job)
         db.commit()
 
-    return get_shortlist(external_job_id, db=db)
+    return get_shortlist(external_job_id, db=db, user=user, _=None)
 
 
 @router.post("/{external_job_id}/rank-shortlist", response_model=JobRankingsResponse)
-def rank_shortlist(external_job_id: str, db: Session = Depends(get_db)):
+def rank_shortlist(
+    external_job_id: str,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
+):
     """
     Stage-2 ranking: cross-encoder on USER SHORTLIST only.
+    Scores stored with workspace_id for per-recruiter isolation.
     """
-    job = db.query(Job).filter(Job.external_id == external_job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = _require_job_in_workspace(db, external_job_id, user)
+    recruiter_ws = None
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        recruiter_ws = ensure_workspace_for_recruiter(db, user)
 
     job_text = ml_ranking.build_job_text_from_db(job)
     if not job_text.strip():
@@ -351,7 +398,11 @@ def rank_shortlist(external_job_id: str, db: Session = Depends(get_db)):
         .all()
     }
 
-    db.query(JobCandidateRanking).filter(JobCandidateRanking.job_id == job.id).delete()
+    # Only delete rankings for this job+workspace so other recruiters' scores are untouched.
+    ranking_q = db.query(JobCandidateRanking).filter(JobCandidateRanking.job_id == job.id)
+    if recruiter_ws is not None:
+        ranking_q = ranking_q.filter(JobCandidateRanking.workspace_id == recruiter_ws)
+    ranking_q.delete(synchronize_session=False)
     db.commit()
 
     run_at = datetime.utcnow()
@@ -372,6 +423,7 @@ def rank_shortlist(external_job_id: str, db: Session = Depends(get_db)):
             JobCandidateRanking(
                 job_id=job.id,
                 candidate_id=cand.id,
+                workspace_id=recruiter_ws,
                 rank_position=pos,
                 cross_encoder_score=float(r["cross_encoder_score"]),
                 sbert_similarity=float(sbert_map.get(str(cand.id), 0.0)),
@@ -414,7 +466,13 @@ def rank_shortlist(external_job_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{external_job_id}/match-one")
-def match_one_candidate(external_job_id: str, body: dict, db: Session = Depends(get_db)):
+def match_one_candidate(
+    external_job_id: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
+):
     """
     Cross-encoder match for ONE candidate vs ONE job.
 
@@ -425,9 +483,7 @@ def match_one_candidate(external_job_id: str, body: dict, db: Session = Depends(
     if not cand_external_id:
         raise HTTPException(status_code=422, detail="candidate_id is required")
 
-    job = db.query(Job).filter(Job.external_id == external_job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = _require_job_in_workspace(db, external_job_id, user)
     cand = db.query(Candidate).filter(Candidate.external_id == cand_external_id).first()
     if not cand:
         raise HTTPException(status_code=404, detail="Candidate not found")
@@ -458,7 +514,13 @@ def match_one_candidate(external_job_id: str, body: dict, db: Session = Depends(
 
 
 @router.post("/{external_job_id}/match-batch")
-def match_batch_candidates(external_job_id: str, body: dict, db: Session = Depends(get_db)):
+def match_batch_candidates(
+    external_job_id: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
+):
     """
     Cross-encoder match for MANY candidates vs ONE job (no shortlist required).
     Returns rank positions sorted by cross-encoder score desc.
@@ -472,9 +534,7 @@ def match_batch_candidates(external_job_id: str, body: dict, db: Session = Depen
     if len(cand_external_ids) > 200:
         raise HTTPException(status_code=422, detail="candidate_ids max is 200")
 
-    job = db.query(Job).filter(Job.external_id == external_job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = _require_job_in_workspace(db, external_job_id, user)
     job_text = ml_ranking.build_job_text_from_db(job)
     if not job_text.strip():
         raise HTTPException(status_code=422, detail="Job has no description/skills text to match.")
@@ -560,18 +620,21 @@ def rank_database_candidates(
     prefilter: str = "sbert",
     prefilter_k: int = 200,
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
 ):
     """
     Scores candidates **stored in the database** (CSV sync + uploads) against one job
     using the **cross-encoder only**. Use this for **new resume uploads** that never
     appear in the offline SBERT shortlist file. `sbert_similarity` is 0.0 here.
 
-    Set `persist=true` to replace saved ranking rows for this job (same table as
-    rank-and-save).
+    Set `persist=true` to replace saved ranking rows for this job+workspace.
+    Candidates are filtered to those visible in the recruiter's workspace.
     """
-    job = db.query(Job).filter(Job.external_id == external_job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = _require_job_in_workspace(db, external_job_id, user)
+    recruiter_ws = None
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        recruiter_ws = ensure_workspace_for_recruiter(db, user)
 
     job_text = ml_ranking.build_job_text_from_db(job)
     if not job_text.strip():
@@ -581,12 +644,12 @@ def rank_database_candidates(
     top_n = max(1, min(top_return, 500))
     pf_method = (prefilter or "none").strip().lower()
     pf_k = max(0, min(int(prefilter_k or 0), lim))
-    cands = (
-        db.query(Candidate)
-        .order_by(Candidate.created_at.desc())
-        .limit(lim)
-        .all()
-    )
+
+    # Filter candidates to the recruiter's workspace to prevent cross-tenant score leakage.
+    cand_q = db.query(Candidate).order_by(Candidate.created_at.desc())
+    if recruiter_ws is not None:
+        cand_q = candidate_query_filtered_for_workspace(cand_q, recruiter_ws)
+    cands = cand_q.limit(lim).all()
     if not cands:
         raise HTTPException(status_code=404, detail="No candidates in database to rank.")
 
@@ -685,7 +748,11 @@ def rank_database_candidates(
     insight_pairs: list[tuple[StoredRankingRow, Candidate]] = []
 
     if persist:
-        db.query(JobCandidateRanking).filter(JobCandidateRanking.job_id == job.id).delete()
+        # Delete only this recruiter's scores for this job, preserving other tenants' data.
+        ranking_q = db.query(JobCandidateRanking).filter(JobCandidateRanking.job_id == job.id)
+        if recruiter_ws is not None:
+            ranking_q = ranking_q.filter(JobCandidateRanking.workspace_id == recruiter_ws)
+        ranking_q.delete(synchronize_session=False)
         db.commit()
 
     for pos, r in enumerate(scored, start=1):
@@ -705,6 +772,7 @@ def rank_database_candidates(
                 JobCandidateRanking(
                     job_id=job.id,
                     candidate_id=cand.id,
+                    workspace_id=recruiter_ws,
                     rank_position=pos,
                     cross_encoder_score=float(r["cross_encoder_score"]),
                     sbert_similarity=r["sbert_similarity"],
@@ -757,6 +825,8 @@ def match_candidates(
     external_job_id: str,
     top_k: int = 50,
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
 ):
     """
     Canonical match trigger: compute SBERT + cross-encoder scores, persist to
@@ -764,28 +834,43 @@ def match_candidates(
     All frontend views should call this to trigger matching, then read from
     GET .../matches (stored data only).
     """
-    return rank_and_save(external_job_id, top_k=top_k, db=db)
+    return rank_and_save(external_job_id, top_k=top_k, db=db, user=user, _=None)
 
 
 @router.get("/{external_job_id}/matches", response_model=JobRankingsResponse)
-def get_job_matches(external_job_id: str, db: Session = Depends(get_db)):
+def get_job_matches(
+    external_job_id: str,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
+):
     """
     Fetch latest persisted match scores for a job.
     Single source of truth: always reads from job_candidate_rankings.
     """
-    return get_saved_rankings(external_job_id, db=db)
+    return get_saved_rankings(external_job_id, db=db, user=user, _=None)
 
 
 @router.get("/{external_job_id}/rankings", response_model=JobRankingsResponse)
-def get_saved_rankings(external_job_id: str, db: Session = Depends(get_db)):
-    job = db.query(Job).filter(Job.external_id == external_job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+def get_saved_rankings(
+    external_job_id: str,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
+):
+    job = _require_job_in_workspace(db, external_job_id, user)
+    recruiter_ws = None
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        recruiter_ws = ensure_workspace_for_recruiter(db, user)
+
+    ranking_filter = [JobCandidateRanking.job_id == job.id]
+    if recruiter_ws is not None:
+        ranking_filter.append(JobCandidateRanking.workspace_id == recruiter_ws)
 
     q = (
         db.query(JobCandidateRanking, Candidate)
         .join(Candidate, JobCandidateRanking.candidate_id == Candidate.id)
-        .filter(JobCandidateRanking.job_id == job.id)
+        .filter(*ranking_filter)
         .order_by(JobCandidateRanking.rank_position)
     )
     rows = q.all()

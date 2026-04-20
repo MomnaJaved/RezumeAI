@@ -20,9 +20,7 @@ export default function RegisterPage() {
     try {
       await registerUser(email, password, accountRole);
       const e = email.trim().toLowerCase();
-      toast.success(
-        "Verification code sent. Check your email — or the API server terminal if SMTP is not configured.",
-      );
+      toast.success("Verification code sent. Check your email.");
       nav(`/verify-email?email=${encodeURIComponent(e)}`);
     } catch (e) {
       toast.error((e as Error).message || "Registration failed");
@@ -42,38 +40,71 @@ export default function RegisterPage() {
       </p>
 
       {step === 0 ? (
-        <div className="landing-auth-fields" style={{ display: "grid", gap: "0.65rem" }}>
-          <p style={{ margin: 0, fontSize: "0.9rem", color: "rgba(255,255,255,0.75)" }}>Sign up as:</p>
-          <label className="landing-auth-role">
-            <input type="radio" name="role" checked={accountRole === "recruiter"} onChange={() => setAccountRole("recruiter")} />
-            <span>
-              <strong>Recruiter</strong> — post jobs, search the candidate pool, shortlist, and hire.
-            </span>
-          </label>
-          <label className="landing-auth-role">
-            <input type="radio" name="role" checked={accountRole === "candidate"} onChange={() => setAccountRole("candidate")} />
-            <span>
-              <strong>Candidate</strong> — upload your resume, browse jobs, apply, and track your status.
-            </span>
-          </label>
-          <div className="landing-auth-actions">
-            <button type="button" className="btn btn-primary" onClick={() => setStep(1)}>
-              Continue
+        <div style={{ display: "grid", gap: "1rem" }}>
+          <p className="landing-auth-role-label">Sign up as:</p>
+          <div className="landing-auth-role-cards">
+            {/* Recruiter card */}
+            <button
+              type="button"
+              className={`landing-auth-role-card${accountRole === "recruiter" ? " selected" : ""}`}
+              onClick={() => setAccountRole("recruiter")}
+            >
+              <span className="landing-auth-role-card-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="26" height="26">
+                  <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" />
+                </svg>
+              </span>
+              {accountRole === "recruiter" && (
+                <span className="landing-auth-role-card-check">✓</span>
+              )}
+              <span className="landing-auth-role-card-title">Recruiter</span>
+              <span className="landing-auth-role-card-desc">
+                Post jobs, search the candidate pool, shortlist, and hire.
+              </span>
             </button>
-            <Link to="/" className="btn btn-ghost landing-auth-back">
+
+            {/* Candidate card */}
+            <button
+              type="button"
+              className={`landing-auth-role-card${accountRole === "candidate" ? " selected" : ""}`}
+              onClick={() => setAccountRole("candidate")}
+            >
+              <span className="landing-auth-role-card-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="26" height="26">
+                  <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v1h16v-1c0-2.66-5.33-4-8-4z" />
+                </svg>
+              </span>
+              {accountRole === "candidate" && (
+                <span className="landing-auth-role-card-check">✓</span>
+              )}
+              <span className="landing-auth-role-card-title">Candidate</span>
+              <span className="landing-auth-role-card-desc">
+                Upload your resume, browse jobs, apply, and track your status.
+              </span>
+            </button>
+          </div>
+
+          <div className="landing-auth-role-actions">
+            <Link to="/" className="landing-auth-role-action-btn ghost">
               Back to home
             </Link>
+            <button type="button" className="landing-auth-role-action-btn primary" onClick={() => setStep(1)}>
+              Continue as {accountRole === "recruiter" ? "Recruiter" : "Candidate"} →
+            </button>
           </div>
         </div>
       ) : (
         <>
           <div className="landing-auth-fields">
-            <button type="button" className="btn btn-ghost landing-auth-back" style={{ marginBottom: "0.5rem" }} onClick={() => setStep(0)}>
-              ← Change role
-            </button>
-            <p style={{ fontSize: "0.85rem", color: "rgba(255,255,255,0.65)", marginBottom: "0.5rem" }}>
+            <p style={{ fontSize: "0.85rem", color: "rgba(255,255,255,0.65)", margin: "0 0 0.25rem" }}>
               Signing up as: <strong>{accountRole === "candidate" ? "Candidate" : "Recruiter"}</strong>
             </p>
+            <div style={{ display: "flex" }}>
+              <button type="button" className="landing-auth-role-action-btn ghost" style={{ marginBottom: "1rem" }} onClick={() => setStep(0)}>
+                ← Change role
+              </button>
+            </div>
+            
             <label htmlFor="email">Email</label>
             <input
               id="email"
@@ -93,18 +124,18 @@ export default function RegisterPage() {
               placeholder="At least 8 characters"
             />
           </div>
-          <div className="landing-auth-actions">
+          <div className="landing-auth-role-actions" style={{ marginTop: "1.35rem" }}>
+            <Link to="/" className="landing-auth-role-action-btn ghost">
+              Back to home
+            </Link>
             <button
               type="button"
-              className="btn btn-primary"
+              className="landing-auth-role-action-btn primary"
               disabled={busy || !email.trim() || password.length < 8}
               onClick={() => void submit()}
             >
-              {busy ? "Creating…" : "Create account"}
+              {busy ? "Creating…" : "Create account →"}
             </button>
-            <Link to="/" className="btn btn-ghost landing-auth-back">
-              Back to home
-            </Link>
           </div>
         </>
       )}

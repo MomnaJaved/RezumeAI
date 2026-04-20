@@ -43,8 +43,7 @@ export default function VerifyEmailPage() {
     <AuthMarketingShell navRight={<Link to="/login">Sign in</Link>}>
       <h1 className="landing-auth-title">Verify your email</h1>
       <p className="landing-auth-lead">
-        Enter the 6-digit code sent to <strong>{email || "your email"}</strong>. If you run the API locally without SMTP,
-        the code is printed in the terminal where the server runs.
+        Enter the 6-digit code sent to <strong>{email || "your email"}</strong>.
       </p>
       <p className="landing-auth-switch">
         Wrong address? <Link to="/register">Register again</Link>
@@ -72,21 +71,23 @@ export default function VerifyEmailPage() {
         />
       </div>
 
-      <div className="landing-auth-actions">
+      <div className="landing-auth-role-actions" style={{ marginTop: "1.35rem" }}>
+        <div style={{ display: "flex", gap: "1.25rem" }}>
+          <Link to="/register" className="landing-auth-role-action-btn ghost">
+            Back to register
+          </Link>
+          <Link to="/" className="landing-auth-role-action-btn ghost">
+            Back to home
+          </Link>
+        </div>
         <button
           type="button"
-          className="btn btn-primary"
+          className="landing-auth-role-action-btn primary"
           disabled={busy || !email.trim() || code.trim().length < 4}
           onClick={() => void submit()}
         >
-          {busy ? "Verifying…" : "Verify and continue"}
+          {busy ? "Verifying…" : "Verify and continue →"}
         </button>
-        <Link to="/register" className="btn btn-ghost landing-auth-back">
-          Back to register
-        </Link>
-        <Link to="/" className="btn btn-ghost landing-auth-back">
-          Back to home
-        </Link>
       </div>
     </AuthMarketingShell>
   );

@@ -12,6 +12,49 @@ from api.services.candidate_display import meta_from_candidate, meta_from_csv_ro
 from src.inference.service import match_scores_batch
 
 
+def _format_empty_shortlist_detail(external_job_id: str, diag: dict | None) -> str:
+    """
+    Turn ``LAST_REFRESH_DIAGNOSTIC`` into a human-readable 404 message.
+
+    The stock "run SBERT refresh" message is misleading here — we already
+    auto-ran it; the real question is *why it wrote 0 rows*. Each branch below
+    maps a diagnostic state to the exact user-facing cause so the recruiter
+    knows whether to fix the job, re-upload resumes, or loosen thresholds.
+    """
+    base = f"No SBERT shortlist for job_id={external_job_id}."
+    if not diag:
+        return f"{base} Run SBERT refresh or sbert_retrieval_ranker.py"
+    if diag.get("error"):
+        return f"{base} SBERT refresh failed: {diag['error']}"
+    if diag.get("job_text_empty"):
+        return f"{base} The job has no title/description/skills to match against — add at least one of those and try again."
+    total = int(diag.get("candidates_total", 0))
+    with_emb = int(diag.get("with_embedding", 0))
+    if total == 0:
+        return f"{base} No candidates exist in the database yet — upload at least one resume first."
+    if with_emb == 0:
+        return (
+            f"{base} None of the {total} candidate(s) have a usable SBERT embedding. "
+            "This usually means the bulk ingestion worker didn't finish — check /ingestions status and retry failed rows."
+        )
+    filtered_out = int(diag.get("filtered_out", 0))
+    if filtered_out > 0 and int(diag.get("passed", 0)) == 0:
+        st = diag.get("sbert_threshold")
+        sk = diag.get("skills_overlap_threshold")
+        return (
+            f"{base} {with_emb} candidate(s) had embeddings but all {filtered_out} were rejected by the match filters "
+            f"(SBERT ≥ {st}, skills overlap ≥ {sk}, plus role/title check). "
+            f"Either upload candidates whose skills/role match the job, or lower the thresholds via "
+            f"REZUME_MATCH_SBERT_THRESHOLD / REZUME_MATCH_SKILLS_OVERLAP env vars."
+        )
+    if diag.get("dim_mismatch", 0) > 0:
+        return (
+            f"{base} Some candidate embeddings have a dimension different from the current SBERT model "
+            f"({diag['dim_mismatch']} row(s)). Delete those rows or re-embed the candidates."
+        )
+    return f"{base} Shortlist ended up empty (diagnostic: {diag})."
+
+
 def rank_for_external_job_id(
     db: Session | None,
     external_job_id: str,
@@ -38,6 +81,7 @@ def rank_for_external_job_id(
         job_text = ml_ranking.build_job_text_from_row(rows.iloc[0])
 
     sbert_rows = None
+    refresh_diag: dict | None = None
     if use_db:
         job = db.query(Job).filter(Job.external_id == str(external_job_id)).first()
         if job:
@@ -52,13 +96,19 @@ def rank_for_external_job_id(
             if not sbert_rows:
                 # Auto-run Stage 1 (SBERT) if cache is missing; this is fast retrieval and must happen before cross-encoder.
                 try:
-                    from api.services.sbert_cache import refresh_sbert_for_job
+                    from api.services.sbert_cache import LAST_REFRESH_DIAGNOSTIC, refresh_sbert_for_job
 
                     refresh_sbert_for_job(db, job, top_k=max(200, int(top_k or 50)))
                     sbert_rows = q.all()
-                except Exception:
+                    # Capture the diagnostic *after* the refresh so the 404 below
+                    # can tell the user whether the job has no text, no candidates
+                    # have embeddings, or the skills/SBERT thresholds rejected
+                    # every candidate. Without this the user just sees a generic
+                    # "run the refresh" message for a refresh that already ran.
+                    refresh_diag = LAST_REFRESH_DIAGNOSTIC.get(job.id)
+                except Exception as e:
                     # Best-effort; fallback to CSV if present.
-                    pass
+                    refresh_diag = {"error": str(e)[:200]}
 
     if not sbert_rows:
         # Fallback to legacy CSV shortlist if DB cache is missing.
@@ -67,7 +117,7 @@ def rank_for_external_job_id(
         if sbert_rows_df.empty:
             raise HTTPException(
                 status_code=404,
-                detail=f"No SBERT shortlist for job_id={external_job_id}. Run SBERT refresh or sbert_retrieval_ranker.py",
+                detail=_format_empty_shortlist_detail(external_job_id, refresh_diag),
             )
         sbert_rows_df = sbert_rows_df.sort_values("rank").head(top_k)
         sbert_rows = [("csv", r) for _, r in sbert_rows_df.iterrows()]

@@ -193,11 +193,21 @@ def applicant_pairs_for_job_ids(db: "Session", job_ids: list[UUID]) -> list[tupl
 
 def recruiter_applicant_status_created_pairs(db: "Session", workspace_id: UUID) -> list[tuple[str | None, datetime | None]]:
     """
-    Applicant pipeline rows for **one recruiter workspace**: applications only to jobs in that workspace.
+    Applicant pipeline rows for **one recruiter workspace**:
 
-    Does not include global "orphan" candidates (no job_applicant row) — those are pool-wide,
-    not attributable to a single workspace's jobs.
+    - Every ``job_applicants`` row for jobs in this workspace (joined to the
+      candidate's ``created_at`` for the literal-``new`` TTL rule).
+    - Plus every candidate this workspace *owns* (``Candidate.workspace_id ==
+      workspace_id``) that has **no** ``job_applicants`` row yet, using
+      ``candidates.status`` so freshly uploaded resumes count toward the
+      applicant tracker before they've been attached to a job. Without this
+      second set a new recruiter would see initials avatars in the tracker
+      (those come from the dashboard widgets' orphan preview) but a count of 0,
+      and the "expand" panel would short-circuit to "No applicants in this
+      stage" even though people exist.
     """
+    from sqlalchemy import exists
+
     from api.models import Candidate, Job, JobApplicant
 
     job_rows = (
@@ -207,4 +217,12 @@ def recruiter_applicant_status_created_pairs(db: "Session", workspace_id: UUID) 
         .filter(Job.workspace_id == workspace_id)
         .all()
     )
-    return [(str(st or "new"), cat) for st, cat in job_rows]
+    has_app = exists().where(JobApplicant.candidate_id == Candidate.id)
+    orphan_rows = (
+        db.query(Candidate.status, Candidate.created_at)
+        .filter(Candidate.workspace_id == workspace_id, ~has_app)
+        .all()
+    )
+    pairs: list[tuple[str | None, datetime | None]] = [(str(st or "new"), cat) for st, cat in job_rows]
+    pairs.extend([(str(st or "new"), cat) for st, cat in orphan_rows])
+    return pairs

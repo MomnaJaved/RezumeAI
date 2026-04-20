@@ -1452,6 +1452,30 @@ label {
   color: rgba(255, 255, 255, 0.8);
 }
 
+.cand-pool-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.78rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  border: 1px solid;
+}
+
+.cand-pool-badge.pool-public {
+  color: #6ee7b7;
+  border-color: rgba(110, 231, 183, 0.4);
+  background: rgba(110, 231, 183, 0.08);
+}
+
+.cand-pool-badge.pool-private {
+  color: #c4b5fd;
+  border-color: rgba(196, 181, 253, 0.4);
+  background: rgba(196, 181, 253, 0.08);
+}
+
 .cand-detail-breadcrumb {
   margin-bottom: 0.25rem;
 }
@@ -5463,7 +5487,7 @@ button.dash-kv-row--click:focus-visible {
   border-radius: 10px;
   border: 1px solid rgba(0, 245, 255, 0.28);
   background: rgba(0, 8, 20, 0.5);
-  color: rgba(255, 255, 255, 0.95);
+  color: #67e8f9;
   font: inherit;
 }
 
@@ -5475,6 +5499,15 @@ button.dash-kv-row--click:focus-visible {
   outline: none;
   border-color: rgba(0, 245, 255, 0.55);
   box-shadow: 0 0 0 3px rgba(0, 245, 255, 0.12);
+}
+
+.landing-auth-fields input:-webkit-autofill,
+.landing-auth-fields input:-webkit-autofill:hover,
+.landing-auth-fields input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #67e8f9;
+  -webkit-box-shadow: 0 0 0px 1000px rgba(0, 8, 20, 0.95) inset;
+  box-shadow: 0 0 0px 1000px rgba(0, 8, 20, 0.95) inset;
+  transition: background-color 5000s ease-in-out 0s;
 }
 
 .landing-auth-role {
@@ -5493,6 +5526,155 @@ button.dash-kv-row--click:focus-visible {
 
 .landing-auth-role input {
   margin-top: 0.2rem;
+}
+
+/* Role picker card buttons */
+.landing-auth-role-label {
+  margin: 0 0 0.25rem;
+  font-size: 0.78rem;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: rgba(255, 255, 255, 0.8);
+  line-height: 1.1;
+}
+
+.landing-auth-role-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem;
+}
+
+.landing-auth-role-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 1.5rem 1rem 1.25rem;
+  border-radius: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  background: rgba(2, 6, 23, 0.4);
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.15s ease, box-shadow 0.18s ease;
+  gap: 0.55rem;
+  color: rgba(255, 255, 255, 0.85);
+  user-select: none;
+  outline: none;
+}
+
+.landing-auth-role-card:hover {
+  border-color: rgba(103, 232, 249, 0.45);
+  background: rgba(103, 232, 249, 0.06);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 24px rgba(103, 232, 249, 0.14);
+}
+
+.landing-auth-role-card.selected {
+  border-color: #67e8f9;
+  background: rgba(103, 232, 249, 0.08);
+  box-shadow: 0 0 0 1px rgba(103, 232, 249, 0.35), 0 6px 28px rgba(103, 232, 249, 0.16);
+  transform: translateY(-2px);
+}
+
+.landing-auth-role-card-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(103, 232, 249, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #67e8f9;
+  margin-bottom: 0.25rem;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.landing-auth-role-card.selected .landing-auth-role-card-icon {
+  background: rgba(103, 232, 249, 0.22);
+  color: #a5f3fc;
+}
+
+.landing-auth-role-card-check {
+  position: absolute;
+  top: 0.65rem;
+  right: 0.75rem;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(103, 232, 249, 0.25);
+  color: #67e8f9;
+  font-size: 0.7rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+
+.landing-auth-role-card-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.01em;
+}
+
+.landing-auth-role-card-desc {
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.landing-auth-role-card.selected .landing-auth-role-card-desc {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+@media (max-width: 420px) {
+  .landing-auth-role-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+.landing-auth-role-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.5rem;
+}
+
+.landing-auth-role-action-btn,
+button.landing-auth-role-action-btn,
+button.landing-auth-role-action-btn.primary {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent !important;
+  background-color: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 300;
+  font-family: ui-sans-serif, "Inter", "Helvetica Neue", Arial, sans-serif;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  transition: color 0.15s ease;
+  outline: none;
+  display: inline;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+button.landing-auth-role-action-btn:hover,
+button.landing-auth-role-action-btn.primary:hover {
+  background: transparent !important;
+  color: rgba(255, 255, 255, 0.65);
+  text-decoration: none;
+  box-shadow: none !important;
+}
+
+.landing-auth-role-action-btn.ghost:hover {
+  color: rgba(255, 255, 255, 0.65);
+  text-decoration: none;
 }
 
 .landing-auth-actions {
