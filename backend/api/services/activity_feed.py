@@ -72,34 +72,38 @@ def build_activity_notifications(
     items: list[dict[str, Any]] = []
     recent_cutoff = datetime.utcnow() - timedelta(days=14)
 
-    # 0) Explicit activity log — global only (events are not scoped to a recruiter in the DB).
-    if recruiter_workspace_id is None:
-        try:
-            for ev in (
-                db.query(ActivityEvent)
-                .order_by(desc(ActivityEvent.created_at))
-                .limit(40)
-                .all()
-            ):
-                msg = (ev.message or "").strip() or "Update"
-                low = msg.lower()
-                kind = (ev.kind or "info").strip() or "info"
-                # Drop legacy / noisy ingestion lines (only surface "… added to the pool" via candidate_added / success)
-                if kind == "upload":
-                    continue
-                if "upload queued:" in low or "processing upload:" in low or low.startswith("resume upload ("):
-                    continue
-                items.append(
-                    {
-                        "id": f"event-{ev.id}",
-                        "kind": kind,
-                        "message": msg,
-                        "at": _iso(ev.created_at),
-                        "href": (ev.href or "").strip() or None,
-                    }
-                )
-        except Exception as e:
-            _log.debug("activity_feed events skipped: %s", e)
+    # 0) Explicit activity log — strictly scoped to the recruiter's workspace.
+    # NULL-workspace events are legacy/global and must NEVER bleed to authenticated recruiters
+    # to prevent cross-tenant notification leakage.
+    try:
+        evq = db.query(ActivityEvent)
+        if recruiter_workspace_id is not None:
+            # Strict workspace isolation: only show this recruiter's own events.
+            # Legacy NULL-workspace events are intentionally excluded to prevent leakage.
+            evq = evq.filter(ActivityEvent.workspace_id == recruiter_workspace_id)
+        else:
+            # Unauthenticated / global view: only show NULL-workspace (legacy) events.
+            evq = evq.filter(ActivityEvent.workspace_id.is_(None))
+        for ev in evq.order_by(desc(ActivityEvent.created_at)).limit(40).all():
+            msg = (ev.message or "").strip() or "Update"
+            low = msg.lower()
+            kind = (ev.kind or "info").strip() or "info"
+            # Drop legacy / noisy ingestion lines (only surface "… added to the pool" via candidate_added / success)
+            if kind == "upload":
+                continue
+            if "upload queued:" in low or "processing upload:" in low or low.startswith("resume upload ("):
+                continue
+            items.append(
+                {
+                    "id": f"event-{ev.id}",
+                    "kind": kind,
+                    "message": msg,
+                    "at": _iso(ev.created_at),
+                    "href": (ev.href or "").strip() or None,
+                }
+            )
+    except Exception as e:
+        _log.debug("activity_feed events skipped: %s", e)
 
     # Ingestion rows are not listed here (no queued/processing/upload noise). Successful adds
     # appear as ActivityEvent from ingestions/candidates routers: "{name} added to the pool".

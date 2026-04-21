@@ -147,8 +147,19 @@ def _process_one_ingestion(ingestion_id: UUID, engine: Engine) -> None:
             if not getattr(existing, "status", ""):
                 existing.status = "new"
             # Claim unowned candidates; don't overwrite another workspace's ownership.
-            if ing_workspace_id is not None and getattr(existing, "workspace_id", None) is None:
+            # CRITICAL: Never claim a row that already has a portal account (user_id)
+            # or is already public — doing so would set is_public=False on a
+            # candidate-owned profile, making it deletable by the recruiter.
+            existing_has_portal_link = getattr(existing, "user_id", None) is not None
+            existing_is_public = getattr(existing, "is_public", False)
+            if (
+                ing_workspace_id is not None
+                and getattr(existing, "workspace_id", None) is None
+                and not existing_has_portal_link
+                and not existing_is_public
+            ):
                 existing.workspace_id = ing_workspace_id
+                existing.is_public = False
             cand = existing
         else:
             cand = Candidate(
@@ -168,6 +179,7 @@ def _process_one_ingestion(ingestion_id: UUID, engine: Engine) -> None:
                 contact_email=parsed.get("contact_email") or "",
                 status="new",
                 workspace_id=ing_workspace_id,
+                is_public=False,
             )
             db.add(cand)
 
@@ -199,7 +211,7 @@ def _process_one_ingestion(ingestion_id: UUID, engine: Engine) -> None:
         # User-facing notification (history/log). Best-effort.
         try:
             label = display_full_name_from_db(cand.full_name) if cand else UNKNOWN_CANDIDATE
-            log_activity(db, kind="candidate_added", message=f"{label} added to the pool", href="/candidates")
+            log_activity(db, kind="candidate_added", message=f"{label} added to the pool", href="/candidates", workspace_id=ing_workspace_id)
         except Exception:
             pass
     except Exception as e:
@@ -380,7 +392,12 @@ def ingest_resume_text(
 
 
 @router.get("/batch/{batch_id}", response_model=IngestionStatusOut)
-def get_batch_status(batch_id: UUID, db: Session = Depends(get_db)):
+def get_batch_status(
+    batch_id: UUID,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: Optional[User] = Depends(require_user_if_auth_enabled),
+):
     rows = (
         db.query(ResumeIngestion)
         .filter(ResumeIngestion.batch_id == batch_id)
@@ -389,6 +406,13 @@ def get_batch_status(batch_id: UUID, db: Session = Depends(get_db)):
     )
     if not rows:
         raise RezumeAPIError("BATCH_NOT_FOUND", "Batch not found.", 404)
+    # Workspace ownership: a recruiter may only inspect their own batches.
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        caller_ws = ensure_workspace_for_recruiter(db, user)
+        if caller_ws is not None:
+            row_ws = getattr(rows[0], "workspace_id", None)
+            if row_ws is not None and row_ws != caller_ws:
+                raise RezumeAPIError("BATCH_NOT_FOUND", "Batch not found.", 404)
     _mark_stale_processing_failed(db, rows)
     return IngestionStatusOut(
         batch_id=batch_id,
@@ -412,10 +436,11 @@ def list_recent_ingestions(
     ),
     limit: int = Query(25, ge=1, le=50),
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
     _: Optional[User] = Depends(require_user_if_auth_enabled),
 ):
     """
-    Recent resume ingestions across all batches (for dashboard drill-down).
+    Recent resume ingestions for the authenticated recruiter's workspace (for dashboard drill-down).
     Must stay above GET /{ingestion_id} so 'recent' is not parsed as a UUID.
     """
     st = (status or "").strip().lower()
@@ -423,6 +448,11 @@ def list_recent_ingestions(
         raise RezumeAPIError("BAD_STATUS", "status must be queued, processing, or done.", 400)
     try:
         q = db.query(ResumeIngestion).filter(ResumeIngestion.status == st)
+        # Scope to the caller's workspace so recruiters only see their own uploads.
+        if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+            caller_ws = ensure_workspace_for_recruiter(db, user)
+            if caller_ws is not None:
+                q = q.filter(ResumeIngestion.workspace_id == caller_ws)
         if st == "done" and since_hours is not None:
             since = datetime.utcnow() - timedelta(hours=since_hours)
             q = q.filter(ResumeIngestion.updated_at >= since)
@@ -434,10 +464,21 @@ def list_recent_ingestions(
 
 
 @router.get("/{ingestion_id}", response_model=IngestionOut)
-def get_ingestion(ingestion_id: UUID, db: Session = Depends(get_db)):
+def get_ingestion(
+    ingestion_id: UUID,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: Optional[User] = Depends(require_user_if_auth_enabled),
+):
     row = db.query(ResumeIngestion).filter(ResumeIngestion.id == ingestion_id).first()
     if not row:
         raise RezumeAPIError("INGESTION_NOT_FOUND", "Ingestion not found.", 404)
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        caller_ws = ensure_workspace_for_recruiter(db, user)
+        if caller_ws is not None:
+            row_ws = getattr(row, "workspace_id", None)
+            if row_ws is not None and row_ws != caller_ws:
+                raise RezumeAPIError("INGESTION_NOT_FOUND", "Ingestion not found.", 404)
     _mark_stale_processing_failed(db, [row])
     return IngestionOut.model_validate(row)
 
@@ -447,6 +488,7 @@ def retry_ingestion(
     ingestion_id: UUID,
     background: BackgroundTasks,
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
     _: Optional[User] = Depends(require_user_if_auth_enabled),
 ):
     """
@@ -455,6 +497,12 @@ def retry_ingestion(
     row = db.query(ResumeIngestion).filter(ResumeIngestion.id == ingestion_id).first()
     if not row:
         raise RezumeAPIError("INGESTION_NOT_FOUND", "Ingestion not found.", 404)
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        caller_ws = ensure_workspace_for_recruiter(db, user)
+        if caller_ws is not None:
+            row_ws = getattr(row, "workspace_id", None)
+            if row_ws is not None and row_ws != caller_ws:
+                raise RezumeAPIError("INGESTION_NOT_FOUND", "Ingestion not found.", 404)
     if row.status == "done":
         return IngestionOut.model_validate(row)
     row.status = "queued"

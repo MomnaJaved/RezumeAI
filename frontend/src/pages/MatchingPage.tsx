@@ -88,6 +88,7 @@ export default function MatchingPage() {
   const [compareFields, setCompareFields] = useState<Set<string>>(new Set(["skills", "experience"]));
   const [showCompare, setShowCompare] = useState(false);
   const [shortlistedIds, setShortlistedIds] = useState<Set<string>>(new Set());
+  const [poolFilter, setPoolFilter] = useState<"all" | "public" | "private">("all");
 
   // Read settings once per render — must be before any useEffect that references them
   const minScorePct = getMinMatchScore();
@@ -245,6 +246,11 @@ export default function MatchingPage() {
             if (scorePct < minScorePct) return false;
           }
         }
+        // Pool type filter
+        if (poolFilter !== "all") {
+          const wantPublic = poolFilter === "public";
+          if (Boolean(r.is_public) !== wantPublic) return false;
+        }
         return true;
       })
       .sort((a, b) => {
@@ -265,7 +271,7 @@ export default function MatchingPage() {
         return (b.sbert_score || 0) - (a.sbert_score || 0);
       })
       .slice(0, showOnlyTop ? topK : undefined);
-  }, [pool, q, sortBy, topK, rankByCandidateId]);
+  }, [pool, q, sortBy, topK, rankByCandidateId, poolFilter]);
 
   const rankOneRow = useMemo(() => {
     if (!rankings.length) return null;
@@ -427,6 +433,15 @@ export default function MatchingPage() {
               <option value="match_desc">{t("matching.sortByMatch")}</option>
               <option value="name_asc">{t("matching.sortByName")}</option>
             </select>
+            <select
+              value={poolFilter}
+              onChange={(e) => setPoolFilter(e.target.value as "all" | "public" | "private")}
+              aria-label="Pool type filter"
+            >
+              <option value="all">All Candidates</option>
+              <option value="public">Public</option>
+              <option value="private">Private</option>
+            </select>
             <span style={{ marginLeft: "auto" }} />
             <button
               type="button"
@@ -449,7 +464,11 @@ export default function MatchingPage() {
                   toast.success("Matches saved — scores updated across all views.");
                   void checkAndLogLowMatch(newRankings, job?.title ?? "", selectedJob);
                 } catch (e) {
-                  toast.error((e as Error).message || "Failed to match candidates");
+                  const msg = (e as Error).message || "";
+                  const friendly = msg.toLowerCase().includes("no sbert shortlist") || msg.toLowerCase().includes("match filters")
+                    ? "No matching candidate in the pool."
+                    : msg || "Failed to match candidates";
+                  toast.error(friendly);
                 } finally {
                   setMatchingAll(false);
                 }

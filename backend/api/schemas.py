@@ -238,6 +238,8 @@ class CandidateRead(BaseModel):
     best_job_client_company: Optional[str] = None
     best_job_client_contact: Optional[str] = None
     best_job_client_email: Optional[str] = None
+    # Pool type: True = public (portal applicant), False = private (recruiter upload).
+    is_public: bool = False
 
     @field_serializer("title")
     def _ser_title(self, v: str) -> str:

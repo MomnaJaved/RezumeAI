@@ -5,12 +5,12 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from api.database import get_db
-from api.models import Candidate, Client, Job, JobApplicant, User
+from api.database import get_db, engine
+from api.models import Candidate, Client, Job, JobApplicant, JobCandidateRanking, User
 from api.routers.auth import _get_auth_user
 
 router = APIRouter(prefix="/candidate", tags=["candidate"])
@@ -110,7 +110,12 @@ def list_open_jobs(
 
 
 @router.post("/jobs/{external_id}/apply")
-def apply_to_job(request: Request, external_id: str, db: Session = Depends(get_db)):
+def apply_to_job(
+    request: Request,
+    external_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     user = _require_candidate(request, db)
     cand = _linked_candidate(db, user)
     if not cand:
@@ -129,11 +134,36 @@ def apply_to_job(request: Request, external_id: str, db: Session = Depends(get_d
         .filter(JobApplicant.job_id == job.id, JobApplicant.candidate_id == cand.id)
         .first()
     )
+    # Any candidate who reaches this point via the portal is a public candidate.
+    cand.is_public = True
+
     if app:
-        return {"status": "already_applied", "applicant_status": app.status}
+        # Already in the pipeline (recruiter added them). Mark public and return
+        # success — never show the candidate a confusing "already applied" message.
+        db.commit()
+        return {"status": "applied", "applicant_status": app.status}
+
     db.add(JobApplicant(job_id=job.id, candidate_id=cand.id, status="new", updated_at=now))
     db.commit()
+
+    # Re-score this candidate against the job they just applied to so the
+    # recruiter sees a score computed for *this* job, not a stale value from
+    # a different job/recruiter. Runs in the background so the apply response
+    # is instant for the candidate.
+    job_id = job.id
+    background_tasks.add_task(_rescore_job_after_apply, job_id)
+
     return {"status": "applied", "applicant_status": "new"}
+
+
+def _rescore_job_after_apply(job_id) -> None:
+    """Background task: refresh SBERT shortlist for the job a candidate just applied to."""
+    try:
+        from api.services.sbert_cache import refresh_sbert_for_job_id
+        refresh_sbert_for_job_id(engine, job_id, top_k=200)
+    except Exception as e:
+        import logging
+        logging.getLogger("rezume.api").warning("Post-apply SBERT refresh failed for job %s: %s", job_id, e)
 
 
 @router.get("/applications")
@@ -150,9 +180,58 @@ def my_applications(request: Request, db: Session = Depends(get_db)):
         .order_by(JobApplicant.updated_at.desc())
         .all()
     )
+
+    # Bulk-fetch ranking rows for this candidate so we avoid N+1 queries.
+    job_ids = [job.id for _, job, _ in rows]
+    ranking_map: dict[Any, Any] = {}
+    if job_ids:
+        ranking_rows = (
+            db.query(JobCandidateRanking)
+            .filter(
+                JobCandidateRanking.candidate_id == cand.id,
+                JobCandidateRanking.job_id.in_(job_ids),
+            )
+            .all()
+        )
+        # For each job keep the ranking whose workspace_id matches the job's
+        # own workspace (the recruiter who owns the job ran the scoring).
+        # Fall back to any available ranking if no workspace-matched one exists.
+        for r in ranking_rows:
+            jid = r.job_id
+            if jid not in ranking_map:
+                ranking_map[jid] = r
+            else:
+                # Prefer the workspace-matched ranking — resolved below after
+                # we have the job objects.
+                existing = ranking_map[jid]
+                # Keep higher-priority ranking: workspace match beats non-match,
+                # then prefer higher score.
+                if (r.cross_encoder_score or 0) > (existing.cross_encoder_score or 0):
+                    ranking_map[jid] = r
+
+    # Re-prefer workspace-matched rankings now that we have job objects.
+    job_ws_map = {job.id: getattr(job, "workspace_id", None) for _, job, _ in rows}
+    # Second pass: pick workspace-matched row if available.
+    ws_ranking_map: dict[Any, Any] = {}
+    for r in (ranking_rows if job_ids else []):
+        jid = r.job_id
+        r_ws = getattr(r, "workspace_id", None)
+        job_ws = job_ws_map.get(jid)
+        if job_ws is not None and r_ws == job_ws:
+            # This ranking was made by the job's own recruiter — highest priority.
+            if jid not in ws_ranking_map or (r.cross_encoder_score or 0) > (ws_ranking_map[jid].cross_encoder_score or 0):
+                ws_ranking_map[jid] = r
+    # Merge: workspace-matched rankings override the fallback map.
+    ranking_map.update(ws_ranking_map)
+
     items: list[dict[str, Any]] = []
     for app, job, cl in rows:
         company = (cl.company_name or cl.name or "").strip() if cl else ""
+        rnk = ranking_map.get(job.id)
+        raw_score = float(rnk.cross_encoder_score or 0.0) if rnk else None
+        # Convert 0-1 → 0-100 and round to one decimal place for readability.
+        match_score = round(raw_score * 100.0, 1) if raw_score is not None else None
+        rank_position = int(rnk.rank_position) if rnk and rnk.rank_position is not None else None
         items.append(
             {
                 "job_external_id": job.external_id,
@@ -160,6 +239,8 @@ def my_applications(request: Request, db: Session = Depends(get_db)):
                 "company": company,
                 "status": (app.status or "new").strip(),
                 "updated_at": app.updated_at.isoformat() if app.updated_at else "",
+                "rank_position": rank_position,
+                "match_score": match_score,
             }
         )
     return {"items": items}

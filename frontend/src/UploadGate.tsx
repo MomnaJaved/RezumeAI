@@ -3,7 +3,7 @@ import DashFrame from "./DashFrame";
 import UploadPage from "./pages/UploadPage";
 import { useAuth } from "./auth";
 
-/** Recruiters: DashFrame + full upload tool. Candidates: in-app resume lives under /candidate/resume. */
+/** Recruiters: DashFrame + full upload tool. Candidates: upload from candidate home (+) or profile. */
 export default function UploadGate() {
   const { accountRole } = useAuth();
 
@@ -15,7 +15,7 @@ export default function UploadGate() {
     );
   }
   if (accountRole === "candidate") {
-    return <Navigate to="/candidate/resume" replace />;
+    return <Navigate to="/candidate" replace />;
   }
   return (
     <DashFrame>

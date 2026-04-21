@@ -113,10 +113,22 @@ def upload_resume(
         # Only *claim* unowned candidates. If another workspace already owns
         # this external_id we don't silently re-assign it — that would let one
         # tenant yank another tenant's row by guessing the external id.
-        if recruiter_workspace_id is not None and getattr(existing, "workspace_id", None) is None:
+        # CRITICAL: Never overwrite is_public=True or claim a row that already
+        # has a linked portal account (user_id set). Doing so would let a
+        # recruiter strip a candidate's public status, making their own profile
+        # vulnerable to hard-deletion.
+        existing_has_portal_link = getattr(existing, "user_id", None) is not None
+        existing_is_public = getattr(existing, "is_public", False)
+        if (
+            recruiter_workspace_id is not None
+            and getattr(existing, "workspace_id", None) is None
+            and not existing_has_portal_link
+            and not existing_is_public
+        ):
             existing.workspace_id = recruiter_workspace_id
             if getattr(existing, "created_by_user_id", None) is None:
                 existing.created_by_user_id = recruiter_user_id
+            existing.is_public = False
         db.commit()
         db.refresh(existing)
         cand = existing
@@ -140,6 +152,7 @@ def upload_resume(
             status="new",
             workspace_id=recruiter_workspace_id,
             created_by_user_id=recruiter_user_id,
+            is_public=False,
         )
         db.add(cand)
         db.commit()
@@ -149,6 +162,7 @@ def upload_resume(
     if user is not None and getattr(user, "account_role", "recruiter") == "candidate":
         db.query(Candidate).filter(Candidate.user_id == user.id, Candidate.id != cand.id).update({"user_id": None}, synchronize_session=False)
         cand.user_id = user.id
+        cand.is_public = True
         db.commit()
         db.refresh(cand)
 

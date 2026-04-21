@@ -1,6 +1,59 @@
 from __future__ import annotations
 
-from src.parsing.feature_extractors import estimate_years_experience
+from src.parsing.feature_extractors import estimate_years_experience, extract_education
+
+
+def test_extract_education_truncates_pipe_separated_skills_tail():
+    """PDF-style single line: degree then | Technical Skills | bullet tech — keep only education."""
+    text = """
+EDUCATION
+Bahria University — Bachelor of Science in Computer Science | 2022 – 2026 | Technical Skills | Programming & Development | ● JavaScript (ES6+), TypeScript, Python
+"""
+    r = extract_education(text)
+    assert "Bahria" in r["education_lines"]
+    assert "Bachelor" in r["education_lines"] or "Computer Science" in r["education_lines"]
+    assert "Technical Skills" not in r["education_lines"]
+    assert "JavaScript" not in r["education_lines"]
+    assert "Programming" not in r["education_lines"]
+
+
+def test_extract_education_truncates_with_zwsp_before_skills_heading():
+    """PDFs sometimes insert zero-width chars so '| Technical' no longer matches a simple pipe regex."""
+    zw = "\u200b"
+    text = f"""
+EDUCATION
+Bahria University — BS Computer Science | 2022 – 2026 |{zw} Technical Skills |{zw} ● JavaScript, Python
+"""
+    r = extract_education(text)
+    assert "Bahria" in r["education_lines"]
+    assert "Technical Skills" not in r["education_lines"]
+    assert "JavaScript" not in r["education_lines"]
+
+
+def test_extract_education_truncates_unpiped_technical_skills_after_year():
+    text = """
+EDUCATION
+Bahria University — Bachelor of Science 2022 – 2026 Technical Skills JavaScript, React
+"""
+    r = extract_education(text)
+    assert "Bahria" in r["education_lines"]
+    assert "Technical Skills" not in r["education_lines"]
+    assert "JavaScript" not in r["education_lines"]
+
+
+def test_extract_education_full_cv_tail_removed_and_no_trailing_pipe():
+    """Real-world glued line: degree + years + full skills stack (finalize pass)."""
+    text = """
+EDUCATION
+Bahria University — Bachelor of Science in Computer Science | 2022 – 2026 | Technical Skills | Programming & Development | ● JavaScript (ES6+), TypeScript, Python | ● React.js, Node.js, NestJS, Express.js | Web Technologies | ● HTML5, CSS, Tailwind CSS
+"""
+    r = extract_education(text)
+    assert "Bahria" in r["education_lines"]
+    assert "2022" in r["education_lines"] or "2026" in r["education_lines"]
+    assert "Technical Skills" not in r["education_lines"]
+    assert "JavaScript" not in r["education_lines"]
+    assert "NestJS" not in r["education_lines"]
+    assert not r["education_lines"].rstrip().endswith("|")
 
 
 def test_estimate_years_without_experience_header_role_lines():

@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { fetchActivityNotifications, fetchInbox, type ActivityNotification } from "./api";
+import { clearActivityNotifications, fetchActivityNotifications, fetchInbox, type ActivityNotification } from "./api";
 import { getNotifSettings, type NotifSettings } from "./settings";
 import { useToast } from "./toast";
 import { useAuth } from "./auth";
@@ -50,6 +50,7 @@ type NotifCtx = {
   /** Unread incoming DMs (Rezume inbox), scoped for Candidates tab badge. */
   inboxUnreadCandidates: number;
   inboxUnreadDmTotal: number;
+  clearAll: () => Promise<void>;
 };
 
 const NotificationContext = createContext<NotifCtx>({
@@ -57,6 +58,7 @@ const NotificationContext = createContext<NotifCtx>({
   pollErr: null,
   inboxUnreadCandidates: 0,
   inboxUnreadDmTotal: 0,
+  clearAll: async () => {},
 });
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
@@ -66,6 +68,13 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const [pollErr, setPollErr] = useState<string | null>(null);
   const [inboxUnreadCandidates, setInboxUnreadCandidates] = useState(0);
   const [inboxUnreadDmTotal, setInboxUnreadDmTotal] = useState(0);
+  const clearAll = useCallback(async () => {
+    await clearActivityNotifications();
+    setItems([]);
+    seenIds.current.clear();
+    bootstrapped.current = false;
+  }, []);
+
   const seenIds = useRef<Set<string>>(new Set());
   const bootstrapped = useRef(false);
   const seenInboxMsgIds = useRef<Set<string>>(new Set());
@@ -192,7 +201,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
   return (
     <NotificationContext.Provider
-      value={{ items, pollErr, inboxUnreadCandidates, inboxUnreadDmTotal }}
+      value={{ items, pollErr, inboxUnreadCandidates, inboxUnreadDmTotal, clearAll }}
     >
       {children}
     </NotificationContext.Provider>

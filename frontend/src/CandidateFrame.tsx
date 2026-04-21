@@ -22,9 +22,6 @@ export default function CandidateFrame({ children }: { children: React.ReactNode
           <NavLink to="/candidate/applications" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
             Applications
           </NavLink>
-          <NavLink to="/candidate/resume" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            Resume
-          </NavLink>
           <NavLink to="/candidate/profile" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
             Profile
           </NavLink>

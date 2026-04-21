@@ -5,7 +5,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from api.models import Candidate, Job, JobApplicant, JobCandidateSbertScore
+from api.models import Candidate, Job, JobApplicant, JobCandidateRanking, JobCandidateSbertScore
 from api.services import ml_ranking
 from api.services.candidate_title_db import resolved_display_title
 
@@ -95,7 +95,76 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
 
     filtered: list[tuple[str, float]] = []  # (candidate_external_id, cosine)
     by_ext: dict[str, Candidate] = {}
-    for c in db.query(Candidate).all():
+
+    # Scope the candidate pool to the job's workspace so a recruiter never
+    # sees (or inadvertently claims, via the auto-created JobApplicant row
+    # below) resumes uploaded by another tenant. A job with no workspace_id
+    # is legacy / pre-multi-tenant data — we fall back to the global pool in
+    # that case so existing dev fixtures still rank. ``candidate_visibility_predicate``
+    # is the same predicate the Candidates page and dashboard use, so the
+    # shortlist can only surface people the recruiter already has access to.
+    cand_q = db.query(Candidate)
+    job_ws_id = getattr(job, "workspace_id", None)
+    if job_ws_id is not None:
+        # Self-heal cross-tenant pollution from pre-scoping refresh runs.
+        # Before we added workspace scoping, ``refresh_sbert_for_job`` iterated
+        # every Candidate and auto-created ``JobApplicant(status="new")`` rows
+        # linking foreign candidates to this job. Those rows make the foreign
+        # candidate "visible" through the job-link branch of
+        # ``candidate_visibility_predicate`` even after scoping, so the
+        # pollution never clears on its own. We drop only the UNTOUCHED rows
+        # (status still "new") whose candidate belongs to a *different*
+        # workspace — if the recruiter actually progressed someone to
+        # screened/interview/etc. we preserve that deliberate decision and
+        # accept the cross-tenant link as an explicit choice.
+        stale_app_ids = [
+            a_id
+            for (a_id,) in db.query(JobApplicant.id)
+            .join(Candidate, Candidate.id == JobApplicant.candidate_id)
+            .filter(
+                JobApplicant.job_id == job.id,
+                JobApplicant.status == "new",
+                Candidate.workspace_id.isnot(None),
+                Candidate.workspace_id != job_ws_id,
+            )
+            .all()
+        ]
+        if stale_app_ids:
+            db.query(JobApplicant).filter(JobApplicant.id.in_(stale_app_ids)).delete(synchronize_session=False)
+            db.commit()
+            diag["cross_tenant_applicants_purged"] = len(stale_app_ids)
+
+        # Also purge stale cross-tenant ranking rows from prior refresh runs.
+        # ``rank_and_save`` will wipe the rankings table for this job after we
+        # return anyway, but we have to clear them *before* evaluating the
+        # visibility predicate below — otherwise the ranking-link branch
+        # would still mark foreign candidates as visible on this pass.
+        stale_rank_ids = [
+            r_id
+            for (r_id,) in db.query(JobCandidateRanking.id)
+            .join(Candidate, Candidate.id == JobCandidateRanking.candidate_id)
+            .filter(
+                JobCandidateRanking.job_id == job.id,
+                Candidate.workspace_id.isnot(None),
+                Candidate.workspace_id != job_ws_id,
+            )
+            .all()
+        ]
+        if stale_rank_ids:
+            db.query(JobCandidateRanking).filter(JobCandidateRanking.id.in_(stale_rank_ids)).delete(synchronize_session=False)
+            db.commit()
+            diag["cross_tenant_rankings_purged"] = len(stale_rank_ids)
+
+        from api.services.workspace_scope import candidate_visibility_predicate
+
+        # ``candidate_visibility_predicate`` uses correlated ``exists()``
+        # subqueries internally — the outer query must stay a plain
+        # ``Candidate`` select with no extra joins, otherwise those
+        # subqueries lose their independent Job scope.
+        cand_q = cand_q.filter(candidate_visibility_predicate(job_ws_id))
+    diag["workspace_scoped"] = job_ws_id is not None
+
+    for c in cand_q.all():
         diag["candidates_total"] += 1
         if not ensure_candidate_embedding(db, c):
             continue

@@ -12,8 +12,8 @@ from sqlalchemy.orm import Session
 
 from api.config import get_settings
 from api.database import get_db
-from api.dependencies import get_current_user_optional, recruiter_meta_scope
-from api.models import Candidate, Job, JobApplicant, ResumeIngestion, User
+from api.dependencies import get_current_user_optional, recruiter_meta_scope, require_user_if_auth_enabled
+from api.models import ActivityEvent, Candidate, Job, JobApplicant, ResumeIngestion, User
 from api.paths import repo_root
 from api.services.activity_feed import build_activity_notifications
 from api.services.workspace_scope import candidate_visibility_predicate, ensure_workspace_for_recruiter
@@ -48,10 +48,21 @@ def model_versions():
 
 
 @router.get("/stats")
-def quick_stats(db: Session = Depends(get_db)):
+def quick_stats(
+    db: Session = Depends(get_db),
+    recruiter_workspace_id: Optional[UUID] = Depends(recruiter_meta_scope),
+):
+    if recruiter_workspace_id is not None:
+        from api.services.workspace_scope import candidate_visibility_predicate
+        from sqlalchemy import func as _func
+        candidates_total = db.query(_func.count(Candidate.id)).filter(candidate_visibility_predicate(recruiter_workspace_id)).scalar() or 0
+        jobs_total = db.query(Job).filter(Job.status == "active", Job.workspace_id == recruiter_workspace_id).count()
+    else:
+        candidates_total = db.query(Candidate).count()
+        jobs_total = db.query(Job).filter(Job.status == "active").count()
     return {
-        "candidates_total": db.query(Candidate).count(),
-        "jobs_total": db.query(Job).filter(Job.status == "active").count(),
+        "candidates_total": candidates_total,
+        "jobs_total": jobs_total,
     }
 
 
@@ -105,6 +116,28 @@ def activity_feed(
     }
 
 
+@router.delete("/activity", status_code=204)
+def clear_activity(
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
+):
+    """
+    Delete activity events visible to the current recruiter.
+    Only deletes workspace-owned events — never touches NULL-workspace (global/legacy) rows
+    so one recruiter clearing their feed cannot wipe another recruiter's notifications.
+    """
+    ws_id = None
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        ws_id = ensure_workspace_for_recruiter(db, user)
+    if ws_id is not None:
+        # Strict: only delete this recruiter's own workspace events.
+        db.query(ActivityEvent).filter(ActivityEvent.workspace_id == ws_id).delete(synchronize_session=False)
+    # No-op for unauthenticated / candidate callers — they have no owned events.
+    db.commit()
+    return
+
+
 class LogActivityBody(BaseModel):
     kind: str = "info"
     message: str = ""
@@ -112,9 +145,19 @@ class LogActivityBody(BaseModel):
 
 
 @router.post("/log")
-def log_activity_endpoint(body: LogActivityBody, db: Session = Depends(get_db)):
+def log_activity_endpoint(
+    body: LogActivityBody,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
+):
     """Frontend-initiated activity log entry (e.g. low match warnings after ranking)."""
-    log_activity(db, kind=body.kind[:64], message=body.message[:512], href=body.href[:256])
+    ws_id = None
+    uid = None
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        ws_id = ensure_workspace_for_recruiter(db, user)
+        uid = user.id
+    log_activity(db, kind=body.kind[:64], message=body.message[:512], href=body.href[:256], workspace_id=ws_id, user_id=uid)
     return {"ok": True}
 
 

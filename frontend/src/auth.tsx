@@ -58,6 +58,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [email, setEmail] = useState<string | null>(() => localStorage.getItem(EMAIL_KEY));
   const [accountRole, setAccountRole] = useState<AccountRole | null>(() => roleFromStorage());
 
+  // Auto-logout when any API call returns 401 (expired/invalidated token).
+  useEffect(() => {
+    const handle = () => {
+      purgeUserScopedStorage();
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(EMAIL_KEY);
+      localStorage.removeItem(ACCOUNT_ROLE_KEY);
+      setToken(null);
+      setEmail(null);
+      setAccountRole(null);
+    };
+    window.addEventListener("auth:expired", handle);
+    return () => window.removeEventListener("auth:expired", handle);
+  }, []);
+
   useEffect(() => {
     if (!token || accountRole) return;
     let cancelled = false;
