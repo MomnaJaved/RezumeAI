@@ -5,12 +5,28 @@
 (function initRezumeExtract() {
   if (typeof globalThis.__rezumeExtractLinkedIn === 'function') return;
 
+  /**
+   * Prefer the inner profile column LinkedIn uses in scaffold layouts; plain <main> can miss cards.
+   */
   function profileMain() {
-    return document.querySelector('main[role="main"]') || document.querySelector('main');
+    return (
+      document.querySelector('main.scaffold-layout__main') ||
+      document.querySelector('main[role="main"]') ||
+      document.querySelector('main:not([hidden])') ||
+      document.querySelector('main')
+    );
   }
 
   function rootEl() {
     return profileMain() || document.body;
+  }
+
+  /** Strip direction marks / ZWJ so headings match (LinkedIn sometimes injects invisible chars). */
+  function normalizeHeading(s) {
+    return String(s || '')
+      .replace(/[\u200e\u200f\u202a-\u202e\u200b-\u200d\ufeff]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   /** Resolve profile anchors inside <main> first (avoids stray #experience elsewhere). */
@@ -80,6 +96,57 @@
     /* Do not reset main.scrollTop to 0 — LinkedIn virtualizes sections and will unmount Experience/Skills. */
   }
 
+  /** LinkedIn sets stable-ish `data-view-name` on profile cards (e.g. profile-card-experience). */
+  function sectionByDataView(root, fragment) {
+    const r = root || document;
+    const frag = String(fragment || '').toLowerCase();
+    if (!frag) return null;
+    const nodes = r.querySelectorAll('[data-view-name]');
+    for (const node of nodes) {
+      const name = (node.getAttribute('data-view-name') || '').toLowerCase();
+      if (!name.includes(frag)) continue;
+      const selfCard =
+        typeof node.matches === 'function' &&
+        (node.matches('section.artdeco-card') || node.matches('div.artdeco-card'))
+          ? node
+          : null;
+      const card =
+        node.closest('section.artdeco-card') ||
+        node.closest('div.artdeco-card') ||
+        selfCard ||
+        node.closest('section') ||
+        node;
+      if (card && card !== r) return card;
+    }
+    return null;
+  }
+
+  /** Walk artdeco profile cards and match the visible section title (handles "Experience (2)" etc.). */
+  function sectionByArtdecoCardHeader(root, patterns) {
+    const r = root || document;
+    for (const card of r.querySelectorAll('section.artdeco-card, div.artdeco-card')) {
+      const headerEl =
+        card.querySelector('.pvs-header__container h2') ||
+        card.querySelector('h2.pvs-header__title') ||
+        card.querySelector('.artdeco-card__header h2') ||
+        card.querySelector('h2');
+      if (!headerEl) continue;
+      const t = normalizeHeading(headerEl.innerText || '');
+      if (!t || t.length > 120) continue;
+      if (
+        /people who follow|also follow|more profiles|similar to|you may know|premium profiles|profiles for you|^activity$|^featured$/i.test(
+          t,
+        )
+      ) {
+        continue;
+      }
+      for (const re of patterns) {
+        if (re.test(t)) return card;
+      }
+    }
+    return null;
+  }
+
   /** Find a profile card when the #experience anchor layout differs by locale / A-B test. */
   function sectionByHeading(root, patterns) {
     const r = root || document;
@@ -95,7 +162,7 @@
       ].join(', '),
     );
     for (const h of candidates) {
-      const t = (h.innerText || '').replace(/\s+/g, ' ').trim();
+      const t = normalizeHeading(h.innerText || '');
       if (!t) continue;
       for (const re of patterns) {
         if (re.test(t)) {
@@ -134,17 +201,22 @@
     );
   }
 
+  const experienceHeadingRes = [
+    /^Experience(\s|\(|$|:)/i,
+    /^Work experience$/i,
+    /^Employment$/i,
+    /^Berufserfahrung$/i,
+    /^Expérience$/i,
+    /^Experiencia$/i,
+  ];
+
   function sectionExperience(root) {
+    const r = root || document;
     return (
       sectionFor('experience') ||
-      sectionByHeading(root, [
-        /^Experience$/i,
-        /^Work experience$/i,
-        /^Employment$/i,
-        /^Berufserfahrung$/i,
-        /^Expérience$/i,
-        /^Experiencia$/i,
-      ])
+      sectionByDataView(r, 'experience') ||
+      sectionByHeading(r, experienceHeadingRes) ||
+      sectionByArtdecoCardHeader(r, experienceHeadingRes)
     );
   }
 
@@ -152,38 +224,68 @@
     return sectionFor('about') || sectionByHeading(root, [/^About$/i, /^Info$/i, /^Über mich$/i, /^À propos$/i, /^Acerca de$/i]);
   }
 
+  const skillsHeadingRes = [
+    /^Skills(\s|\(|$|:)/i,
+    /^Compétences$/i,
+    /^Kenntnisse$/i,
+    /^Habilidades$/i,
+  ];
+
   function sectionSkills(root) {
+    const r = root || document;
     return (
       sectionFor('skills') ||
-      sectionByHeading(root, [/^Skills$/i, /^Compétences$/i, /^Kenntnisse$/i, /^Habilidades$/i])
+      sectionByDataView(r, 'skill') ||
+      sectionByHeading(r, skillsHeadingRes) ||
+      sectionByArtdecoCardHeader(r, skillsHeadingRes)
     );
   }
 
+  const educationHeadingRes = [
+    /^Education(\s|\(|$|:)/i,
+    /^Ausbildung$/i,
+    /^Formation$/i,
+    /^Educación$/i,
+  ];
+
   function sectionEducation(root) {
+    const r = root || document;
     return (
       sectionFor('education') ||
-      sectionByHeading(root, [/^Education$/i, /^Ausbildung$/i, /^Formation$/i, /^Educación$/i])
+      sectionByDataView(r, 'education') ||
+      sectionByHeading(r, educationHeadingRes) ||
+      sectionByArtdecoCardHeader(r, educationHeadingRes)
     );
   }
 
   function sectionRecommendations(root) {
+    const r = root || document;
     return (
       sectionFor('recommendations') ||
-      sectionByHeading(root, [/^Recommendations$/i, /^Empfehlungen$/i, /^Recommandations$/i])
+      sectionByDataView(r, 'recommendation') ||
+      sectionByHeading(r, [/^Recommendations$/i, /^Empfehlungen$/i, /^Recommandations$/i]) ||
+      sectionByArtdecoCardHeader(r, [/^Recommendations(\s|\(|$|:)/i, /^Empfehlungen$/i])
     );
   }
 
+  const certHeadingRes = [
+    /^Licenses\s+&\s+certifications$/i,
+    /^Licenses and certifications$/i,
+    /^Licenses(\s|\(|$|:)/i,
+    /^Certifications(\s|\(|$|:)/i,
+    /^Certificados$/i,
+    /^Zertifikate$/i,
+  ];
+
   function sectionCertifications(root) {
+    const r = root || document;
     return (
       sectionFor('licenses_and_certifications') ||
       sectionFor('certifications') ||
-      sectionByHeading(root, [
-        /^Licenses\s+&\s+certifications$/i,
-        /^Licenses and certifications$/i,
-        /^Certifications$/i,
-        /^Certificados$/i,
-        /^Zertifikate$/i,
-      ])
+      sectionByDataView(r, 'license') ||
+      sectionByDataView(r, 'certification') ||
+      sectionByHeading(r, certHeadingRes) ||
+      sectionByArtdecoCardHeader(r, certHeadingRes)
     );
   }
 
@@ -322,6 +424,10 @@
       add(el.textContent?.trim());
     });
 
+    skillsSec.querySelectorAll('[class*="pvs-list"] span[aria-hidden="true"]').forEach(el => {
+      add(el.textContent?.trim());
+    });
+
     return out.slice(0, 50);
   }
 
@@ -374,6 +480,7 @@
     };
     sec.querySelectorAll('ul > li, ol > li').forEach(add);
     sec.querySelectorAll('ul[class*="pvs-list"] > li').forEach(add);
+    sec.querySelectorAll('.pvs-list__outer-container > ul > li').forEach(add);
     sec
       .querySelectorAll(
         [
@@ -382,6 +489,7 @@
           'li[class*="pvs-list__item--one-column"]',
           'li[class*="pvs-entity"]',
           'li.artdeco-list__item',
+          'div[class*="pvs-list__paged-list-item"]',
         ].join(', '),
       )
       .forEach(add);
@@ -810,6 +918,28 @@
         48000,
       );
     }
+
+    /* If list parsers still missed rows but the section card exists (e.g. wrong expItems from noise). */
+    (function appendFallbackSectionText() {
+      const cap = 8000;
+      const has = re => re.test(fullText);
+      if (!has(/\bWORK EXPERIENCE\b/i) && !has(/EXPERIENCE \(from page\)/i)) {
+        const sec = sectionExperience(main);
+        const b = sec ? cleanLines((sec.innerText || '').trim()) : '';
+        if (b.length > 60) fullText = `${fullText}\n\nWORK EXPERIENCE (from page)\n${b.slice(0, cap)}`;
+      }
+      if (!has(/\bEDUCATION\b/i) && !has(/EDUCATION \(from page\)/i)) {
+        const sec = sectionEducation(main);
+        const b = sec ? cleanLines((sec.innerText || '').trim()) : '';
+        if (b.length > 40) fullText = `${fullText}\n\nEDUCATION (from page)\n${b.slice(0, cap)}`;
+      }
+      if (!has(/\bSKILLS\b/i) && !has(/SKILLS \(from page\)/i)) {
+        const sec = sectionSkills(main);
+        const b = sec ? cleanLines((sec.innerText || '').trim()) : '';
+        if (b.length > 25) fullText = `${fullText}\n\nSKILLS (from page)\n${b.slice(0, cap)}`;
+      }
+      fullText = fullText.slice(0, 48000);
+    })();
 
     /* Last resort: URL slug gives at least a searchable name line */
     if (!fullText.trim() && nameFromSlug) {
