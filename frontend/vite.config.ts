@@ -12,6 +12,7 @@ export default defineConfig({
   server: {
     // UI port (5173, or 5174+ if 5173 is already in use). This is NOT the API port.
     port: 5173,
+    host: true, 
     strictPort: false,
     // Browser → same host as Vite → these paths are forwarded to the FastAPI process (default :8000).
     proxy: {

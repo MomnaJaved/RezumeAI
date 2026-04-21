@@ -918,6 +918,46 @@ def _sum_ranges_last_resort(text: str, current_year: int, *, require_work_hint: 
     return _interval_years(intervals)
 
 
+def _estimate_years_from_projects_section(text: str, current_year: int) -> float:
+    """
+    Student / early-career CVs often omit Work Experience but list dated projects.
+    Sum year ranges only under a Projects (or portfolio) block; capped by caller.
+    """
+    lines = [ln.rstrip() for ln in text.replace("\r\n", "\n").replace("\r", "\n").splitlines()]
+    body: list[str] = []
+    in_proj = False
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            continue
+        sm = re.match(
+            _LINE_LEAD + r"(projects?|portfolio|academic projects?|selected projects?)\b",
+            ln,
+            re.IGNORECASE,
+        )
+        if sm:
+            in_proj = True
+            rest = ln[sm.end() :].strip()
+            if rest.startswith(":"):
+                rest = rest[1:].strip()
+            if rest:
+                body.append(rest)
+            continue
+        if in_proj:
+            mh = RE_SECTION_HEADING.search(ln)
+            if mh and not RE_INLINE_LABEL.search(ln):
+                h = (mh.group("h") or "").lower()
+                # Lines like "Project – …" match `projects?`; keep scanning that subsection.
+                if not h.startswith("project"):
+                    break
+            if len(s) <= 500:
+                body.append(s)
+    if not body:
+        return 0.0
+    blob = "\n".join(body).lower()
+    return float(_sum_ranges_in_text(blob, current_year))
+
+
 def estimate_years_experience(text: str, current_year: int | None = None) -> float:
     """
     Heuristic:
@@ -992,6 +1032,9 @@ def estimate_years_experience(text: str, current_year: int | None = None) -> flo
         years_fb = _collect_explicit_year_phrases(text)
         if years_fb:
             return round(min(max(years_fb), 40.0), 1)
+        proj_y = _estimate_years_from_projects_section(text, current_year)
+        if proj_y > 0:
+            return round(min(proj_y, 5.0), 1)
         return 0.0
 
     t = "\n".join(exp_lines).lower()
@@ -1006,5 +1049,8 @@ def estimate_years_experience(text: str, current_year: int | None = None) -> flo
         years_fb = _collect_explicit_year_phrases(text)
         if years_fb:
             return round(min(max(years_fb), 40.0), 1)
+        proj_y = _estimate_years_from_projects_section(text, current_year)
+        if proj_y > 0:
+            return round(min(proj_y, 5.0), 1)
 
     return round(min(total, 40.0), 1)

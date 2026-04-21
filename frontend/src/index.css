@@ -5081,6 +5081,91 @@ button.dash-kv-row--click:focus-visible {
   background: rgba(56, 189, 248, 0.5);
 }
 
+/* ── Mobile drawer nav ─────────────────────────────────────────────────── */
+.dash-hamburger {
+  display: none; /* shown only in mobile media query below */
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.85);
+  padding: 0.3rem;
+  cursor: pointer;
+  border-radius: 6px;
+  line-height: 0;
+  flex-shrink: 0;
+}
+
+.dash-hamburger:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dash-drawer-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 400;
+  backdrop-filter: blur(2px);
+}
+
+.dash-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 270px;
+  max-width: 85vw;
+  z-index: 500;
+  background: linear-gradient(160deg, #0f172a 0%, #1e293b 100%);
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0;
+  transform: translateX(-100%);
+  transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.dash-drawer--open {
+  transform: translateX(0);
+  box-shadow: 4px 0 32px rgba(0, 0, 0, 0.5);
+}
+
+.dash-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1rem 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.dash-drawer-brand {
+  font-weight: 800;
+  font-size: 1.05rem;
+  color: rgba(255, 255, 255, 0.92);
+  letter-spacing: -0.01em;
+}
+
+.dash-drawer-close {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.65);
+  cursor: pointer;
+  padding: 0.25rem;
+  border-radius: 6px;
+  line-height: 0;
+}
+
+.dash-drawer-close:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dash-drawer .dash-nav {
+  padding: 0.75rem 0.85rem;
+  flex: 1;
+}
+
 @media (max-width: 980px) {
   .dash {
     grid-template-columns: 1fr;
@@ -5088,16 +5173,24 @@ button.dash-kv-row--click:focus-visible {
   .dash-sidebar {
     display: none;
   }
+  .dash-hamburger {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .dash-drawer-overlay {
+    display: block;
+  }
   .dash-topbar {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: auto 1fr auto;
     grid-template-rows: auto auto;
   }
   .dash-topbar-brand {
-    grid-column: 1;
+    grid-column: 2;
     grid-row: 1;
   }
   .dash-topbar-actions {
-    grid-column: 2;
+    grid-column: 3;
     grid-row: 1;
   }
   .dash-topbar-search {
@@ -7006,4 +7099,420 @@ button.landing-auth-role-action-btn.primary:hover {
   content: "✓";
   font-size: 0.75rem;
   opacity: 0.8;
+}
+
+/* ── Scan Resume (OCR) — matches Rezume dash: glass panels, sky accents ── */
+.dash-content .scan-page.dash-upload-page {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 0.5rem 0.85rem 2.5rem;
+  color: rgba(226, 232, 240, 0.92);
+}
+
+.dash-content .scan-page-title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.dash-content .scan-page-title svg {
+  color: rgba(56, 189, 248, 0.9);
+  flex-shrink: 0;
+}
+
+.dash-content .scan-lead {
+  margin-bottom: 1.35rem;
+  max-width: 38rem;
+  margin-left: auto;
+  margin-right: auto;
+  text-align: center;
+  color: rgba(148, 163, 184, 0.88);
+  line-height: 1.55;
+}
+
+/* Capture area — glass card */
+.dash-content .scan-capture-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.35rem 1rem 1.5rem;
+  border-radius: 16px;
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  background: rgba(2, 6, 23, 0.38);
+  backdrop-filter: blur(10px);
+  max-width: 26rem;
+  margin: 0 auto 1rem;
+}
+
+.dash-content .scan-camera-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 20rem;
+  min-height: 12rem;
+  border: 2px dashed rgba(56, 189, 248, 0.42);
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.35);
+  cursor: pointer;
+  color: rgba(125, 211, 252, 0.96);
+  transition: background 0.16s, border-color 0.16s, box-shadow 0.16s;
+  padding: 1.75rem 1.25rem;
+  text-align: center;
+}
+
+.dash-content .scan-camera-zone:hover {
+  background: rgba(56, 189, 248, 0.1);
+  border-color: rgba(56, 189, 248, 0.65);
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.15);
+}
+
+.dash-content .scan-camera-zone svg {
+  color: rgba(56, 189, 248, 0.85);
+}
+
+.dash-content .scan-camera-zone p {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.dash-content .scan-camera-zone small {
+  color: rgba(148, 163, 184, 0.85);
+}
+
+.scan-hidden-input {
+  display: none;
+}
+
+.dash-content .scan-hint {
+  font-size: 0.8rem;
+  text-align: center;
+  color: rgba(148, 163, 184, 0.78);
+  max-width: 22rem;
+}
+
+.dash-content .scan-desktop-btns,
+.dash-content .scan-mobile-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 22rem;
+}
+
+.dash-content .scan-big-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 1.25rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(56, 189, 248, 0.38);
+  background: rgba(2, 6, 23, 0.45);
+  color: rgba(125, 211, 252, 0.96);
+  cursor: pointer;
+  transition: background 0.16s, border-color 0.16s, box-shadow 0.16s;
+  font-family: inherit;
+  font-size: 0.98rem;
+  font-weight: 600;
+  width: 100%;
+}
+
+.dash-content .scan-big-btn:hover {
+  background: rgba(56, 189, 248, 0.14);
+  border-color: rgba(56, 189, 248, 0.55);
+  box-shadow: 0 4px 24px rgba(56, 189, 248, 0.08);
+}
+
+.dash-content .scan-big-btn svg {
+  color: rgba(56, 189, 248, 0.88);
+}
+
+.dash-content .scan-big-btn--secondary {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(2, 6, 23, 0.28);
+  color: rgba(226, 232, 240, 0.88);
+}
+
+.dash-content .scan-big-btn--secondary:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.dash-content .scan-big-btn small {
+  font-size: 0.76rem;
+  font-weight: 400;
+  color: rgba(148, 163, 184, 0.78);
+}
+
+/* Webcam */
+.dash-content .scan-webcam-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
+  padding: 0.5rem 0 1rem;
+}
+
+.dash-content .scan-video-container {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: rgba(2, 6, 23, 0.75);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  aspect-ratio: 16 / 9;
+}
+
+.dash-content .scan-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.dash-content .scan-video-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.dash-content .scan-video-guide {
+  width: 82%;
+  height: 82%;
+  border: 2px dashed rgba(56, 189, 248, 0.55);
+  border-radius: 10px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 0.5rem;
+}
+
+.dash-content .scan-video-guide span {
+  background: rgba(2, 6, 23, 0.75);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  color: rgba(186, 230, 253, 0.95);
+  font-size: 0.74rem;
+  padding: 0.25rem 0.65rem;
+  border-radius: 8px;
+}
+
+.dash-content .scan-webcam-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.dash-content .scan-webcam-cancel {
+  margin-top: 0.35rem;
+}
+
+.dash-content .scan-snap-btn {
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.9);
+  border: 3px solid rgba(56, 189, 248, 0.75);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.12s, box-shadow 0.12s;
+  padding: 0;
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.12);
+}
+
+.dash-content .scan-snap-btn:hover {
+  transform: scale(1.05);
+  box-shadow: 0 0 0 6px rgba(56, 189, 248, 0.18);
+}
+
+.dash-content .scan-snap-btn:active {
+  transform: scale(0.96);
+}
+
+.dash-content .scan-snap-ring {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, rgba(56, 189, 248, 0.95), rgba(14, 165, 233, 0.85));
+  display: block;
+}
+
+/* Processing */
+.dash-content .scan-processing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 1.25rem 1rem;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(2, 6, 23, 0.35);
+  max-width: 28rem;
+  margin: 0 auto;
+}
+
+.dash-content .scan-spinner-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  text-align: center;
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.dash-content .scan-spinner {
+  width: 42px;
+  height: 42px;
+  border: 3px solid rgba(255, 255, 255, 0.1);
+  border-top-color: rgba(56, 189, 248, 0.9);
+  border-radius: 50%;
+  animation: scan-spin 0.75s linear infinite;
+}
+
+@keyframes scan-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Edit layout */
+.dash-content .scan-edit-layout {
+  display: grid;
+  grid-template-columns: 1fr 1.55fr;
+  gap: 1.15rem;
+  align-items: flex-start;
+}
+
+@media (max-width: 640px) {
+  .dash-content .scan-edit-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.dash-content .scan-preview-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  position: sticky;
+  top: 0.75rem;
+}
+
+.dash-content .scan-preview-img {
+  width: 100%;
+  max-height: 58vh;
+  object-fit: contain;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(2, 6, 23, 0.45);
+}
+
+.dash-content .scan-retake-btn {
+  width: 100%;
+  background: rgba(2, 6, 23, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.88rem;
+  color: rgba(148, 163, 184, 0.95);
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+  font-family: inherit;
+}
+
+.dash-content .scan-retake-btn:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.1);
+  border-color: rgba(56, 189, 248, 0.35);
+  color: #fff;
+}
+
+.dash-content .scan-fields-col {
+  min-width: 0;
+}
+
+.dash-content .scan-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  margin-bottom: 0.8rem;
+}
+
+.dash-content .scan-field-group label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: rgba(148, 163, 184, 0.88);
+  letter-spacing: 0.02em;
+}
+
+.dash-content .scan-field-group input,
+.dash-content .scan-field-group textarea,
+.dash-content .scan-field-group select {
+  width: 100%;
+  padding: 0.48rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(2, 6, 23, 0.5);
+  color: rgba(248, 250, 252, 0.95);
+  font-size: 0.9rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.dash-content .scan-field-group input::placeholder,
+.dash-content .scan-field-group textarea::placeholder {
+  color: rgba(148, 163, 184, 0.45);
+}
+
+.dash-content .scan-field-group input:focus,
+.dash-content .scan-field-group textarea:focus,
+.dash-content .scan-field-group select:focus {
+  outline: none;
+  border-color: rgba(56, 189, 248, 0.55);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12);
+}
+
+.dash-content .scan-warn {
+  background: rgba(120, 100, 0, 0.2);
+  border: 1px solid rgba(253, 224, 71, 0.38);
+  border-radius: 10px;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.84rem;
+  color: rgba(253, 224, 71, 0.92);
+  margin-bottom: 0.85rem;
+}
+
+.dash-content .scan-done {
+  max-width: 38rem;
+  margin: 0 auto;
+}
+
+.dash-content .scan-success-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  background: rgba(20, 83, 45, 0.38);
+  border: 1px solid rgba(134, 239, 172, 0.35);
+  border-radius: 12px;
+  padding: 0.85rem 1.05rem;
+  color: rgba(187, 247, 208, 0.96);
+  font-weight: 600;
+  font-size: 0.98rem;
+}
+
+.dash-content .scan-success-banner svg {
+  flex-shrink: 0;
+  color: rgba(74, 222, 128, 0.9);
 }
