@@ -1060,6 +1060,36 @@ export async function uploadResume(file: File): Promise<{
   return parseJson(res);
 }
 
+// --- OCR: parse image without saving to DB ---
+export type OcrParsedFields = {
+  full_name: string;
+  contact_email: string;
+  title: string;
+  role_label: string;
+  skills: string;
+  years_experience: number | null;
+  highest_degree: string;
+  education_lines: string;
+  certifications: string;
+};
+
+export type OcrParseResponse = {
+  raw_text: string;
+  parsed_fields: OcrParsedFields;
+  filename: string;
+  text_len: number;
+};
+
+export async function ocrParseResume(file: File): Promise<OcrParseResponse> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await authedFetch(`${base}/api/v1/ocr/parse-resume`, {
+    method: "POST",
+    body: fd,
+  });
+  return parseJson(res);
+}
+
 // --- Async resume ingestion (bulk / extension / phone OCR) ---
 export type IngestionItem = {
   id: string;

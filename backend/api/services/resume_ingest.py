@@ -10,6 +10,7 @@ from api.paths import repo_root
 from src.inference.service import classify_role
 from src.parsing.skill_mining import extract_skill_candidates
 from src.parsing.feature_extractors import extract_certifications, extract_education, estimate_years_experience
+from src.parsing.ocr_normalize import normalize_resume_text_for_ocr
 from src.parsing.text_extractors import extract_text_any
 from src.parsing.name_extractor import resolve_candidate_full_name
 from src.parsing.role_labels import ROLE_LABELS_MULTI, title_to_role_label
@@ -105,6 +106,7 @@ def parse_upload(filename: str, content: bytes) -> dict:
             pass
 
     raw = raw.strip()
+    raw = normalize_resume_text_for_ocr(raw)
     if len(raw) < MIN_TEXT_CHARS:
         raise ValueError(
             "Could not extract enough text. For scanned PDFs/images, install Tesseract + "
@@ -177,7 +179,8 @@ def parse_upload(filename: str, content: bytes) -> dict:
         "filename": filename,
         "storage_path": str(store_path) if store_path else "",
         "text_len": len(stripped),
-        "years_experience": years if years > 0 else None,
+        # Keep 0.0 for freshers / students so OCR and forms show a number instead of an empty field.
+        "years_experience": round(float(years), 1),
         "highest_degree": edu.get("highest_degree") or "",
         "education_lines": edu.get("education_lines") or "",
         "certifications": certs or "",

@@ -8,7 +8,7 @@ import { useNotifications } from "./notifications";
 function Icon({
   name,
 }: {
-  name: "dashboard" | "candidates" | "addCandidate" | "clients" | "jobs" | "reports" | "settings" | "inbox" | "matching";
+  name: "dashboard" | "candidates" | "addCandidate" | "clients" | "jobs" | "reports" | "settings" | "inbox" | "matching" | "scan";
 }) {
   const common = {
     width: 18,
@@ -94,6 +94,13 @@ function Icon({
           <path d="M14 11a5 5 0 0 1 0 7l-1 1a5 5 0 0 1-7-7l1-1" />
         </svg>
       );
+    case "scan":
+      return (
+        <svg {...common}>
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+          <circle cx="12" cy="13" r="4" />
+        </svg>
+      );
     default:
       return null;
   }
@@ -157,50 +164,112 @@ function DashOverflowMenu() {
   );
 }
 
+function NavLinks({
+  inboxUnreadDmTotal,
+  onNav,
+  t,
+}: {
+  inboxUnreadDmTotal: number;
+  onNav?: () => void;
+  t: (k: string) => string;
+}) {
+  const cls = ({ isActive }: { isActive: boolean }) => (isActive ? "dash-link active" : "dash-link");
+  return (
+    <nav className="dash-nav" onClick={onNav}>
+      <NavLink to="/dashboard" className={cls}><Icon name="dashboard" /> {t("nav.dashboard")}</NavLink>
+      <NavLink end to="/candidates" className={cls}><Icon name="candidates" /> {t("nav.candidates")}</NavLink>
+      <NavLink to="/clients" className={cls}><Icon name="clients" /> {t("nav.clients")}</NavLink>
+      <NavLink to="/jobs" className={cls}><Icon name="jobs" /> {t("nav.jobs")}</NavLink>
+      <NavLink to="/reports" className={cls}><Icon name="reports" /> {t("nav.reports")}</NavLink>
+      <NavLink to="/settings" className={cls}><Icon name="settings" /> {t("nav.settings")}</NavLink>
+      <NavLink to="/inbox" className={cls}>
+        <Icon name="inbox" /> {t("nav.inbox")}
+        {inboxUnreadDmTotal > 0 && (
+          <span className="dash-nav-badge" aria-label={`${inboxUnreadDmTotal} unread messages`}>
+            {inboxUnreadDmTotal > 99 ? "99+" : inboxUnreadDmTotal}
+          </span>
+        )}
+      </NavLink>
+      <NavLink to="/matching" className={cls}><Icon name="matching" /> {t("nav.matching")}</NavLink>
+      <NavLink to="/scan" className={cls}><Icon name="scan" /> Scan Resume</NavLink>
+    </nav>
+  );
+}
+
 export default function DashFrame({ topExtra, children }: { topExtra?: React.ReactNode; children: React.ReactNode }) {
   const loc = useLocation();
   const t = useT();
   const { inboxUnreadDmTotal } = useNotifications();
   const hideGlobalSearch = loc.pathname === "/candidates" || loc.pathname.startsWith("/candidates/");
 
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerRef = useRef<HTMLDivElement>(null);
+
+  // Close drawer on outside click
+  useEffect(() => {
+    if (!drawerOpen) return;
+    function onDoc(e: MouseEvent) {
+      if (!drawerRef.current?.contains(e.target as Node)) setDrawerOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [drawerOpen]);
+
+  // Close drawer on route change
+  useEffect(() => { setDrawerOpen(false); }, [loc.pathname]);
+
+  // Prevent body scroll when drawer open
+  useEffect(() => {
+    document.body.style.overflow = drawerOpen ? "hidden" : "";
+    return () => { document.body.style.overflow = ""; };
+  }, [drawerOpen]);
+
   return (
     <div className="dash">
+      {/* ── Desktop sidebar (hidden on mobile via CSS) ── */}
       <aside className="dash-sidebar">
-        <nav className="dash-nav">
-          <NavLink to="/dashboard" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="dashboard" /> {t("nav.dashboard")}
-          </NavLink>
-          <NavLink end to="/candidates" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="candidates" /> {t("nav.candidates")}
-          </NavLink>
-          <NavLink to="/clients" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="clients" /> {t("nav.clients")}
-          </NavLink>
-          <NavLink to="/jobs" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="jobs" /> {t("nav.jobs")}
-          </NavLink>
-          <NavLink to="/reports" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="reports" /> {t("nav.reports")}
-          </NavLink>
-          <NavLink to="/settings" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="settings" /> {t("nav.settings")}
-          </NavLink>
-          <NavLink to="/inbox" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="inbox" /> {t("nav.inbox")}
-            {inboxUnreadDmTotal > 0 ? (
-              <span className="dash-nav-badge" aria-label={`${inboxUnreadDmTotal} unread messages`}>
-                {inboxUnreadDmTotal > 99 ? "99+" : inboxUnreadDmTotal}
-              </span>
-            ) : null}
-          </NavLink>
-          <NavLink to="/matching" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
-            <Icon name="matching" /> {t("nav.matching")}
-          </NavLink>
-        </nav>
+        <NavLinks inboxUnreadDmTotal={inboxUnreadDmTotal} t={t} />
       </aside>
+
+      {/* ── Mobile drawer overlay ── */}
+      {drawerOpen && <div className="dash-drawer-overlay" aria-hidden onClick={() => setDrawerOpen(false)} />}
+      <div ref={drawerRef} className={`dash-drawer${drawerOpen ? " dash-drawer--open" : ""}`} aria-label="Navigation menu">
+        <div className="dash-drawer-header">
+          <span className="dash-drawer-brand">Rezume AI</span>
+          <button
+            type="button"
+            className="dash-drawer-close"
+            aria-label="Close menu"
+            onClick={() => setDrawerOpen(false)}
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+              strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <NavLinks inboxUnreadDmTotal={inboxUnreadDmTotal} onNav={() => setDrawerOpen(false)} t={t} />
+      </div>
 
       <div className={topExtra ? "dash-main dash-main--toolbar" : "dash-main"}>
         <header className="dash-topbar">
+          {/* Hamburger — visible only on mobile */}
+          <button
+            type="button"
+            className="dash-hamburger"
+            aria-label="Open navigation menu"
+            aria-expanded={drawerOpen}
+            onClick={() => setDrawerOpen((o) => !o)}
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+              strokeLinecap="round" strokeLinejoin="round">
+              <line x1="3" y1="6" x2="21" y2="6" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <line x1="3" y1="18" x2="21" y2="18" />
+            </svg>
+          </button>
+
           <Link to="/dashboard" className="dash-topbar-brand">
             <span className="landing-logo" aria-hidden="true" />
             <span>Rezume AI</span>

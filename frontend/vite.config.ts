@@ -11,6 +11,7 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    host: true,        // bind to 0.0.0.0 so phone on same Wi-Fi can connect
     proxy: {
       "/api": { target: "http://127.0.0.1:8000", changeOrigin: true },
       "/health": { target: "http://127.0.0.1:8000", changeOrigin: true },

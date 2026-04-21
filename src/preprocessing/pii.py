@@ -128,6 +128,46 @@ _RE_AT_TOKEN = re.compile(
 )
 
 
+def _repair_ocr_missing_at_before_common_hosts(t: str) -> str:
+    """
+    OCR on low-contrast sidebars often drops '@' or spaces the TLD (e.g. 'user gmail com').
+    Insert a canonical address so RE_EMAIL / _RE_AT_TOKEN can match.
+    Handles spaced locals like 'shahid maheen 22 gmail com' (one line).
+    """
+    if not t:
+        return t
+    # Host tokens allow OCR letter-spacing (e.g. "g mail" → gmail).
+    hosts = (
+        (r"g\s*mail", "gmail.com"),
+        (r"o\s*u\s*t\s*l\s*o\s*o\s*k", "outlook.com"),
+        (r"h\s*o\s*t\s*m\s*a\s*i\s*l", "hotmail.com"),
+        (r"y\s*a\s*h\s*o\s*o", "yahoo.com"),
+        (r"p\s*r\s*o\s*t\s*o\s*n\s*m\s*a\s*i\s*l", "protonmail.com"),
+        (r"i\s*c\s*l\s*o\s*u\s*d", "icloud.com"),
+    )
+    out: list[str] = []
+    for line in t.splitlines():
+        s = line
+        for host_pat, fqdn in hosts:
+            # Spaced TLD: g mail c o m / gmail com
+            pat = re.compile(
+                rf"(?i)(?P<local>[a-z0-9](?:[a-z0-9._%+-]|\s+[a-z0-9._%+-]){{0,52}})\s+{host_pat}\s*(?:\.|\s+)+c\s*o\s*m\b",
+            )
+            s = pat.sub(
+                lambda m, fq=fqdn: re.sub(r"\s+", "", m.group("local").strip()) + "@" + fq,
+                s,
+            )
+            pat2 = re.compile(
+                rf"(?i)(?P<local>[a-z0-9](?:[a-z0-9._%+-]|\s+[a-z0-9._%+-]){{0,52}})\s+{host_pat}\s*\.\s*com\b",
+            )
+            s = pat2.sub(
+                lambda m, fq=fqdn: re.sub(r"\s+", "", m.group("local").strip()) + "@" + fq,
+                s,
+            )
+        out.append(s)
+    return "\n".join(out)
+
+
 def normalize_text_for_email_scan(text: str) -> str:
     """Undo common PDF/obfuscation patterns so RE_EMAIL can match."""
     if not text:
@@ -137,7 +177,35 @@ def normalize_text_for_email_scan(text: str) -> str:
     t = re.sub(r"\(?\s*\[?\s*at\s*\]?\s*\)?", "@", t, flags=re.IGNORECASE)
     t = re.sub(r"\(?\s*\[?\s*dot\s*\]?\s*\)?", ".", t, flags=re.IGNORECASE)
     t = _RE_SPACED_AT.sub(r"\1@\2", t)
+    # OCR: spaces inside local-part or between domain labels (jane . doe @ g mail . com)
+    for _ in range(8):
+        t2 = t
+        t2 = re.sub(r"([\w.%+-])\s+([\w.%+-])\s*@", r"\1\2@", t2)
+        t2 = re.sub(r"@\s*([\w.-])\s+([\w.-])", r"@\1\2", t2)
+        t2 = re.sub(r"([\w.%+-])\s+\.\s+([\w.%+-])", r"\1.\2", t2)
+        t2 = re.sub(r"(\.[a-z]{2,})\s+\.", r"\1.", t2, flags=re.IGNORECASE)
+        if t2 == t:
+            break
+        t = t2
+    t = _repair_ocr_missing_at_before_common_hosts(t)
     return t
+
+
+def _pick_email_collapsed_lines(norm: str, addr_ok) -> str:
+    """OCR often breaks tokens with spaces; strip whitespace per line and scan for addresses."""
+    for line in norm.splitlines():
+        collapsed = re.sub(r"\s+", "", line)
+        if len(collapsed) < 6 or "@" not in collapsed:
+            continue
+        for m in RE_EMAIL.finditer(collapsed):
+            addr = m.group(0).strip().lower()
+            if addr_ok(addr):
+                return addr
+        for m in _RE_AT_TOKEN.finditer(collapsed):
+            addr = m.group(1).strip().lower()
+            if addr_ok(addr):
+                return addr
+    return ""
 
 
 def extract_primary_email(text: str, *, max_len: int = 320) -> str:
@@ -170,6 +238,9 @@ def extract_primary_email(text: str, *, max_len: int = 320) -> str:
             addr = m.group(1).strip().lower()
             if addr_ok(addr):
                 return addr[:max_len]
+        loose = _pick_email_collapsed_lines(norm, addr_ok)
+        if loose:
+            return loose[:max_len]
         return ""
 
     head = text[:6000]

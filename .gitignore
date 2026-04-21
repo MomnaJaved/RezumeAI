@@ -51,3 +51,10 @@ uploads/
 # *.bin
 # *.pkl
 # *.h5
+
+# -------------------------
+# Secrets / local environment (never commit)
+# -------------------------
+.env
+.env.*
+!.env.example

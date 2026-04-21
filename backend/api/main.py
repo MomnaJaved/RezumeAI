@@ -34,7 +34,7 @@ from api.error_handlers import (
 )
 from api.errors import RezumeAPIError
 from api.logging_config import setup_logging
-from api.routers import auth, analytics, candidate_portal, candidates, clients, feedback, health, inbox, ingestions, jobs, legacy_ml, meta, ml, rankings, uploads
+from api.routers import auth, analytics, candidate_portal, candidates, clients, feedback, health, inbox, ingestions, jobs, legacy_ml, meta, ml, ocr, rankings, uploads
 from api.slow_limiter import limiter
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -141,6 +141,7 @@ def create_app() -> FastAPI:
     app.include_router(feedback.router, prefix=prefix)
     app.include_router(ingestions.router, prefix=prefix)
     app.include_router(uploads.router, prefix=prefix)
+    app.include_router(ocr.router, prefix=prefix)
 
     return app
 

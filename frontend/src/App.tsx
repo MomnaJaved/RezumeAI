@@ -30,6 +30,7 @@ import CandidateApplicationsPage from "./pages/candidate/CandidateApplicationsPa
 import CandidateProfilePage from "./pages/candidate/CandidateProfilePage";
 import CandidateResumePage from "./pages/candidate/CandidateResumePage";
 import CandidateFrame from "./CandidateFrame";
+import ScanGate from "./ScanGate";
 import RequireAuth from "./RequireAuth";
 import RequireRecruiter from "./RequireRecruiter";
 import RequireCandidate from "./RequireCandidate";
@@ -58,7 +59,8 @@ export default function App() {
     loc.pathname.startsWith("/inbox") ||
     loc.pathname.startsWith("/matching") ||
     loc.pathname.startsWith("/candidate") ||
-    loc.pathname.startsWith("/upload");
+    loc.pathname.startsWith("/upload") ||
+    loc.pathname.startsWith("/scan");
   const isFullBleed = isHome || isAuthMarketing || isDashRoute;
   const usesDashChrome =
     loc.pathname.startsWith("/dashboard") ||
@@ -70,7 +72,8 @@ export default function App() {
     loc.pathname.startsWith("/inbox") ||
     loc.pathname.startsWith("/matching") ||
     loc.pathname.startsWith("/candidate") ||
-    loc.pathname.startsWith("/upload");
+    loc.pathname.startsWith("/upload") ||
+    loc.pathname.startsWith("/scan");
   const { token, email, logout, accountRole } = useAuth();
 
   const hideAppHeader = isHome || isAuthMarketing || usesDashChrome;
@@ -103,6 +106,7 @@ export default function App() {
                   <Link to="/jobs">Jobs</Link>
                   <Link to="/playground">Playground</Link>
                   <Link to="/upload">Upload resume</Link>
+                  <Link to="/scan">Scan resume</Link>
                   <Link to="/candidates/add">Add candidate</Link>
                   <span className="muted" style={{ marginLeft: "0.5rem" }}>
                     {email ?? "signed in"}
@@ -285,6 +289,14 @@ export default function App() {
             element={
               <RequireAuth>
                 <UploadGate />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/scan"
+            element={
+              <RequireAuth>
+                <ScanGate />
               </RequireAuth>
             }
           />

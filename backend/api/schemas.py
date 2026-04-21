@@ -541,3 +541,23 @@ class InboxThreadDeleteResult(BaseModel):
 
 class InboxMessageDeleteIn(BaseModel):
     mode: str = Field(..., description="everyone | me")
+
+
+# --- OCR ---
+class OcrParsedFields(BaseModel):
+    full_name: str = ""
+    contact_email: str = ""
+    title: str = ""
+    role_label: str = ""
+    skills: str = ""
+    years_experience: Optional[float] = None
+    highest_degree: str = ""
+    education_lines: str = ""
+    certifications: str = ""
+
+
+class OcrParseResponse(BaseModel):
+    raw_text: str
+    parsed_fields: OcrParsedFields
+    filename: str
+    text_len: int
