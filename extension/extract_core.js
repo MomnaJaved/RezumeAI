@@ -5,16 +5,50 @@
 (function initRezumeExtract() {
   if (typeof globalThis.__rezumeExtractLinkedIn === 'function') return;
 
+  function profileMain() {
+    return document.querySelector('main[role="main"]') || document.querySelector('main');
+  }
+
   function rootEl() {
-    return document.querySelector('main[role="main"]') || document.querySelector('main') || document.body;
+    return profileMain() || document.body;
+  }
+
+  /** Resolve profile anchors inside <main> first (avoids stray #experience elsewhere). */
+  function anchorById(id) {
+    const main = profileMain();
+    if (main) {
+      try {
+        const scoped = main.querySelector(`#${id}`);
+        if (scoped) return scoped;
+      } catch {
+        /* invalid id — fall back */
+      }
+    }
+    return document.getElementById(id);
   }
 
   /**
    * LinkedIn virtualizes Experience / Education / Skills until those regions scroll into view.
-   * Drive the profile <main> scroller + anchor ids so list nodes mount before we read the DOM.
+   * Many layouts scroll on **window** (not `<main>`), so we drive both.
    */
   function primeProfileSections() {
-    const main = document.querySelector('main[role="main"]') || document.querySelector('main');
+    const main = profileMain();
+    let maxY = 0;
+    try {
+      maxY = Math.max(
+        document.documentElement?.scrollHeight || 0,
+        document.body?.scrollHeight || 0,
+        main?.scrollHeight || 0,
+        4000,
+      );
+    } catch {
+      maxY = 6000;
+    }
+    for (let i = 0; i <= 14; i++) {
+      try {
+        window.scrollTo(0, Math.floor((maxY * i) / 14));
+      } catch { /* ignore */ }
+    }
     if (main && main.scrollHeight > (main.clientHeight || 0) + 50) {
       const h = main.scrollHeight;
       for (let i = 0; i <= 10; i++) {
@@ -24,7 +58,7 @@
       }
     }
     try {
-      window.scrollTo(0, Math.min(document.body.scrollHeight, 8000));
+      window.scrollTo(0, Math.min(maxY, 12000));
     } catch { /* ignore */ }
     [
       'experience',
@@ -36,15 +70,14 @@
       'projects',
       'languages',
       'volunteer_experience',
+      'recommendations',
     ].forEach(id => {
-      const el = document.getElementById(id);
+      const el = anchorById(id);
       try {
         el?.scrollIntoView({ block: 'center', inline: 'nearest' });
       } catch { /* ignore */ }
     });
-    try {
-      main?.scrollTo?.(0, 0);
-    } catch { /* ignore */ }
+    /* Do not reset main.scrollTop to 0 — LinkedIn virtualizes sections and will unmount Experience/Skills. */
   }
 
   /** Find a profile card when the #experience anchor layout differs by locale / A-B test. */
@@ -90,7 +123,7 @@
 
   /** Section card that contains an element with id=slug (LinkedIn profile layout). */
   function sectionFor(slug) {
-    const el = document.getElementById(slug);
+    const el = anchorById(slug);
     if (!el) return null;
     return (
       el.closest('section.artdeco-card') ||
@@ -133,6 +166,165 @@
     );
   }
 
+  function sectionRecommendations(root) {
+    return (
+      sectionFor('recommendations') ||
+      sectionByHeading(root, [/^Recommendations$/i, /^Empfehlungen$/i, /^Recommandations$/i])
+    );
+  }
+
+  function sectionCertifications(root) {
+    return (
+      sectionFor('licenses_and_certifications') ||
+      sectionFor('certifications') ||
+      sectionByHeading(root, [
+        /^Licenses\s+&\s+certifications$/i,
+        /^Licenses and certifications$/i,
+        /^Certifications$/i,
+        /^Certificados$/i,
+        /^Zertifikate$/i,
+      ])
+    );
+  }
+
+  /**
+   * Prefer the smallest meaningful card around an anchor (closest('section') can be huge).
+   */
+  function profileCardAround(el) {
+    if (!el) return null;
+    let n = el;
+    for (let depth = 0; depth < 8 && n; depth++) {
+      const tag = (n.tagName || '').toLowerCase();
+      const cls = (n.getAttribute && n.getAttribute('class')) || '';
+      if (
+        (tag === 'section' || tag === 'div') &&
+        (cls.includes('artdeco-card') || n.getAttribute('data-view-name'))
+      ) {
+        return n;
+      }
+      n = n.parentElement;
+    }
+    return (
+      el.closest('section.artdeco-card') ||
+      el.closest('div.artdeco-card') ||
+      el.closest('section') ||
+      el.closest('[data-view-name]') ||
+      el.parentElement
+    );
+  }
+
+  /** Keep skill field clean: real skill phrases only, no LinkedIn UI chrome. */
+  function isLikelySkillName(t) {
+    const s = String(t || '').replace(/\s+/g, ' ').trim();
+    if (!s || s.length < 2 || s.length > 70) return false;
+    const low = s.toLowerCase();
+    if (/https?:|linkedin\.com|@/.test(s)) return false;
+    if (/^\d+$/.test(s)) return false;
+    if (/\d{4}\s*[–—-]\s*(present|\d{4})/i.test(s)) return false;
+    if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(s) && /\d{4}/.test(s)) return false;
+    const words = s.split(/\s+/).length;
+    if (words > 7) return false;
+
+    const junk = [
+      'show all',
+      'see all',
+      'see less',
+      'add skill',
+      'endorse',
+      'endorsed',
+      'endorsement',
+      'endorsements',
+      'demonstrate',
+      'skill assessment',
+      'assessments',
+      'take skill quiz',
+      'quiz',
+      'verify',
+      'recommendations',
+      'following',
+      'followers',
+      'connections',
+      'mutual',
+      'message',
+      'connect',
+      'pending',
+      'more skills',
+      'other skills',
+      'skills and',
+      'top skills',
+      'interests',
+      'services',
+      'activity',
+      'analytics',
+      'about',
+      'experience',
+      'education',
+      'licenses',
+      'certifications',
+      'volunteer',
+      'languages',
+      'projects',
+      'summary',
+      'profile',
+      'view',
+      'click',
+      'skip',
+    ];
+    for (const j of junk) {
+      if (low === j || low.startsWith(j + ' ') || low.includes(' ' + j + ' ') || low.endsWith(' ' + j)) return false;
+    }
+    if (/endorsement/i.test(s)) return false;
+    return true;
+  }
+
+  /**
+   * LinkedIn Skills card only — prefer skill links / entity titles, not every .t-bold in the card.
+   */
+  function extractLinkedInSkills(skillsSec) {
+    const out = [];
+    const seen = new Set();
+    const add = raw => {
+      const t = String(raw || '')
+        .replace(/\s+/g, ' ')
+        .replace(/[·•]+/g, ' ')
+        .trim();
+      if (!t) return;
+      const k = t.toLowerCase();
+      if (seen.has(k)) return;
+      if (!isLikelySkillName(t)) return;
+      seen.add(k);
+      out.push(t);
+    };
+
+    if (!skillsSec) return out;
+
+    skillsSec
+      .querySelectorAll(
+        [
+          'a[data-field="skill_card_skill_topic"]',
+          'a[href*="/details/skills/"]',
+          'a[href*="/skills/"]',
+        ].join(', '),
+      )
+      .forEach(a => {
+        const s =
+          a.querySelector('span[aria-hidden="true"]')?.textContent?.trim() ||
+          a.querySelector('.hoverable-link-text')?.textContent?.trim() ||
+          a.textContent?.trim().split('\n')[0]?.trim();
+        add(s);
+      });
+
+    skillsSec.querySelectorAll('li[class*="pvs-list"] .hoverable-link-text span[aria-hidden="true"]').forEach(el => {
+      add(el.textContent?.trim());
+    });
+
+    skillsSec.querySelectorAll('li[class*="pvs-list"] .t-bold span[aria-hidden="true"]').forEach(el => {
+      add(el.textContent?.trim());
+    });
+
+    return out.slice(0, 50);
+  }
+
   function arHidden(item) {
     return txs('span[aria-hidden="true"]', item);
   }
@@ -141,6 +333,27 @@
   function rowTextParts(item) {
     let parts = arHidden(item);
     if (parts.length) return parts;
+    const seen = new Set();
+    const fromSpans = [];
+    item
+      .querySelectorAll(
+        [
+          'span[aria-hidden="true"]',
+          '.hoverable-link-text span[aria-hidden="true"]',
+          '.t-bold span[aria-hidden="true"]',
+          'div.t-bold span[aria-hidden="true"]',
+          'a .hoverable-link-text span[aria-hidden="true"]',
+        ].join(', '),
+      )
+      .forEach(el => {
+        const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!t || t.length < 2 || t.length > 400) return;
+        const k = t.toLowerCase();
+        if (seen.has(k)) return;
+        seen.add(k);
+        fromSpans.push(t);
+      });
+    if (fromSpans.length) return fromSpans.slice(0, 8);
     const t = (item.innerText || '').replace(/\s+/g, ' ').trim();
     if (!t || t.length < 3) return [];
     return t
@@ -160,6 +373,7 @@
       out.push(node);
     };
     sec.querySelectorAll('ul > li, ol > li').forEach(add);
+    sec.querySelectorAll('ul[class*="pvs-list"] > li').forEach(add);
     sec
       .querySelectorAll(
         [
@@ -360,23 +574,11 @@
       });
     });
 
-    const skillsList = [];
     const skillsSec = sectionSkills(main);
-    if (skillsSec) {
-      const bold = txs('.t-bold span[aria-hidden="true"]', skillsSec);
-      if (bold.length) {
-        bold.forEach(s => {
-          if (s.length <= 80 && !skillsList.includes(s)) skillsList.push(s);
-        });
-      } else {
-        txs('a[data-field="skill_card_skill_topic"] span[aria-hidden="true"]', skillsSec).forEach(s => {
-          if (s.length <= 80 && !skillsList.includes(s)) skillsList.push(s);
-        });
-      }
-    }
+    const skillsList = extractLinkedInSkills(skillsSec);
 
     const certsList = [];
-    const certSec = sectionFor('licenses_and_certifications') || sectionFor('certifications');
+    const certSec = sectionCertifications(main);
     listItems(certSec).forEach(item => {
       const spans = rowTextParts(item);
       if (spans[0] && spans[0].length < 120) certsList.push(spans[0]);
@@ -401,6 +603,15 @@
     listItems(projSec).forEach(item => {
       const spans = rowTextParts(item);
       if (spans[0]) projects.push(spans.slice(0, 3).join(' | '));
+    });
+
+    const recItems = [];
+    const recSec = sectionRecommendations(main);
+    listItems(recSec).forEach(item => {
+      const spans = rowTextParts(item);
+      if (!spans.length) return;
+      const block = spans.slice(0, 6).join(' | ');
+      if (block.length > 12) recItems.push(block);
     });
 
     let yearsExperience = null;
@@ -493,6 +704,12 @@
       lines.push('');
     }
 
+    if (recItems.length) {
+      lines.push('RECOMMENDATIONS');
+      recItems.slice(0, 15).forEach(r => lines.push(`  ${r.slice(0, 500)}`));
+      lines.push('');
+    }
+
     let fullText = lines.join('\n').trim();
 
     const structuredLen = fullText.length;
@@ -503,18 +720,95 @@
       eduItems.length > 0 ||
       skillsList.length > 0;
 
-    const mainRaw = cleanLines((main.innerText || '').trim());
-    const missingLists = expItems.length === 0 && eduItems.length === 0 && skillsList.length === 0;
-
-    /*
-     * If structured cards parsed empty (common when lists were not mounted yet), append the
-     * profile <main> text so recruiters still get Experience/Education/Skills content.
+    /**
+     * LinkedIn puts suggestions, feed, and other profiles inside <main>. Never use main.innerText.
+     * Snapshots use **anchors when present** and fall back to **heading-based** section cards so we
+     * still capture content when ids move or list parsers miss rows.
      */
-    if (mainRaw.length > (fullText?.length || 0) + 80) {
-      if (!fullText || fullText.length < 200 || missingLists) {
-        fullText =
-          `${fullText ? fullText + '\n\n' : ''}--- FULL PROFILE (LinkedIn main) ---\n${mainRaw}`.slice(0, 16000);
+    function supplementalTextFromProfileAnchors() {
+      const chunks = [];
+      const maxBlock = 4200;
+
+      function isNoiseCard(sec) {
+        const head = (sec.querySelector('h2, .pvs-header__title')?.innerText || '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        return (
+          head &&
+          /people who follow|also follow|more profiles|you may know|similar to|writers you|premium profiles|profiles for you|^activity$|^featured$/i.test(
+            head,
+          )
+        );
       }
+
+      /** Prefer a tight card around #slug; else the resolved section from headings. */
+      function cardFor(anchorId, resolveSection) {
+        if (anchorId) {
+          const a = anchorById(anchorId);
+          if (a) {
+            const c = profileCardAround(a);
+            const len = c ? cleanLines((c.innerText || '').trim()).length : 0;
+            if (c && len >= 12) return c;
+          }
+        }
+        const s = typeof resolveSection === 'function' ? resolveSection() : null;
+        return s || null;
+      }
+
+      function pushSnapshot(label, sec, onlyIfEmpty) {
+        if (!onlyIfEmpty || !sec) return;
+        if (isNoiseCard(sec)) return;
+        let body = cleanLines((sec.innerText || '').trim());
+        if (body.length < 12) return;
+        if (body.length > maxBlock) body = `${body.slice(0, maxBlock)}\n…`;
+        chunks.push(`${label}\n${body}`);
+      }
+
+      pushSnapshot('EXPERIENCE (from page)', cardFor('experience', () => sectionExperience(main)), !expItems.length);
+      pushSnapshot('EDUCATION (from page)', cardFor('education', () => sectionEducation(main)), !eduItems.length);
+      pushSnapshot('SKILLS (from page)', cardFor('skills', () => sectionSkills(main)), !skillsList.length);
+
+      if (!certsList.length) {
+        const cardTextLen = sec =>
+          sec ? cleanLines((sec.innerText || '').trim()).length : 0;
+        let certCard = cardFor('licenses_and_certifications', () => sectionCertifications(main));
+        if (cardTextLen(certCard) < 12) certCard = cardFor('certifications', () => sectionCertifications(main));
+        if (cardTextLen(certCard) < 12) certCard = sectionCertifications(main);
+        pushSnapshot('CERTIFICATIONS (from page)', certCard, true);
+      }
+
+      pushSnapshot('LANGUAGES (from page)', cardFor('languages', () => sectionFor('languages')), !langsList.length);
+      pushSnapshot('PROJECTS (from page)', cardFor('projects', () => sectionFor('projects')), !projects.length);
+      if (!volunteerItems.length) {
+        let volCard = cardFor('volunteer_experience', () => sectionFor('volunteer_experience'));
+        if (!volCard || cleanLines((volCard.innerText || '').trim()).length < 12) {
+          volCard = cardFor('volunteering_experience', () => sectionFor('volunteering_experience'));
+        }
+        if (!volCard || cleanLines((volCard.innerText || '').trim()).length < 12) {
+          volCard = sectionFor('volunteer_experience') || sectionFor('volunteering_experience');
+        }
+        pushSnapshot('VOLUNTEER (from page)', volCard, true);
+      }
+      pushSnapshot(
+        'RECOMMENDATIONS (from page)',
+        cardFor('recommendations', () => sectionRecommendations(main)),
+        !recItems.length,
+      );
+
+      pushSnapshot('COURSES (from page)', cardFor('courses', () => sectionFor('courses')), true);
+      pushSnapshot('HONORS (from page)', cardFor('honors_and_awards', () => sectionFor('honors_and_awards')), true);
+      pushSnapshot('PUBLICATIONS (from page)', cardFor('publications', () => sectionFor('publications')), true);
+      pushSnapshot('PATENTS (from page)', cardFor('patents', () => sectionFor('patents')), true);
+
+      return chunks.filter(Boolean).join('\n\n');
+    }
+
+    const supplemental = supplementalTextFromProfileAnchors();
+    if (supplemental) {
+      fullText = `${fullText ? `${fullText}\n\n` : ''}--- PROFILE SECTIONS (this member only) ---\n${supplemental}`.slice(
+        0,
+        48000,
+      );
     }
 
     /* Last resort: URL slug gives at least a searchable name line */
@@ -554,24 +848,56 @@
    * Scroll profile <main> slowly so LinkedIn mounts Experience/Education/Skills, then run sync extract.
    */
   globalThis.__rezumeExtractLinkedInAsync = async function rezumeExtractLinkedInAsync() {
-    const main = document.querySelector('main[role="main"]') || document.querySelector('main');
+    const main = profileMain();
+    let maxY = 0;
+    try {
+      maxY = Math.max(
+        document.documentElement?.scrollHeight || 0,
+        document.body?.scrollHeight || 0,
+        main?.scrollHeight || 0,
+        4000,
+      );
+    } catch {
+      maxY = 6000;
+    }
+    for (let i = 0; i <= 16; i++) {
+      try {
+        window.scrollTo(0, Math.floor((maxY * i) / 16));
+      } catch { /* ignore */ }
+      await new Promise(r => setTimeout(r, 85));
+    }
     if (main) {
       const h = Math.max(main.scrollHeight || 0, 1200);
       for (let i = 0; i <= 12; i++) {
         try {
           main.scrollTop = (h * i) / 12;
         } catch { /* ignore */ }
-        await new Promise(r => setTimeout(r, 70));
+        await new Promise(r => setTimeout(r, 65));
       }
-      ['experience', 'education', 'skills', 'licenses_and_certifications', 'projects'].forEach(id => {
+      const ids = [
+        'experience',
+        'education',
+        'skills',
+        'licenses_and_certifications',
+        'certifications',
+        'projects',
+        'volunteer_experience',
+        'volunteering_experience',
+        'languages',
+        'recommendations',
+        'courses',
+        'honors_and_awards',
+        'publications',
+        'patents',
+      ];
+      for (const id of ids) {
         try {
-          document.getElementById(id)?.scrollIntoView({ block: 'center' });
+          anchorById(id)?.scrollIntoView({ block: 'center' });
         } catch { /* ignore */ }
-      });
-      await new Promise(r => setTimeout(r, 320));
-      try {
-        main.scrollTop = 0;
-      } catch { /* ignore */ }
+        await new Promise(r => setTimeout(r, 100));
+      }
+      await new Promise(r => setTimeout(r, 550));
+      /* Leave scroll position — resetting to top unmounts lower profile sections. */
     }
     return globalThis.__rezumeExtractLinkedIn();
   };
