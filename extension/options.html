@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RezumeAI — Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="page">
+    <header class="header">
+      <div class="logo">R</div>
+      <div>
+        <h1>RezumeAI Settings</h1>
+        <p class="subtitle">Extension configuration</p>
+      </div>
+    </header>
+
+    <main class="card">
+      <h2 class="section-title">API Connection</h2>
+
+      <div class="form-group">
+        <label for="api-base">API Base URL</label>
+        <p class="hint">The URL where your RezumeAI backend is running.</p>
+        <input id="api-base" type="url" placeholder="http://127.0.0.1:8000">
+      </div>
+
+      <div class="btn-row">
+        <button id="btn-test" class="btn btn-secondary">Test Connection</button>
+        <button id="btn-save" class="btn btn-primary">Save</button>
+      </div>
+
+      <div id="test-result" class="msg hidden"></div>
+      <div id="save-result" class="msg hidden"></div>
+    </main>
+
+    <div class="card">
+      <h2 class="section-title">Session</h2>
+      <p class="hint">You are currently signed in as: <strong id="current-email">—</strong></p>
+      <div class="btn-row" style="margin-top: 12px">
+        <button id="btn-clear-session" class="btn btn-danger">Sign Out</button>
+      </div>
+    </div>
+
+    <footer class="footer">
+      RezumeAI Chrome Extension v1.0.0
+    </footer>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

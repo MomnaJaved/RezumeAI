@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RezumeAI</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+  <!-- ═══════════════════════════════ HEADER ══════════════════ -->
+  <header class="header">
+    <div class="header-brand">
+      <div class="logo">R</div>
+      <span class="brand-name">RezumeAI</span>
+    </div>
+    <div class="header-right">
+      <div class="api-status">
+        <span id="status-dot" class="status-dot checking"></span>
+        <span id="status-text" class="status-text">…</span>
+      </div>
+      <button id="btn-settings" class="icon-btn" title="Settings">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ═══════════════════════════════ LOGIN ═══════════════════ -->
+  <div id="view-login" class="view hidden">
+    <div class="login-inner">
+      <h2>Sign in to RezumeAI</h2>
+      <p class="login-sub">Recruiter account credentials</p>
+      <div class="field">
+        <label>Email</label>
+        <input id="l-email" type="email" placeholder="you@company.com" autocomplete="email">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input id="l-pass" type="password" placeholder="••••••••" autocomplete="current-password">
+      </div>
+      <div id="l-err" class="alert alert-error hidden"></div>
+      <button id="btn-login" class="btn btn-primary btn-full">
+        <span class="btn-label">Sign In</span>
+        <span class="spinner hidden"></span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════ MAIN ════════════════════ -->
+  <div id="view-main" class="view hidden">
+
+    <!-- ── User bar ─────────────────────────────────────────── -->
+    <div class="user-bar">
+      <span id="user-email" class="user-email-text"></span>
+      <button id="btn-logout" class="link-btn danger-hover">Sign out</button>
+    </div>
+
+    <!-- ── Step indicator ──────────────────────────────────── -->
+    <div class="steps">
+      <div class="step active" id="step-ind-1">
+        <div class="step-num">1</div>
+        <span>Extract</span>
+      </div>
+      <div class="step-line"></div>
+      <div class="step" id="step-ind-2">
+        <div class="step-num">2</div>
+        <span>Analyze</span>
+      </div>
+      <div class="step-line"></div>
+      <div class="step" id="step-ind-3">
+        <div class="step-num">3</div>
+        <span>Save</span>
+      </div>
+    </div>
+
+    <!-- ╔══════════════════════════════════════════════════════╗
+         ║  STEP 1 — EXTRACT                                   ║
+         ╚══════════════════════════════════════════════════════╝ -->
+    <div id="step-1" class="step-panel active">
+
+      <!-- Auto-extract loading banner -->
+      <div id="auto-extract-banner" class="auto-banner hidden">
+        <span class="spinner" style="border-top-color:#5c6ef8; border-color:rgba(92,110,248,.25); border-top-color:#5c6ef8;"></span>
+        <span>Extracting LinkedIn profile…</span>
+      </div>
+
+      <div class="grab-row">
+        <button id="btn-grab-linkedin" class="btn btn-secondary btn-sm" disabled>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.32 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.79M6.88 8.56a1.68 1.68 0 0 0 1.68-1.68c0-.93-.75-1.69-1.68-1.69a1.69 1.69 0 0 0-1.69 1.69c0 .93.76 1.68 1.69 1.68m1.39 9.94v-8.37H5.5v8.37h2.77z"/></svg>
+          Grab LinkedIn
+        </button>
+        <button id="btn-grab-selection" class="btn btn-secondary btn-sm">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="6" width="13" height="13" rx="2"/><path d="M4 16V4h12"/></svg>
+          Grab Selection
+        </button>
+        <button id="btn-clear" class="btn btn-ghost btn-sm">✕ Clear</button>
+      </div>
+
+      <!-- Duplicate warning (hidden until detected) -->
+      <div id="dup-banner" class="dup-banner hidden">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span id="dup-text">Candidate already exists</span>
+        <button id="dup-view" class="link-btn small">View</button>
+      </div>
+
+      <!-- Candidate card (editable) -->
+      <div class="candidate-card">
+        <div class="card-row two-col">
+          <div class="field">
+            <label>Full Name</label>
+            <input id="c-name" type="text" placeholder="John Smith">
+          </div>
+          <div class="field">
+            <label>Email</label>
+            <input id="c-email" type="email" placeholder="john@example.com">
+          </div>
+        </div>
+        <div class="card-row two-col">
+          <div class="field">
+            <label>Current Title</label>
+            <input id="c-title" type="text" placeholder="Senior Engineer">
+          </div>
+          <div class="field">
+            <label>Location</label>
+            <input id="c-location" type="text" placeholder="New York, NY">
+          </div>
+        </div>
+        <div class="card-row two-col">
+          <div class="field">
+            <label>Years Exp.</label>
+            <input id="c-years" type="number" min="0" max="50" step="0.5" placeholder="5">
+          </div>
+          <div class="field">
+            <label>Degree</label>
+            <select id="c-degree">
+              <option value="">Unknown</option>
+              <option value="bachelors">Bachelor's</option>
+              <option value="masters">Master's</option>
+              <option value="phd">PhD</option>
+              <option value="intermediate">Diploma / A-Level</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label>Skills <span class="hint-label">(comma-separated)</span></label>
+          <input id="c-skills" type="text" placeholder="Python, React, Machine Learning, SQL">
+        </div>
+        <div class="field">
+          <label>
+            Profile Text
+            <span id="char-count" class="hint-label">0 chars</span>
+          </label>
+          <textarea id="c-text" rows="5" placeholder="Paste resume text, or use a grab button above…"></textarea>
+          <button type="button" id="btn-parse-fields" class="btn btn-secondary btn-sm btn-full parse-fields-btn">
+            Fill name, title &amp; fields from profile text
+          </button>
+        </div>
+        <div class="field">
+          <label>Profile URL <span class="hint-label">(optional)</span></label>
+          <input id="c-url" type="url" placeholder="https://linkedin.com/in/…">
+        </div>
+      </div>
+
+      <div id="step1-err" class="alert alert-error hidden"></div>
+
+      <button id="btn-to-analyze" class="btn btn-primary btn-full">
+        Continue to Analyze
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </button>
+    </div>
+
+    <!-- ╔══════════════════════════════════════════════════════╗
+         ║  STEP 2 — ANALYZE                                   ║
+         ╚══════════════════════════════════════════════════════╝ -->
+    <div id="step-2" class="step-panel hidden">
+
+      <!-- Back link -->
+      <button id="btn-back-1" class="back-btn">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        Back to Profile
+      </button>
+
+      <!-- Candidate summary strip -->
+      <div class="cand-summary">
+        <div class="cand-avatar" id="cand-avatar">?</div>
+        <div class="cand-info">
+          <div id="cand-name-disp" class="cand-name">—</div>
+          <div id="cand-title-disp" class="cand-title">—</div>
+        </div>
+      </div>
+
+      <!-- Job selector -->
+      <div class="field">
+        <label>Select Job to Analyze Against</label>
+        <div class="job-select-wrap">
+          <select id="job-select" class="job-select">
+            <option value="">Loading jobs…</option>
+          </select>
+          <button id="btn-reload-jobs" class="icon-btn" title="Refresh jobs">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Analyze button -->
+      <button id="btn-analyze" class="btn btn-accent btn-full">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <span id="analyze-label">Analyze Match</span>
+        <span id="analyze-spinner" class="spinner hidden"></span>
+      </button>
+
+      <div id="analyze-err" class="alert alert-error hidden"></div>
+
+      <!-- ── Results card (hidden until analysis runs) ──────── -->
+      <div id="results-card" class="results-card hidden">
+
+        <!-- Score ring -->
+        <div class="score-section">
+          <div class="score-ring-wrap">
+            <svg class="score-ring" viewBox="0 0 80 80">
+              <circle class="ring-bg"    cx="40" cy="40" r="34" />
+              <circle class="ring-fill"  cx="40" cy="40" r="34" id="ring-fill" />
+            </svg>
+            <div class="score-center">
+              <span id="score-pct" class="score-num">—</span>
+              <span class="score-unit">%</span>
+            </div>
+          </div>
+          <div class="score-right">
+            <span id="score-badge" class="score-badge">—</span>
+            <div id="rank-info" class="rank-info">—</div>
+            <div id="job-name-disp" class="job-name-disp"></div>
+          </div>
+        </div>
+
+        <!-- Breakdown bars -->
+        <div class="breakdown">
+          <p class="breakdown-title">Match Breakdown</p>
+
+          <div class="bar-row">
+            <span class="bar-label">Skills Overlap</span>
+            <div class="bar-track"><div class="bar-fill" id="bar-skills"></div></div>
+            <span class="bar-val" id="val-skills">—</span>
+          </div>
+          <div class="bar-row">
+            <span class="bar-label">Critical Skills</span>
+            <div class="bar-track"><div class="bar-fill" id="bar-critical"></div></div>
+            <span class="bar-val" id="val-critical">—</span>
+          </div>
+          <div class="bar-row">
+            <span class="bar-label">Experience</span>
+            <div class="bar-track"><div class="bar-fill" id="bar-exp"></div></div>
+            <span class="bar-val" id="val-exp">—</span>
+          </div>
+          <div class="bar-row">
+            <span class="bar-label">Title Relevance</span>
+            <div class="bar-track"><div class="bar-fill" id="bar-title"></div></div>
+            <span class="bar-val" id="val-title">—</span>
+          </div>
+        </div>
+
+        <!-- Skill lists -->
+        <div class="skill-lists">
+          <div class="skill-col">
+            <p class="skill-list-title match">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              Matching Skills
+            </p>
+            <div id="matching-skills" class="skill-chips"></div>
+          </div>
+          <div class="skill-col">
+            <p class="skill-list-title missing">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              Missing Skills
+            </p>
+            <div id="missing-skills" class="skill-chips"></div>
+          </div>
+        </div>
+
+        <!-- Re-analyze for different job -->
+        <button id="btn-reanalyze" class="btn btn-ghost btn-sm btn-full" style="margin-top:8px">
+          ↻ Analyze Against Different Job
+        </button>
+      </div>
+
+      <!-- Save actions (shown after analysis) -->
+      <div id="save-actions" class="save-actions hidden">
+        <button id="btn-save-only" class="btn btn-secondary btn-full">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          Save Candidate
+        </button>
+        <button id="btn-save-match" class="btn btn-primary btn-full">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          Save & Attach to Job
+        </button>
+        <button id="btn-skip" class="link-btn center-link">Skip — don't save</button>
+      </div>
+
+    </div>
+
+    <!-- ╔══════════════════════════════════════════════════════╗
+         ║  STEP 3 — CONFIRMATION                              ║
+         ╚══════════════════════════════════════════════════════╝ -->
+    <div id="step-3" class="step-panel hidden">
+      <div class="confirm-wrap">
+        <div class="confirm-icon">✓</div>
+        <h3 id="confirm-title">Candidate Saved</h3>
+        <p id="confirm-msg" class="confirm-msg"></p>
+        <div class="confirm-actions">
+          <button id="btn-new-candidate" class="btn btn-primary">+ New Candidate</button>
+          <button id="btn-open-app" class="btn btn-secondary">Open RezumeAI ↗</button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /view-main -->
+
+  <script src="popup.js"></script>
+</body>
+</html>

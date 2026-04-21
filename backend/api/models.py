@@ -169,6 +169,9 @@ class JobCandidateRanking(Base):
     candidate_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"), index=True
     )
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     rank_position: Mapped[int] = mapped_column(Integer)
     cross_encoder_score: Mapped[float] = mapped_column(Float)
     sbert_similarity: Mapped[float] = mapped_column(Float, default=0.0)

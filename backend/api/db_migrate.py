@@ -83,6 +83,14 @@ def ensure_extra_columns(engine: Engine) -> None:
             else:
                 alters.append("ALTER TABLE job_candidate_rankings ADD COLUMN explanation_json TEXT")
 
+        if "workspace_id" not in existing_rank:
+            if dialect == "postgresql":
+                alters.append(
+                    "ALTER TABLE job_candidate_rankings ADD COLUMN IF NOT EXISTS workspace_id UUID"
+                )
+            else:
+                alters.append("ALTER TABLE job_candidate_rankings ADD COLUMN workspace_id VARCHAR(36)")
+
     if existing_jobs:
         for col, ddl in [
             ("workspace_id", "UUID" if dialect == "postgresql" else "VARCHAR(36)"),

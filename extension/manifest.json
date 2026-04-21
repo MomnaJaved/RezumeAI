@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "RezumeAI Recruiter",
+  "short_name": "RezumeAI",
+  "version": "1.0.0",
+  "description": "Capture LinkedIn profiles and resume text directly into RezumeAI's AI matching pipeline.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*",
+    "https://*.linkedin.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "RezumeAI",
+    "default_icon": {
+      "16":  "icons/icon16.png",
+      "48":  "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.linkedin.com/*",
+        "http://*.linkedin.com/*"
+      ],
+      "js": ["extract_core.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "icons": {
+    "16":  "icons/icon16.png",
+    "48":  "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

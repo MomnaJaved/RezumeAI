@@ -11,7 +11,7 @@ from src.inference.service import classify_role
 from src.parsing.skill_mining import extract_skill_candidates
 from src.parsing.feature_extractors import extract_certifications, extract_education, estimate_years_experience
 from src.parsing.text_extractors import extract_text_any
-from src.parsing.name_extractor import resolve_candidate_full_name
+from src.parsing.name_extractor import UNKNOWN_CANDIDATE, resolve_candidate_full_name
 from src.parsing.role_labels import ROLE_LABELS_MULTI, title_to_role_label
 from src.parsing.candidate_title_resolve import resolve_title_from_resume_text
 from src.parsing.role_fine import infer_role_fine
@@ -149,6 +149,28 @@ def parse_upload(filename: str, content: bytes) -> dict:
     role_fine = infer_role_fine(title, skills, raw_hint=raw_clean[:5000])
 
     full_name, _name_src = resolve_candidate_full_name(raw_clean, contact_email)
+
+    # Extension / paste often omits a "Name:" line (e.g. LinkedIn starts with About). Use .txt stem as hint.
+    stem = Path(filename).stem.strip()
+    stem_l = stem.lower()
+    _bad_filename_stems = frozenset(
+        {
+            "resume",
+            "candidate",
+            "cv",
+            "document",
+            "text",
+            "untitled",
+            "unknown",
+            "unknown candidate",
+            "file",
+            "export",
+            "profile",
+        }
+    )
+    if stem and len(stem) >= 2 and stem_l not in _bad_filename_stems:
+        if not (full_name or "").strip() or (full_name or "").strip() == UNKNOWN_CANDIDATE:
+            full_name = stem.replace("_", " ").replace("-", " ").strip()
 
     edu = extract_education(pii_safe_structural)
     certs = extract_certifications(pii_safe_structural)
