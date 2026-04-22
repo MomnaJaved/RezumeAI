@@ -9,7 +9,7 @@
   const MAX_SKILLS_IN_OUTPUT = 500;
 
   /**
-   * Prefer the inner profile column LinkedIn uses in scaffold layouts; plain <main> can miss cards.
+   * Scroll / anchor target: inner main when present (good for scrollTop + #id scoped lookup).
    */
   function profileMain() {
     const sels = [
@@ -20,8 +20,6 @@
       '[role="main"]',
       'main:not([hidden])',
       'main',
-      '.scaffold-layout__list-detail-inner',
-      '.scaffold-layout__list-detail',
     ];
     for (const sel of sels) {
       try {
@@ -34,13 +32,21 @@
     return null;
   }
 
-  function rootEl() {
+  /**
+   * Section cards (Experience, Skills, …) often live under the full list-detail column, not inside a
+   * narrow <main> shell. Always search here so heading / artdeco scans see the same DOM users see.
+   */
+  function profileSectionRoot() {
     return (
-      profileMain() ||
-      document.querySelector('.scaffold-layout__list-detail-inner') ||
       document.querySelector('.scaffold-layout__list-detail') ||
+      document.querySelector('.scaffold-layout__list-detail-inner') ||
+      profileMain() ||
       document.body
     );
+  }
+
+  function rootEl() {
+    return profileSectionRoot();
   }
 
   /** Strip direction marks / ZWJ so headings match (LinkedIn sometimes injects invisible chars). */
@@ -51,8 +57,14 @@
       .trim();
   }
 
-  /** Resolve profile anchors inside <main> first (avoids stray #experience elsewhere). */
+  /** Profile section anchors are unique on /in/ pages — prefer global id, then scoped. */
   function anchorById(id) {
+    try {
+      const g = document.getElementById(id);
+      if (g) return g;
+    } catch {
+      /* ignore */
+    }
     const main = profileMain();
     if (main) {
       try {
@@ -62,7 +74,7 @@
         /* invalid id — fall back */
       }
     }
-    return document.getElementById(id);
+    return null;
   }
 
   /**
@@ -78,7 +90,7 @@
   }
 
   function primeProfileSectionsInner() {
-    const main = profileMain();
+    const main = profileMain() || profileSectionRoot();
     let maxY = 0;
     try {
       maxY = Math.max(
@@ -123,7 +135,7 @@
         el?.scrollIntoView({ block: 'center', inline: 'nearest' });
       } catch { /* ignore */ }
     });
-    expandLinkedInSkillsPanel(profileMain());
+    expandLinkedInSkillsPanel(profileSectionRoot());
     /* Do not reset main.scrollTop to 0 — LinkedIn virtualizes sections and will unmount Experience/Skills. */
   }
 
@@ -143,12 +155,13 @@
       if (name.includes('profile-card')) s += 10;
       else if (name.includes('profile')) s += 4;
       if (name.includes('pvs')) s += 2;
-      if (/skill-assessment|skills-quiz|endorsement|global-nav|msg-overlay|hiring|rsc-nav/i.test(name)) s -= 30;
+      if (/\bskill-assessment\b|\bskills-quiz\b|\bmsg-overlay\b|\bglobal-nav\b|\bhiring-home\b|\brsc-nav\b/i.test(name))
+        s -= 30;
       scored.push({ node, s });
     });
     scored.sort((a, b) => b.s - a.s);
     for (const { node, s } of scored) {
-      if (s < 0) break;
+      if (s < 0) continue;
       const selfCard =
         typeof node.matches === 'function' &&
         (node.matches('section.artdeco-card') || node.matches('div.artdeco-card'))
@@ -1105,13 +1118,13 @@
    */
   globalThis.__rezumeExtractLinkedInAsync = async function rezumeExtractLinkedInAsync() {
     try {
-    const main = profileMain();
+    const scrollRoot = profileMain() || profileSectionRoot();
     let maxY = 0;
     try {
       maxY = Math.max(
         document.documentElement?.scrollHeight || 0,
         document.body?.scrollHeight || 0,
-        main?.scrollHeight || 0,
+        scrollRoot?.scrollHeight || 0,
         4000,
       );
     } catch {
@@ -1123,11 +1136,11 @@
       } catch { /* ignore */ }
       await new Promise(r => setTimeout(r, 85));
     }
-    if (main) {
-      const h = Math.max(main.scrollHeight || 0, 1200);
+    if (scrollRoot) {
+      const h = Math.max(scrollRoot.scrollHeight || 0, 1200);
       for (let i = 0; i <= 12; i++) {
         try {
-          main.scrollTop = (h * i) / 12;
+          scrollRoot.scrollTop = (h * i) / 12;
         } catch { /* ignore */ }
         await new Promise(r => setTimeout(r, 65));
       }
@@ -1152,13 +1165,13 @@
           anchorById(id)?.scrollIntoView({ block: 'center' });
         } catch { /* ignore */ }
         if (id === 'skills') {
-          expandLinkedInSkillsPanel(main);
+          expandLinkedInSkillsPanel(profileSectionRoot());
           await new Promise(r => setTimeout(r, 600));
         } else {
           await new Promise(r => setTimeout(r, 100));
         }
       }
-      expandLinkedInSkillsPanel(main);
+      expandLinkedInSkillsPanel(profileSectionRoot());
       await new Promise(r => setTimeout(r, 400));
       /* Leave scroll position — resetting to top unmounts lower profile sections. */
     }
