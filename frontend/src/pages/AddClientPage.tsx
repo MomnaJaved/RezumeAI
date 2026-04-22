@@ -44,24 +44,12 @@ export default function AddClientPage() {
         <div className="cand-toolbar">
           <div className="cand-toolbar-row">
             <div className="cand-count">Add Client</div>
-            <div className="cand-toolbar-actions">
-              <button type="button" className="small-btn" onClick={() => nav("/clients")} disabled={saving}>
-                ← Back
-              </button>
-              <button
-                type="button"
-                className="small-btn cand-primary-btn"
-                onClick={() => void submit()}
-                disabled={saving}
-              >
-                Create
-              </button>
-            </div>
           </div>
         </div>
       }
     >
-      <div className="job-card job-card-wide client-form">
+      <>
+      <div className="job-card job-card-wide client-form clients-page-scroll-pad">
         <div className="job-card-title">Client details</div>
         <div className="job-overview-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
           <div>
@@ -89,6 +77,15 @@ export default function AddClientPage() {
           </div>
         </div>
       </div>
+      <div className="clients-float-actions" role="toolbar" aria-label="Add client actions">
+        <button type="button" className="clients-float-btn clients-float-btn--ghost" onClick={() => nav("/clients")} disabled={saving}>
+          ← Back
+        </button>
+        <button type="button" className="clients-float-btn clients-float-btn--primary" onClick={() => void submit()} disabled={saving}>
+          {saving ? "Creating…" : "Create"}
+        </button>
+      </div>
+      </>
     </DashFrame>
   );
 }

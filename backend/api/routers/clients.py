@@ -98,7 +98,7 @@ def create_client(
     db.add(c)
     db.commit()
     db.refresh(c)
-    log_activity(db, kind="client", message=f"New client: {name}", href="/clients")
+    log_activity(db, kind="client", message=f"New client: {name}", href="/clients", workspace_id=wid)
     cr = ClientRead.model_validate(c)
     cr.active_jobs = 0
     return cr
@@ -114,12 +114,11 @@ def jobs_for_client(
     if not c:
         raise HTTPException(status_code=404, detail="Client not found")
     _ensure_client_accessible(db, c, user)
-    jobs = (
-        db.query(Job)
-        .filter(Job.client_id == c.id)
-        .order_by(Job.created_at.desc())
-        .all()
-    )
+    jobs_q = db.query(Job).filter(Job.client_id == c.id)
+    w = _recruiter_workspace_id(db, user)
+    if w is not None:
+        jobs_q = jobs_q.filter(Job.workspace_id == w)
+    jobs = jobs_q.order_by(Job.created_at.desc()).all()
     # Return same JobRead as jobs router would.
     from api.schemas import JobRead
 

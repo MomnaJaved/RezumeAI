@@ -15,6 +15,16 @@ function pieSlicePath(cx: number, cy: number, r: number, start: number, end: num
   return `M ${cx} ${cy} L ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1} Z`;
 }
 
+function dedupPeople(people: DashboardPipelineStage["people"]) {
+  const seen = new Set<string>();
+  return people.filter((p) => {
+    const key = p.id || p.external_id;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function DashboardApplicantTracker({ pipeline }: { pipeline: DashboardPipelineStage[] }) {
   const [openKey, setOpenKey] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -31,7 +41,8 @@ export function DashboardApplicantTracker({ pipeline }: { pipeline: DashboardPip
       <div className="dash-tracker-rows">
         {pipeline.map((row) => {
           const expanded = openKey === row.key;
-          return (
+          const people = dedupPeople(row.people);
+        return (
             <div key={row.key} className={`dash-tracker-block${expanded ? " dash-tracker-block--open" : ""}`}>
               <button
                 type="button"
@@ -46,7 +57,7 @@ export function DashboardApplicantTracker({ pipeline }: { pipeline: DashboardPip
                   <span className="dash-tracker-count">{row.count}</span>
                 </div>
                 <div className="dash-tracker-avatars" aria-label={`${row.count} in ${row.label}`}>
-                  {row.people.map((p) => (
+                  {people.map((p) => (
                     <span key={p.external_id} className="dash-avatar" title={p.name}>
                       {p.initials}
                     </span>
@@ -62,11 +73,11 @@ export function DashboardApplicantTracker({ pipeline }: { pipeline: DashboardPip
                   </div>
                   {row.count === 0 ? (
                     <p className="muted dash-tracker-detail-empty">No applicants in this stage.</p>
-                  ) : row.people.length === 0 ? (
+                  ) : people.length === 0 ? (
                     <p className="muted dash-tracker-detail-empty">More in this stage than shown here — use the list filter.</p>
                   ) : (
                     <ul className="dash-tracker-people">
-                      {row.people.map((p) => (
+                      {people.map((p) => (
                         <li key={p.external_id}>
                           <span className="dash-avatar dash-avatar--sm" aria-hidden>
                             {p.initials}

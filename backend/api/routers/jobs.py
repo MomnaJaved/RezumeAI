@@ -33,24 +33,34 @@ from api.services.applicant_status_effective import (
 from api.services.candidate_display import display_full_name_from_db
 from api.services.candidate_title_db import resolved_display_title
 from api.services.activity_log import log_activity
+from api.services.candidate_notifications import notify_candidate_pipeline_status
 from api.database import engine
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
-def _log_pipeline_notification(db: Session, job: Job, cand: Candidate, st: str) -> None:
+def _log_pipeline_notification(db: Session, job: Job, cand: Candidate, st: str, user_id=None) -> None:
     """Activity feed + toasts for hired / rejected / shortlisted / selected."""
     name = display_full_name_from_db(cand.full_name)
     label = (job.title or "").strip() or job.external_id
     ext = (job.external_id or "").strip()
     href = f"/jobs?job={quote(ext, safe='')}" if ext else "/jobs"
+    ws_id = getattr(job, "workspace_id", None)
     s = (st or "").strip().lower()
-    if s in ("shortlisted", "selected"):
-        log_activity(db, kind="shortlist", message=f"{name} shortlisted for {label}", href=href)
+    if s == "shortlisted":
+        log_activity(db, kind="shortlist", message=f"{name} shortlisted for {label}", href=href, workspace_id=ws_id, user_id=user_id)
+    elif s == "selected":
+        log_activity(db, kind="select", message=f"{name} selected for {label}", href=href, workspace_id=ws_id, user_id=user_id)
     elif s == "rejected":
-        log_activity(db, kind="reject", message=f"{name} marked not a fit for {label}", href=href)
+        log_activity(db, kind="reject", message=f"{name} marked not a fit for {label}", href=href, workspace_id=ws_id, user_id=user_id)
     elif s == "hired":
-        log_activity(db, kind="hired", message=f"{name} hired for {label}", href=href)
+        log_activity(db, kind="hired", message=f"{name} hired for {label}", href=href, workspace_id=ws_id, user_id=user_id)
+    elif s == "interviewing":
+        log_activity(db, kind="interview", message=f"{name} moved to interviewing for {label}", href=href, workspace_id=ws_id, user_id=user_id)
+    elif s == "screened":
+        log_activity(db, kind="screened", message=f"{name} screened for {label}", href=href, workspace_id=ws_id, user_id=user_id)
+    if s in STORAGE_APPLICANT_STATUSES:
+        notify_candidate_pipeline_status(db, job, cand, s)
 
 
 _JOB_ID_RE = re.compile(r"^J(\d+)$", re.IGNORECASE)
@@ -567,7 +577,8 @@ def update_applicant_status(
     sync_candidate_status_from_applicants(db, cand)
     db.commit()
     if previous is None or previous != st:
-        _log_pipeline_notification(db, job, cand, st)
+        caller_user_id = user.id if user is not None else None
+        _log_pipeline_notification(db, job, cand, st, user_id=caller_user_id)
     return {"job_external_id": external_id, "candidate_external_id": candidate_external_id, "status": st}
 
 

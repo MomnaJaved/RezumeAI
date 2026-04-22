@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from api.config import get_settings
 from api.models import Candidate, Client, InboxMessage, InboxReadState, User
-from api.services.activity_feed import build_activity_notifications
+from api.services.activity_feed import build_activity_notifications, build_candidate_user_notifications
 from api.services.workspace_scope import ensure_workspace_for_recruiter
 
 _log = logging.getLogger("rezume.api")
@@ -106,7 +106,7 @@ def build_inbox_rows(db: Session, user: User, activity_limit: int = 80, message_
     settings = get_settings()
     role = (getattr(user, "account_role", None) or "recruiter").strip().lower()
     if role == "candidate":
-        activity: list[dict[str, Any]] = []
+        activity = build_candidate_user_notifications(db, user.id, limit=activity_limit)
     elif settings.require_auth:
         wid = ensure_workspace_for_recruiter(db, user)
         activity = build_activity_notifications(db, limit=activity_limit, recruiter_workspace_id=wid)

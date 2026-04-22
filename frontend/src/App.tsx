@@ -28,7 +28,6 @@ import CandidateDashboardPage from "./pages/candidate/CandidateDashboardPage";
 import CandidateJobsPage from "./pages/candidate/CandidateJobsPage";
 import CandidateApplicationsPage from "./pages/candidate/CandidateApplicationsPage";
 import CandidateProfilePage from "./pages/candidate/CandidateProfilePage";
-import CandidateResumePage from "./pages/candidate/CandidateResumePage";
 import CandidateFrame from "./CandidateFrame";
 import ScanGate from "./ScanGate";
 import RequireAuth from "./RequireAuth";
@@ -91,7 +90,6 @@ export default function App() {
                   <Link to="/candidate">Home</Link>
                   <Link to="/candidate/jobs">Jobs</Link>
                   <Link to="/candidate/applications">Applications</Link>
-                  <Link to="/candidate/resume">Resume</Link>
                   <Link to="/candidate/profile">Profile</Link>
                   <span className="muted" style={{ marginLeft: "0.5rem" }}>
                     {email ?? "signed in"}
@@ -281,8 +279,9 @@ export default function App() {
             <Route index element={<CandidateDashboardPage />} />
             <Route path="jobs" element={<CandidateJobsPage />} />
             <Route path="applications" element={<CandidateApplicationsPage />} />
+            <Route path="inbox" element={<InboxPage />} />
             <Route path="profile" element={<CandidateProfilePage />} />
-            <Route path="resume" element={<CandidateResumePage />} />
+            <Route path="resume" element={<Navigate to="/candidate" replace />} />
           </Route>
           <Route
             path="/upload"

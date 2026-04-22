@@ -24,6 +24,7 @@ def _cols(engine: Engine, table: str) -> set[str]:
 def ensure_extra_columns(engine: Engine) -> None:
     dialect = engine.dialect.name
     existing_rank = _cols(engine, "job_candidate_rankings")
+    existing_sbert = _cols(engine, "job_candidate_sbert_scores")
     existing_cand = _cols(engine, "candidates")
     existing_jobs = _cols(engine, "jobs")
     existing_clients = _cols(engine, "clients")
@@ -82,6 +83,20 @@ def ensure_extra_columns(engine: Engine) -> None:
                 )
             else:
                 alters.append("ALTER TABLE job_candidate_rankings ADD COLUMN explanation_json TEXT")
+
+        # Recruiter workspace (= recruiter_id) for score isolation across tenants.
+        if "workspace_id" not in existing_rank:
+            if dialect == "postgresql":
+                alters.append("ALTER TABLE job_candidate_rankings ADD COLUMN IF NOT EXISTS workspace_id UUID")
+            else:
+                alters.append("ALTER TABLE job_candidate_rankings ADD COLUMN workspace_id VARCHAR(36)")
+
+    # SBERT cache: add workspace_id for per-recruiter score isolation.
+    if existing_sbert and "workspace_id" not in existing_sbert:
+        if dialect == "postgresql":
+            alters.append("ALTER TABLE job_candidate_sbert_scores ADD COLUMN IF NOT EXISTS workspace_id UUID")
+        else:
+            alters.append("ALTER TABLE job_candidate_sbert_scores ADD COLUMN workspace_id VARCHAR(36)")
 
     if existing_jobs:
         for col, ddl in [
@@ -197,6 +212,19 @@ def ensure_extra_columns(engine: Engine) -> None:
         else:
             alters.append("ALTER TABLE jobs ADD COLUMN created_by_user_id VARCHAR(36)")
 
+    if existing_events and "workspace_id" not in existing_events:
+        if dialect == "postgresql":
+            alters.append("ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS workspace_id UUID")
+        else:
+            alters.append("ALTER TABLE activity_events ADD COLUMN workspace_id VARCHAR(36)")
+
+    # Per-user notification isolation: only the owning user sees this event.
+    if existing_events and "user_id" not in existing_events:
+        if dialect == "postgresql":
+            alters.append("ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS user_id UUID")
+        else:
+            alters.append("ALTER TABLE activity_events ADD COLUMN user_id VARCHAR(36)")
+
     if existing_inbox_messages and "chat_scope" not in existing_inbox_messages:
         ddl = "VARCHAR(32) NOT NULL DEFAULT 'general'"
         if dialect == "postgresql":
@@ -213,10 +241,86 @@ def ensure_extra_columns(engine: Engine) -> None:
                 else:
                     alters.append(f"ALTER TABLE inbox_messages ADD COLUMN {col} {bool_ddl}")
 
+    # Candidate pool type: public (applied via portal) vs private (uploaded by recruiter).
+    if existing_cand and "is_public" not in existing_cand:
+        bool_ddl = "BOOLEAN NOT NULL DEFAULT FALSE" if dialect == "postgresql" else "BOOLEAN NOT NULL DEFAULT 0"
+        if dialect == "postgresql":
+            alters.append(f"ALTER TABLE candidates ADD COLUMN IF NOT EXISTS is_public {bool_ddl}")
+        else:
+            alters.append(f"ALTER TABLE candidates ADD COLUMN is_public {bool_ddl}")
+
     if alters:
         with engine.begin() as conn:
             for stmt in alters:
                 conn.execute(text(stmt))
+
+    # Backfill is_public for two cases:
+    #  1. Candidates with no workspace and no uploader — they are self-registered (public pool).
+    #  2. Candidates that have a linked portal account (user_id IS NOT NULL) — they must always be
+    #     public regardless of workspace_id, because backfill_workspaces may have assigned a
+    #     recruiter workspace to them after the fact (via job-link inference), which would otherwise
+    #     make them look like private/recruiter-owned candidates and expose them to hard-deletion.
+    if existing_cand and "is_public" in (_cols(engine, "candidates")):
+        try:
+            cols_now = _cols(engine, "candidates")
+            if dialect == "postgresql":
+                if "user_id" in cols_now:
+                    stmt = (
+                        "UPDATE candidates SET is_public = TRUE "
+                        "WHERE is_public = FALSE AND ("
+                        "  (workspace_id IS NULL AND created_by_user_id IS NULL)"
+                        "  OR user_id IS NOT NULL"
+                        ")"
+                    )
+                else:
+                    stmt = (
+                        "UPDATE candidates SET is_public = TRUE "
+                        "WHERE workspace_id IS NULL AND created_by_user_id IS NULL AND is_public = FALSE"
+                    )
+            else:
+                if "user_id" in cols_now:
+                    stmt = (
+                        "UPDATE candidates SET is_public = 1 "
+                        "WHERE is_public = 0 AND ("
+                        "  (workspace_id IS NULL AND created_by_user_id IS NULL)"
+                        "  OR user_id IS NOT NULL"
+                        ")"
+                    )
+                else:
+                    stmt = (
+                        "UPDATE candidates SET is_public = 1 "
+                        "WHERE workspace_id IS NULL AND created_by_user_id IS NULL AND is_public = 0"
+                    )
+            with engine.begin() as conn:
+                conn.execute(text(stmt))
+        except Exception:
+            pass
+
+    # Per-recruiter soft-delete mapping table.
+    try:
+        with engine.begin() as conn:
+            if dialect == "postgresql":
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS recruiter_candidate_hidden (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                        candidate_id UUID NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+                        hidden_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        CONSTRAINT uq_hidden_workspace_candidate UNIQUE (workspace_id, candidate_id)
+                    )
+                """))
+            else:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS recruiter_candidate_hidden (
+                        id VARCHAR(36) PRIMARY KEY,
+                        workspace_id VARCHAR(36) NOT NULL,
+                        candidate_id VARCHAR(36) NOT NULL,
+                        hidden_at TIMESTAMP NOT NULL,
+                        UNIQUE (workspace_id, candidate_id)
+                    )
+                """))
+    except Exception:
+        pass
 
     # Best-effort: resume_ingestions.updated_at default for older DBs (Postgres only).
     # SQLite lacks ALTER COLUMN default in a simple way; we keep app-level updates.
@@ -353,6 +457,12 @@ def ensure_indexes(engine: Engine) -> None:
     stmts.append("CREATE INDEX IF NOT EXISTS idx_candidates_workspace_id ON candidates (workspace_id)")
     stmts.append("CREATE INDEX IF NOT EXISTS idx_candidates_created_by_user_id ON candidates (created_by_user_id)")
     stmts.append("CREATE INDEX IF NOT EXISTS idx_ingestions_workspace_id ON resume_ingestions (workspace_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_activity_events_workspace_id ON activity_events (workspace_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_hidden_workspace_id ON recruiter_candidate_hidden (workspace_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_hidden_candidate_id ON recruiter_candidate_hidden (candidate_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_rankings_workspace_id ON job_candidate_rankings (workspace_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_sbert_scores_workspace_id ON job_candidate_sbert_scores (workspace_id)")
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_activity_events_user_id ON activity_events (user_id)")
 
     # Clients
     stmts.append("CREATE INDEX IF NOT EXISTS idx_clients_status ON clients (status)")

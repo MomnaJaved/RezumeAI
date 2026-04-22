@@ -14,6 +14,8 @@ ROLE_KEYWORDS = {
     "executive",
     "lead",
     "intern",
+    "trainee",
+    "apprentice",
     "associate",
     "architect",
     "tester",
@@ -42,7 +44,8 @@ RE_TITLE_PHRASE = re.compile(
     r"(?:software|backend|frontend|full\s*stack|fullstack|web|mobile|android|ios|data|ml|ai|qa|sqa|ui/ux|ux/ui|ui|ux"
     r"|sales|digital|content|graphic|product|business|financial|hr|human\s+resources|operations|devops"
     r"|cloud|cyber|network|system|project|marketing|customer|account|talent|supply\s+chain)?\s*"
-    r"(?:engineer|developer|designer|analyst|scientist|manager|tester|intern|architect"
+    r"(?:software\s+engineering\s+trainee|engineering\s+trainee|"
+    r"engineer|developer|designer|analyst|scientist|manager|tester|intern|trainee|apprentice|architect"
     r"|executive|specialist|consultant|coordinator|officer|director|associate|representative"
     r"|accountant|recruiter|strategist|lead)"
     r")\b",

@@ -30,6 +30,131 @@ _RE_CERT_LEAK = re.compile(
     re.IGNORECASE,
 )
 
+# PDFs often glue EDUCATION + SKILLS into one line separated by " | " (or fullwidth ｜, ZWSP noise).
+_RE_INLINE_SKILLS_OR_TOOLS_TAIL = re.compile(
+    r"\s*(?:\|\s*|｜\s*|/\s*)("
+    r"technical\s+skills|"
+    r"professional\s+skills|"
+    r"core\s+competencies|"
+    r"key\s+skills|"
+    r"relevant\s+skills|"
+    r"soft\s+skills|"
+    r"skills\s+overview|"
+    r"programming\s*(?:&|\+|and)\s*development|"
+    r"web\s+technologies|"
+    r"backend\s*(?:&|\+|and)\s*databases|"
+    r"frontend\s*(?:&|\+|and)\s*backend|"
+    r"languages?\s*(?:&|\+|and)\s*frameworks|"
+    r"tools\s*(?:&|\+|and)\s*technologies|"
+    r"frameworks?\s*(?:&|\+|and)\s*libraries|"
+    r"mobile\s+development|"
+    r"devops|"
+    r"cloud\s+platforms?|"
+    r"skills\s*:|"
+    r"ui/ux\s+implementation|"
+    r"responsive\s+web\s+design"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_resume_inline_noise(s: str) -> str:
+    s = re.sub(r"[\u200b\u200c\u200d\ufeff\u00ad]", "", s)
+    s = s.replace("\uff5c", "|")  # fullwidth vertical line
+    return s
+
+
+def _segment_looks_like_skills_block(seg: str) -> bool:
+    """True when a |...| segment is clearly a skills/tools heading, not a degree line."""
+    t = re.sub(r"\s+", " ", seg).strip().lower()
+    if not t:
+        return False
+    # Short heading-only segments
+    heads = (
+        "technical skills",
+        "professional skills",
+        "programming & development",
+        "programming and development",
+        "web technologies",
+        "backend & databases",
+        "backend and databases",
+        "languages & frameworks",
+        "tools & technologies",
+        "frameworks & libraries",
+        "core competencies",
+        "key skills",
+        "relevant skills",
+        "soft skills",
+        "skills overview",
+        "mobile development",
+        "devops",
+        "cloud platforms",
+        "ui/ux implementation",
+        "responsive web design",
+    )
+    if any(t == h or t.startswith(h + " ") or t.startswith(h + "|") for h in heads):
+        return True
+    if t.startswith("technical skills"):
+        return True
+    if re.match(r"^skills\s*:", t):
+        return True
+    # Bullet-heavy tech line without school words
+    if re.search(r"[●•·]", t) and not re.search(
+        r"\b(university|college|bachelor|master|diploma|degree|gpa|graduat)\b", t, re.I
+    ):
+        if re.search(
+            r"\b(javascript|typescript|python|react|node\.?js|nestjs|express|html\d?|css|tailwind|mongodb|postgres|sql|aws|azure|docker|kubernetes)\b",
+            t,
+            re.I,
+        ):
+            return True
+    return False
+
+
+def _truncate_education_by_pipe_segments(s: str) -> str:
+    """If CV used ' | ' between degree and skills, keep only education-side segments."""
+    if "|" not in s and "｜" not in s:
+        return s
+    s2 = _normalize_resume_inline_noise(s)
+    parts = [p.strip() for p in re.split(r"\s*[|｜]\s*", s2) if p.strip()]
+    if len(parts) < 2:
+        return s
+    kept: list[str] = []
+    for p in parts:
+        if _segment_looks_like_skills_block(p):
+            break
+        kept.append(p)
+    if not kept or (len(kept) == len(parts) and not any(_segment_looks_like_skills_block(x) for x in parts)):
+        return s
+    return " | ".join(kept).strip(" |—–-")
+
+
+def _truncate_education_at_skills_tail(s: str) -> str:
+    """Strip skills/tools blocks that were merged onto the same line as education (common PDF layout)."""
+    if not s:
+        return s
+    s_norm = _normalize_resume_inline_noise(s)
+    s_cut = _truncate_education_by_pipe_segments(s_norm)
+    if len(s_cut) < len(s_norm):
+        s_norm = s_cut
+    m = _RE_INLINE_SKILLS_OR_TOOLS_TAIL.search(s_norm)
+    if m:
+        return s_norm[: m.start()].strip(" \t|—–-/")
+    # "…2026 Technical Skills…" without a pipe before the heading
+    m_ts = re.search(r"\btechnical\s+skills\b", s_norm, re.I)
+    if m_ts and m_ts.start() > 20:
+        tail = s_norm[m_ts.start() :]
+        if re.search(r"[●•·]|\b(javascript|typescript|python|react)\b", tail, re.I):
+            return s_norm[: m_ts.start()].strip(" \t|—–-/")
+    # Dense bullet line after degree years: "... 2026 ● JavaScript ..."
+    if re.search(r"\b(20\d{2})\b.*[●•·]", s_norm) and re.search(
+        r"[●•·]\s*(JavaScript|TypeScript|Python|React|Node\.?js|HTML|CSS)\b", s_norm, re.I
+    ):
+        m2 = re.search(r"\s*[|｜·]\s*[●•]", s_norm)
+        if m2:
+            return s_norm[: m2.start()].strip(" \t|—–-/")
+    return s_norm.strip()
+
 
 def _split_resume_bullet_line(line: str, max_chunk: int) -> list[str]:
     """Split an overlong or multi-bullet line into separate entries."""
@@ -55,6 +180,9 @@ def _refine_education_lines(lines: list[str]) -> list[str]:
     seen: set[str] = set()
     for line in lines:
         for part in _split_resume_bullet_line(line, 200):
+            part = _truncate_education_at_skills_tail(part)
+            if not part.strip():
+                continue
             if _RE_EDU_LEAK.search(part) and len(part) > 80:
                 continue
             if part in seen:
@@ -147,6 +275,26 @@ def _lines_after_heading(lines: list[str], header_re: re.Pattern, allowed_repeat
     return out
 
 
+def _finalize_education_joined(joined: str) -> str:
+    """Last pass on the stored education string: cut skills tails and tidy trailing pipes."""
+    if not joined:
+        return joined
+    s = _normalize_resume_inline_noise(joined)
+    s = _truncate_education_at_skills_tail(s)
+    # Glued "…| … | Technical Skills …" or "…2026 Technical Skills …" (any position)
+    m = re.search(r"(?i)(?:\s*\|\s*)+\s*technical\s+skills\b|\btechnical\s+skills\s*(?:\||\s*●|\s*·)", s)
+    if m:
+        s = s[: m.start()].strip(" |—–-/")
+    else:
+        m2 = re.search(r"\btechnical\s+skills\b", s, re.I)
+        if m2 and m2.start() > 12:
+            tail = s[m2.start() :]
+            if re.search(r"\b(javascript|typescript|python|react|programming|nestjs|tailwind)\b", tail, re.I):
+                s = s[: m2.start()].strip(" |—–-/")
+    s = re.sub(r"(\s*\|)+\s*$", "", s).strip(" |—–-/")
+    return s
+
+
 def extract_education(text: str) -> Dict:
     t_struct = preprocess_resume_text_for_structure(text)
     lines = [l.strip() for l in t_struct.splitlines() if l.strip()]
@@ -160,6 +308,7 @@ def extract_education(text: str) -> Dict:
     seen: set[str] = set()
     for l in section_lines + edu_lines:
         s = re.sub(r"\s+", " ", l).strip()
+        s = _truncate_education_at_skills_tail(s)
         if not s or s in seen or len(s) > 480:
             continue
         seen.add(s)
@@ -189,9 +338,11 @@ def extract_education(text: str) -> Dict:
             highest = r
             break
 
+    joined = " | ".join(merged[:12]) if merged else ""
+    joined = _finalize_education_joined(joined)
     return {
         "highest_degree": highest,
-        "education_lines": " | ".join(merged[:12]) if merged else "",
+        "education_lines": joined,
     }
 
 # ---------- CERTIFICATIONS ----------
