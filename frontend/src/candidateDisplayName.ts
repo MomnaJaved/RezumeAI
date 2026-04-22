@@ -1,19 +1,25 @@
 import type { CandidateDto } from "./api";
 
-/** Matches backend `UNKNOWN_CANDIDATE` for people we could not name confidently. */
-export const UNKNOWN_CANDIDATE_LABEL = "Unknown Candidate";
+/** Shown in lists/detail when we have no parsed name (backend stores an empty `full_name`). */
+export const NO_CANDIDATE_NAME_DISPLAY = "—";
+
+const LEGACY_BAD_NAMES = new Set(["", "candidate", "unknown candidate", "unknown"]);
+
+function normalizedDisplayName(raw: string): string {
+  const t = raw.trim();
+  if (!t) return NO_CANDIDATE_NAME_DISPLAY;
+  if (LEGACY_BAD_NAMES.has(t.toLowerCase())) return NO_CANDIDATE_NAME_DISPLAY;
+  return t;
+}
 
 export function candidateDisplayName(c: { full_name?: string | null }): string {
-  const raw = (c.full_name ?? "").trim();
-  if (!raw) return UNKNOWN_CANDIDATE_LABEL;
-  if (raw.toLowerCase() === "candidate") return UNKNOWN_CANDIDATE_LABEL;
-  return raw;
+  return normalizedDisplayName(c.full_name ?? "");
 }
 
 export function candidateAvatarInitials(c: { full_name?: string | null }): string {
-  const n = candidateDisplayName(c);
-  if (n === UNKNOWN_CANDIDATE_LABEL) return "?";
-  const parts = n.trim().split(/\s+/).filter(Boolean);
+  const raw = (c.full_name ?? "").trim();
+  if (!raw || LEGACY_BAD_NAMES.has(raw.toLowerCase())) return "?";
+  const parts = raw.split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
   const a = parts[0]?.[0] ?? "";
   const b = parts.length > 1 ? parts[parts.length - 1]?.[0] ?? "" : "";
@@ -21,5 +27,9 @@ export function candidateAvatarInitials(c: { full_name?: string | null }): strin
 }
 
 export function candidateMailtoSubjectLine(c: CandidateDto): string {
-  return `Rezume AI — ${candidateDisplayName(c)}`;
+  const t = (c.full_name ?? "").trim();
+  if (!t || LEGACY_BAD_NAMES.has(t.toLowerCase())) {
+    return "Rezume AI";
+  }
+  return `Rezume AI — ${t}`;
 }

@@ -76,7 +76,8 @@ export default function MatchingPage() {
     // Minimum 3 must always be shown; URL param overrides default when present
     return fromUrl > 0 ? Math.max(3, fromUrl) : Math.max(3, getDefaultTopMatches());
   });
-  const [sortBy, setSortBy] = useState<SortKey>((sp.get("sort") as SortKey) || "rank_asc");
+  // Default: best match (cross-encoder) first — same as rank 1 at top when ranks are score-ordered
+  const [sortBy, setSortBy] = useState<SortKey>((sp.get("sort") as SortKey) || "match_desc");
   const [busyRefresh] = useState(false);
   const [pool, setPool] = useState<Stage1PoolRow[]>([]);
   const [loadingPool, setLoadingPool] = useState(false);
@@ -209,7 +210,7 @@ export default function MatchingPage() {
         const newRankings = res.rankings || [];
         setRankings(newRankings);
         setTopInsight((res.top_candidate_insight || "").trim() || null);
-        setSortBy("rank_asc");
+        setSortBy("match_desc");
         try {
           const poolRes = await fetchStage1Pool(selectedJob, 200);
           if (!cancelled) setPool(poolRes.items || []);
@@ -273,7 +274,15 @@ export default function MatchingPage() {
           if (sb !== sa) return sb - sa;
           return (b.sbert_score || 0) - (a.sbert_score || 0);
         }
-        // score_desc: retrieval score
+        // "Sort by Score" = SBERT/retrieval only when we do not have match rows yet; otherwise
+        // sort by the same final Match % so the table order matches the Rank column.
+        if (sortBy === "score_desc" && rankings.length > 0) {
+          const ma = rankByCandidateId.get(a.candidate_id)?.cross_encoder_score ?? -1;
+          const mb = rankByCandidateId.get(b.candidate_id)?.cross_encoder_score ?? -1;
+          if (mb !== ma) return mb - ma;
+          return (b.sbert_score || 0) - (a.sbert_score || 0);
+        }
+        // score_desc with no stored rankings: retrieval (SBERT) only
         return (b.sbert_score || 0) - (a.sbert_score || 0);
       });
 
@@ -475,12 +484,12 @@ export default function MatchingPage() {
                   const newRankings = res.rankings || [];
                   setRankings(newRankings);
                   setTopInsight((res.top_candidate_insight || "").trim() || null);
-                  setSortBy("rank_asc");
-                  setSp((prev) => {
-                    const nextSp = new URLSearchParams(prev);
-                    nextSp.set("sort", "rank_asc");
-                    return nextSp;
-                  });
+        setSortBy("match_desc");
+        setSp((prev) => {
+          const nextSp = new URLSearchParams(prev);
+          nextSp.set("sort", "match_desc");
+          return nextSp;
+        });
                   // Reload the stage-1 pool so newly applied candidates (who were
                   // added to the SBERT pool by the backend during this match run)
                   // appear immediately without requiring a page refresh.
@@ -524,7 +533,7 @@ export default function MatchingPage() {
           </p>
         </div>
       ) : (
-        <div className="job-overview-grid" style={{ gridTemplateColumns: "180px 1fr", alignItems: "stretch" }}>
+        <div className="job-overview-grid job-overview-grid--matching">
           <div className="job-card" style={{ display: "flex", flexDirection: "column" }}>
             <div className="job-card-title">{t("matching.jobDescription")}</div>
             <div className="muted" style={{ marginBottom: 10 }}>
@@ -632,60 +641,62 @@ export default function MatchingPage() {
 
                 {/* Comparison bar */}
                 {rankings.length >= 2 && (
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", flexWrap: "wrap", marginBottom: 12 }}>
-                    <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "rgba(203,213,225,0.85)", whiteSpace: "nowrap" }}>
-                      {t("matching.compareTop")}
-                    </span>
-                    <select
-                      value={String(compareCount)}
-                      onChange={(e) => { setCompareCount(Number(e.target.value)); setShowCompare(false); }}
-                      style={{
-                        background: "rgba(2,6,23,0.4)",
-                        color: "rgba(226,232,240,0.9)",
-                        border: "1px solid rgba(255,255,255,0.14)",
-                        borderRadius: "8px",
-                        padding: "0.2rem 0.45rem",
-                        fontSize: "0.82rem",
-                        cursor: "pointer",
-                      }}
-                    >
-                      {[2, 3, 4].map((n) => <option key={n} value={n}>{n}</option>)}
-                    </select>
-                    {(["experience", "certifications", "skills", "education"] as const).map((field) => (
-                      <label
-                        key={field}
-                        style={{ display: "flex", alignItems: "center", gap: "0.3rem", cursor: "pointer", fontSize: "0.82rem", color: "rgba(203,213,225,0.85)" }}
+                  <div className="match-compare-bar">
+                    <div className="match-compare-bar__row">
+                      <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "rgba(203,213,225,0.85)", whiteSpace: "nowrap" }}>
+                        {t("matching.compareTop")}
+                      </span>
+                      <select
+                        value={String(compareCount)}
+                        onChange={(e) => { setCompareCount(Number(e.target.value)); setShowCompare(false); }}
+                        style={{
+                          background: "rgba(2,6,23,0.4)",
+                          color: "rgba(226,232,240,0.9)",
+                          border: "1px solid rgba(255,255,255,0.14)",
+                          borderRadius: "8px",
+                          padding: "0.2rem 0.45rem",
+                          fontSize: "0.82rem",
+                          cursor: "pointer",
+                        }}
                       >
-                        <input
-                          type="checkbox"
-                          checked={compareFields.has(field)}
-                          onChange={() => {
-                            setShowCompare(false);
-                            setCompareFields((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(field)) next.delete(field);
-                              else next.add(field);
-                              return next;
-                            });
-                          }}
-                          style={{ accentColor: "rgba(56,189,248,0.9)", cursor: "pointer" }}
-                        />
-                        {field.charAt(0).toUpperCase() + field.slice(1)}
-                      </label>
-                    ))}
-                    <button
-                      type="button"
-                      className="match-compare-btn"
-                      disabled={compareFields.size === 0}
-                      onClick={() => setShowCompare(true)}
-                    >
-                      {t("matching.compareCandidates")}
-                    </button>
+                        {[2, 3, 4].map((n) => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                    </div>
+                    <div className="match-compare-bar__fields" role="group" aria-label={t("matching.compareTop")}>
+                      {(["experience", "certifications", "skills", "education"] as const).map((field) => (
+                        <label key={field}>
+                          <input
+                            type="checkbox"
+                            checked={compareFields.has(field)}
+                            onChange={() => {
+                              setShowCompare(false);
+                              setCompareFields((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(field)) next.delete(field);
+                                else next.add(field);
+                                return next;
+                              });
+                            }}
+                          />
+                          <span>{field.charAt(0).toUpperCase() + field.slice(1)}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <div className="match-compare-bar__action">
+                      <button
+                        type="button"
+                        className="match-compare-btn"
+                        disabled={compareFields.size === 0}
+                        onClick={() => setShowCompare(true)}
+                      >
+                        {t("matching.compareCandidates")}
+                      </button>
+                    </div>
                   </div>
                 )}
 
                 {/* Bottom panels: compare table + insight */}
-                <div style={{ display: "flex", gap: "0.85rem", alignItems: "flex-start" }}>
+                <div className="match-bottom-split">
 
                   {/* Compare table */}
                   {showCompare && (() => {
@@ -762,7 +773,7 @@ export default function MatchingPage() {
                       <p className="muted" style={{ lineHeight: 1.65, margin: 0, fontSize: "0.88rem" }}>
                         {topInsight ||
                           (rankOneRow
-                            ? `${rankOneRow.candidate_name || rankOneRow.candidate_external_id} is ranked #1 for ${job?.title || selectedJob} with a match score of ${pct(rankOneRow.cross_encoder_score)}. Click "Match" to re-run and load the full narrative insight.`
+                            ? `${rankOneRow.candidate_name || rankOneRow.candidate_external_id} is ranked #${rankOneRow.rank_position ?? 1} for ${job?.title || selectedJob} with a match score of ${pct(rankOneRow.cross_encoder_score)}. Click "Match" to re-run and load the full narrative insight.`
                             : null)}
                       </p>
                     </div>

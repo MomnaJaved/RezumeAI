@@ -379,7 +379,23 @@ def extract_education(text: str) -> Dict:
     edu_lines = [l for l in lines if RE_EDU_LINE.search(l)]
     merged: list[str] = []
     seen: set[str] = set()
-    for l in section_lines + edu_lines:
+    section_norm = {re.sub(r"\s+", " ", x).strip().lower() for x in section_lines}
+
+    if section_lines:
+        body_iter: list[str] = list(section_lines)
+        for l in edu_lines:
+            s = re.sub(r"\s+", " ", l).strip()
+            if not s or s.lower() in section_norm or len(s) > 260:
+                continue
+            if _RE_EDU_LEAK.search(s):
+                continue
+            if not (_line_has_degree_token(s) or (_line_has_institution(s) and len(s) < 220)):
+                continue
+            body_iter.append(l)
+    else:
+        body_iter = list(section_lines) + list(edu_lines)
+
+    for l in body_iter:
         s = re.sub(r"\s+", " ", l).strip()
         s = _truncate_education_at_skills_tail(s)
         if not s or s in seen or len(s) > 480:

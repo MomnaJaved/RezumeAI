@@ -16,6 +16,7 @@ lxml==6.0.2
 MarkupSafe==3.0.3
 murmurhash==1.0.15
 numpy==1.26.4
+opencv-python-headless==4.10.0.84
 packaging==25.0
 pandas==2.3.3
 pdfminer.six==20251107
@@ -27,6 +28,7 @@ pydantic==2.12.5
 pydantic_core==2.41.5
 PyMuPDF==1.26.5
 pypdfium2==5.3.0
+pytesseract>=0.3.10
 python-dateutil==2.9.0.post0
 python-docx==1.2.0
 pytz==2025.2

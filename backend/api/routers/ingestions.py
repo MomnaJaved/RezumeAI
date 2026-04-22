@@ -30,7 +30,6 @@ from api.services.sbert_shortlist import embed_text
 from api.services.activity_log import log_activity
 from api.services.candidate_display import display_full_name_from_db
 from api.services.workspace_scope import ensure_workspace_for_recruiter
-from src.parsing.name_extractor import UNKNOWN_CANDIDATE
 from api.slow_limiter import limiter
 
 router = APIRouter(prefix="/ingestions", tags=["ingestions"])
@@ -211,7 +210,7 @@ def _process_one_ingestion(ingestion_id: UUID, engine: Engine) -> None:
         db.commit()
         # User-facing notification (history/log). Best-effort.
         try:
-            label = display_full_name_from_db(cand.full_name) if cand else UNKNOWN_CANDIDATE
+            label = (display_full_name_from_db(cand.full_name) if cand else "") or "A candidate"
             log_activity(db, kind="candidate_added", message=f"{label} added to the pool", href="/candidates", workspace_id=ing_workspace_id)
         except Exception:
             pass

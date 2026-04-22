@@ -179,6 +179,58 @@ def compute_avg_job_match_0_100(
     return out, len(jobs)
 
 
+def compute_competition_payload_for_one_in_cohort(
+    db: Session,
+    c: Candidate,
+    cohort: list[Candidate],
+) -> dict[str, float]:
+    """
+    Competition metrics for a single row (detail page) without re-scoring every candidate in
+    the workspace. Profile percentiles use the full ``cohort``; job-breadth runs the cross-encoder
+    for ``c`` only against all jobs. Same weighting as :func:`compute_competition_payloads`.
+
+    A detail view used to call ``compute_competition_payloads_for_list(db, cohort)`` with the
+    full workspace list, which is O(jobs * n) model passes and can hang the HTTP connection.
+    """
+    if not cohort:
+        return {
+            "profile_percentile_score": 50.0,
+            "avg_job_match_score": 0.0,
+            "competition_score": 50.0,
+        }
+    if skip_job_breadth_for_list():
+        idx = next((i for i, x in enumerate(cohort) if x.id == c.id), None)
+        if idx is not None:
+            profile = compute_profile_scores_0_100(cohort)
+            p = profile[idx]
+        else:
+            p = 50.0
+        return {
+            "profile_percentile_score": p,
+            "avg_job_match_score": 0.0,
+            "competition_score": p,
+        }
+    idx = next((i for i, x in enumerate(cohort) if x.id == c.id), None)
+    if idx is not None:
+        profile = compute_profile_scores_0_100(cohort)
+        p = profile[idx]
+    else:
+        # Should not happen when cohort is the workspace list that includes c; fall back.
+        p = 50.0
+
+    job_avgs, n_jobs = compute_avg_job_match_0_100(db, [c])
+    j = job_avgs[0] if n_jobs > 0 else 50.0
+    if n_jobs > 0:
+        final = _W_PROFILE * p + _W_JOB_BREADTH * j
+    else:
+        final = p
+    return {
+        "profile_percentile_score": p,
+        "avg_job_match_score": j if n_jobs > 0 else 0.0,
+        "competition_score": round(max(0.0, min(100.0, final)), 2),
+    }
+
+
 def compute_competition_payloads(
     db: Session,
     candidates: list[Candidate],

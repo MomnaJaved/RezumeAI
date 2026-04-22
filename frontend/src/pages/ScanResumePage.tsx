@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  fetchCandidate,
   fetchJobs,
+  normalizedBestJobMatchPercent,
   ocrParseResume,
   rankFromDatabase,
+  triggerMatchCandidates,
   uploadResume,
   type CandidateDto,
   type Job,
   type OcrParsedFields,
 } from "../api";
 import { useToast } from "../toast";
+import { enhanceCaptureForOcr } from "../utils/ocrCaptureEnhance";
 
 function isMobileDevice(): boolean {
   return /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -74,6 +78,8 @@ export default function ScanResumePage() {
     certifications: "",
   });
   const [savedCandidate, setSavedCandidate] = useState<CandidateDto | null>(null);
+  /** From last OCR parse — required so save sends ``scan_save_json`` (same as upload contract). */
+  const [ocrScanMeta, setOcrScanMeta] = useState<{ external_id: string; raw_text: string } | null>(null);
 
   // Webcam state
   const [webcamError, setWebcamError] = useState<string | null>(null);
@@ -84,7 +90,13 @@ export default function ScanResumePage() {
   const [jobId, setJobId] = useState("");
   const [rankLoading, setRankLoading] = useState(false);
   const [rankPreview, setRankPreview] = useState<
-    Array<{ rank_position: number; candidate_external_id: string; candidate_name: string; cross_encoder_score: number }>
+    Array<{
+      rank_position: number;
+      candidate_external_id: string;
+      candidate_name: string;
+      cross_encoder_score: number;
+      sbert_similarity: number;
+    }>
   >([]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -157,7 +169,8 @@ export default function ScanResumePage() {
 
   // Shared OCR runner (used by file input AND webcam snap)
   const runOcr = useCallback(async (rawFile: File) => {
-    const compressed = await compressImage(rawFile);
+    const enhanced = await enhanceCaptureForOcr(rawFile, { maxDimension: 2000, jpegQuality: 0.9 });
+    const compressed = await compressImage(enhanced, 1600, 0.88);
     setCapturedFile(compressed);
     setPreviewUrl(URL.createObjectURL(compressed));
     setOcr(null);
@@ -167,6 +180,7 @@ export default function ScanResumePage() {
       education_lines: "", certifications: "",
     });
     setSavedCandidate(null);
+    setOcrScanMeta(null);
     setRankPreview([]);
     setStep("processing");
 
@@ -174,6 +188,7 @@ export default function ScanResumePage() {
       const result = await ocrParseResume(compressed);
       setOcr(result.parsed_fields);
       setFields(result.parsed_fields);
+      setOcrScanMeta({ external_id: result.external_id, raw_text: result.raw_text });
       setStep("edit");
     } catch (err) {
       toast.error(`OCR failed: ${(err as Error).message}`);
@@ -193,6 +208,7 @@ export default function ScanResumePage() {
     setCapturedFile(null);
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(null);
+    setOcrScanMeta(null);
     setStep("capture");
   }, [previewUrl, stopWebcam]);
 
@@ -200,21 +216,45 @@ export default function ScanResumePage() {
     if (!capturedFile) return;
     setStep("saving");
     try {
-      const res = await uploadResume(capturedFile);
+      const scanSave =
+        ocrScanMeta != null
+          ? { external_id: ocrScanMeta.external_id, raw_text: ocrScanMeta.raw_text, parsed_fields: fields }
+          : undefined;
+      const res = await uploadResume(capturedFile, scanSave);
       setSavedCandidate(res.candidate);
       toast.success(res.status === "created" ? "Candidate created in the database." : "Existing candidate updated.");
 
       if (andMatch && jobId) {
         setRankLoading(true);
         try {
-          const rankRes = await rankFromDatabase(jobId, { limit: 800, topReturn: 50, persist: true });
-          setRankPreview(rankRes.rankings.map((row) => ({
+          const mapRow = (row: {
+            rank_position: number;
+            candidate_external_id: string;
+            candidate_name: string;
+            cross_encoder_score: number;
+            sbert_similarity?: number;
+          }) => ({
             rank_position: row.rank_position,
             candidate_external_id: row.candidate_external_id,
             candidate_name: row.candidate_name,
             cross_encoder_score: row.cross_encoder_score,
-          })));
-          toast.success(`Saved ranking for job ${rankRes.job_external_id}.`);
+            sbert_similarity: row.sbert_similarity ?? 0,
+          });
+          try {
+            const matchRes = await triggerMatchCandidates(jobId);
+            setRankPreview(matchRes.rankings.map(mapRow));
+            toast.success(`Match scores saved for job ${matchRes.job_external_id}.`);
+          } catch {
+            const rankRes = await rankFromDatabase(jobId, { limit: 800, topReturn: 50, persist: true });
+            setRankPreview(rankRes.rankings.map(mapRow));
+            toast.success(`Saved ranking for job ${rankRes.job_external_id} (database cross-encoder).`);
+          }
+          try {
+            const fresh = await fetchCandidate(res.candidate.id);
+            setSavedCandidate(fresh);
+          } catch {
+            /* keep upload response */
+          }
         } catch (e) {
           toast.error(`Match failed: ${(e as Error).message}`);
         } finally {
@@ -226,7 +266,7 @@ export default function ScanResumePage() {
       toast.error(`Save failed: ${(err as Error).message}`);
       setStep("edit");
     }
-  }, [capturedFile, toast, jobId]);
+  }, [capturedFile, toast, jobId, ocrScanMeta, fields]);
 
   const field = <K extends keyof OcrParsedFields>(key: K) => ({
     value: fields[key] ?? "",
@@ -251,7 +291,8 @@ export default function ScanResumePage() {
       </h1>
 
       <p className="muted scan-lead">
-        Capture a printed resume with your camera or upload an image. OCR extracts the fields — review and correct before saving.
+        Capture a printed resume with your camera or upload an image. Each capture is auto-enhanced (orientation, contrast,
+        sharpen) before OCR — review and correct fields before saving.
       </p>
 
       {/* ── Step: capture ────────────────────────────────────────────── */}
@@ -323,8 +364,8 @@ export default function ScanResumePage() {
             <div className="scan-warn" style={{ maxWidth: "30rem" }}>
               <strong>Camera error:</strong> {webcamError}
               <div style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem" }}>
-                <button type="button" className="primary" onClick={() => void startWebcam()}>Try again</button>
-                <button type="button" onClick={retake}>Go back</button>
+                <button type="button" className="small-btn cand-primary-btn" onClick={() => void startWebcam()}>Try again</button>
+                <button type="button" className="small-btn" onClick={retake}>Go back</button>
               </div>
             </div>
           ) : (
@@ -450,13 +491,21 @@ export default function ScanResumePage() {
                 </div>
               )}
               <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap", marginTop: "0.75rem" }}>
-                <button type="button" className="primary" disabled={step === "saving"}
-                  onClick={() => void saveCandidate(false)}>
+                <button
+                  type="button"
+                  className="small-btn cand-primary-btn"
+                  disabled={step === "saving"}
+                  onClick={() => void saveCandidate(false)}
+                >
                   {step === "saving" ? "Saving…" : "Save candidate"}
                 </button>
                 {jobs.length > 0 && jobId && (
-                  <button type="button" disabled={step === "saving"}
-                    onClick={() => void saveCandidate(true)}>
+                  <button
+                    type="button"
+                    className="small-btn"
+                    disabled={step === "saving"}
+                    onClick={() => void saveCandidate(true)}
+                  >
                     {step === "saving" ? "Saving…" : "Save & Match"}
                   </button>
                 )}
@@ -485,17 +534,32 @@ export default function ScanResumePage() {
               <dt>Skills</dt><dd className="skills-dd">{savedCandidate.skills || "—"}</dd>
               <dt>Years exp.</dt><dd>{savedCandidate.years_experience ?? "—"}</dd>
               <dt>Degree</dt><dd>{savedCandidate.highest_degree || "—"}</dd>
+              {rankPreview.length > 0 && savedCandidate.best_job_match_score != null && jobId && (
+                <>
+                  <dt>Job match ({jobId})</dt>
+                  <dd>
+                    {(() => {
+                      const p = normalizedBestJobMatchPercent(savedCandidate.best_job_match_score);
+                      return p != null ? `${p}%` : String(savedCandidate.best_job_match_score);
+                    })()}
+                  </dd>
+                </>
+              )}
             </dl>
-            <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap", marginTop: "1rem" }}>
-              <button type="button" className="primary"
+            <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap", marginTop: "1rem", alignItems: "center" }}>
+              <button
+                type="button"
+                className="small-btn cand-primary-btn"
                 onClick={() => {
                   setCapturedFile(null);
                   if (previewUrl) URL.revokeObjectURL(previewUrl);
                   setPreviewUrl(null);
                   setSavedCandidate(null);
                   setRankPreview([]);
+                  setOcrScanMeta(null);
                   setStep("capture");
-                }}>
+                }}
+              >
                 Scan another resume
               </button>
               <Link to={`/candidates/${savedCandidate.id}`} className="linkish">
@@ -510,20 +574,54 @@ export default function ScanResumePage() {
           {rankLoading && <p className="muted" style={{ marginTop: "1rem" }}>Running match ranking…</p>}
           {rankPreview.length > 0 && (
             <div className="card" style={{ marginTop: "1rem" }}>
-              <h3 style={{ marginTop: 0 }}>Ranking preview (top {rankPreview.length})</h3>
+              <h3 style={{ marginTop: 0 }}>Match ranking (top {rankPreview.length})</h3>
+              <p className="muted" style={{ fontSize: "0.85rem", marginTop: "-0.25rem" }}>
+                <strong>Match score</strong> is the adjusted final score (0–100) stored for this job — same pipeline as{" "}
+                <em>Match candidates</em> on the job page when available.
+              </p>
+              {savedCandidate && (
+                <p style={{ fontSize: "0.92rem", marginBottom: "0.75rem" }}>
+                  {(() => {
+                    const mine = rankPreview.find((r) => r.candidate_external_id === savedCandidate.external_id);
+                    const pct = mine ? normalizedBestJobMatchPercent(mine.cross_encoder_score) : null;
+                    return pct != null ? (
+                      <>
+                        <strong>This candidate on this job:</strong> {pct}% match
+                        {mine && mine.sbert_similarity > 0 ? (
+                          <span className="muted"> (SBERT {mine.sbert_similarity.toFixed(3)})</span>
+                        ) : null}
+                      </>
+                    ) : (
+                      <span className="muted">Your candidate appears in the table below when they are in the ranked pool.</span>
+                    );
+                  })()}
+                </p>
+              )}
               <div style={{ overflowX: "auto" }}>
                 <table>
-                  <thead><tr><th>#</th><th>Name</th><th>Score</th></tr></thead>
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Name</th>
+                      <th>Match score</th>
+                      <th>SBERT</th>
+                    </tr>
+                  </thead>
                   <tbody>
-                    {rankPreview.map((row) => (
+                    {rankPreview.map((row) => {
+                      const matchPct = normalizedBestJobMatchPercent(row.cross_encoder_score);
+                      return (
                       <tr key={row.candidate_external_id}
                         style={savedCandidate && row.candidate_external_id === savedCandidate.external_id
                           ? { background: "#eff6ff" } : undefined}>
                         <td>{row.rank_position}</td>
                         <td>{row.candidate_name || "—"}</td>
-                        <td>{row.cross_encoder_score.toFixed(4)}</td>
+                        <td>
+                          {matchPct != null ? `${matchPct}%` : row.cross_encoder_score.toFixed(4)}
+                        </td>
+                        <td className="muted">{row.sbert_similarity > 0 ? row.sbert_similarity.toFixed(3) : "—"}</td>
                       </tr>
-                    ))}
+                    );})}
                   </tbody>
                 </table>
               </div>

@@ -9,6 +9,12 @@ from src.parsing.name_extractor import (
 )
 
 
+def test_ocr_double_spaced_letter_name_header():
+    """Tesseract often spaces letters and uses 2+ spaces between given and family name."""
+    txt = "J o h n   S m i t h\nSenior Engineer\njohn.smith@example.com\n"
+    assert extract_name_from_raw(txt) == "John Smith"
+
+
 def test_name_label_colon():
     txt = """Full Name: Ali Janjua
 QA Engineer
@@ -151,3 +157,61 @@ def test_resolve_candidate_full_name_unknown():
     name, src = resolve_candidate_full_name(raw, "a@b.co")
     assert name == UNKNOWN_CANDIDATE
     assert src == "unknown"
+
+
+def test_name_on_same_line_as_email_in_header():
+    """Name + contact on one line; must not be skipped for having an @ in the line."""
+    txt = "Ahsan Farhan Sherazi  ahsan@mail.com\nData Analyst\nSummary\n"
+    assert extract_name_from_raw(txt) == "Ahsan Farhan Sherazi"
+
+
+def test_name_before_phone_on_header_line():
+    """Camera scans: name and PK phone on the same line, no email on that line."""
+    txt = "Ahsan Farhan Sherazi +92-317-4497371\ndonothing\n"
+    assert extract_name_from_raw(txt) == "Ahsan Farhan Sherazi"
+
+
+def test_name_email_label_ocr_mangled_at():
+    """OCR can leave ``Email:`` and domain but drop ``@`` on the same line as the name."""
+    txt = "Ahsan Farhan Sherazi  E-mail: ahsanf@gmail.com  \nmore\n"
+    assert extract_name_from_raw(txt) == "Ahsan Farhan Sherazi"
+
+
+def test_name_with_email_label_and_long_local_part():
+    """Printed CVs: name left, 'Email: local@...' (must not keep 'Email:' in the parsed name)."""
+    line = "Ahsan Farhan Sherazi  Email: ahsanfarhansherazi02@gmail.com"
+    # Long header line (must not be dropped by a short chunk length cap)
+    long_line = "Ahsan Farhan Sherazi  Email: ahsanfarhansherazi02.verylongprefix@gmail.com"
+    assert len(long_line) > 70
+    for header in (line, long_line):
+        txt = header + "\nlinkedin.com/in/ahsan-farhan\n+92-317-0000000\n"
+        assert extract_name_from_raw(txt) == "Ahsan Farhan Sherazi"
+
+
+def test_name_on_second_line_still_meets_min_score():
+    """Legacy path (40 - line_index) can score 39; threshold must allow it if no other hit."""
+    txt = "RESUME\nAhsan Farhan Sherazi\nData Analyst\n"
+    assert extract_name_from_raw(txt) == "Ahsan Farhan Sherazi"
+
+
+def test_strip_pii_collapse_loses_name_headers_for_resolve():
+    """
+    ``strip_pii`` collapses newlines to one long line, so the scan preview round-trip
+    must not pass only that to ``resolve_candidate_full_name`` if we expect header names.
+    """
+    from src.parsing.ocr_normalize import normalize_resume_text_for_ocr
+    from src.preprocessing.pii import strip_pii, strip_pii_keep_newlines
+
+    body = (
+        "A h s a n F a r h a n S h e r a z i\n"
+        "Data Analyst\n"
+        "ahsan@mail.com\n"
+        + "Python " * 30
+    )
+    norm = normalize_resume_text_for_ocr(body)
+    line_p = strip_pii_keep_newlines(norm)
+    collapsed = strip_pii(norm)
+    assert "\n" in line_p
+    assert "\n" not in collapsed
+    assert resolve_candidate_full_name(line_p, "")[0] == "Ahsan Farhan Sherazi"
+    assert resolve_candidate_full_name(collapsed, "")[0] == UNKNOWN_CANDIDATE

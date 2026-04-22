@@ -10,6 +10,266 @@ from __future__ import annotations
 import re
 
 # 3-letter first names: allow surname break after 3 letters when OCR uses single spaces only.
+# Boost OCR two-token splits when the second token is a very common family name
+# (fixes "A h m a d A l i" without a dictionary of all first names).
+_OCR_SURNAME_HINT = frozenset(
+    {
+        "ali",
+        "khan",
+        "lee",
+        "li",
+        "wang",
+        "zhang",
+        "liu",
+        "chen",
+        "yang",
+        "singh",
+        "kumar",
+        "patel",
+        "sharma",
+        "verma",
+        "malik",
+        "raza",
+        "syed",
+        "hussain",
+        "naqvi",
+        "jafri",
+        "abbas",
+        "rizvi",
+        "ansari",
+        "butt",
+        "sheikh",
+        "mirza",
+        "iqbal",
+        "farooq",
+        "siddiqui",
+        "qureshi",
+        "nawaz",
+        "rehman",
+        "yousaf",
+        "yousuf",
+        "akhtar",
+        "mahmood",
+        "rao",
+        "reddy",
+        "nair",
+        "menon",
+        "joshi",
+        "desai",
+        "kapoor",
+        "gupta",
+        "bose",
+        "roy",
+        "das",
+        "sen",
+        "kim",
+        "park",
+        "choi",
+        "nguyen",
+        "tran",
+        "pham",
+        "garcia",
+        "rodriguez",
+        "martinez",
+        "lopez",
+        "gonzalez",
+        "perez",
+        "sanchez",
+        "torres",
+        "flores",
+        "rivera",
+        "diaz",
+        "smith",
+        "jones",
+        "brown",
+        "taylor",
+        "thomas",
+        "jackson",
+        "white",
+        "harris",
+        "martin",
+        "clark",
+        "lewis",
+        "walker",
+        "hall",
+        "allen",
+        "young",
+        "king",
+        "wright",
+        "scott",
+        "green",
+        "baker",
+        "adams",
+        "nelson",
+        "carter",
+        "mitchell",
+        "roberts",
+        "turner",
+        "phillips",
+        "campbell",
+        "parker",
+        "evans",
+        "edwards",
+        "collins",
+        "stewart",
+        "morris",
+        "rogers",
+        "reed",
+        "cook",
+        "morgan",
+        "bell",
+        "murphy",
+        "bailey",
+        "cooper",
+        "richardson",
+        "cox",
+        "howard",
+        "ward",
+        "peterson",
+        "gray",
+        "ramirez",
+        "james",
+        "watson",
+        "brooks",
+        "kelly",
+        "sanders",
+        "price",
+        "bennett",
+        "wood",
+        "barnes",
+        "ross",
+        "henderson",
+        "coleman",
+        "jenkins",
+        "perry",
+        "powell",
+        "long",
+        "patterson",
+        "hughes",
+        "washington",
+        "butler",
+        "simmons",
+        "foster",
+        "gonzales",
+        "bryant",
+        "alexander",
+        "russell",
+        "griffin",
+        "hayes",
+        "sherazi",
+        "siddiqi",
+        "hashmi",
+        "chaudhry",
+    }
+)
+
+# Two-letter given names common in East Asian / transliterated headers (``L i M i n g``).
+_OCR_SHORT_FIRST = frozenset({"li", "wu", "lu", "ma", "yu", "xu", "he", "hu", "su", "bo", "jo", "qi", "an"})
+
+
+def _score_ocr_spaced_two_word_split(w1: str, w2: str) -> float:
+    sc = 0.0
+    for w in (w1, w2):
+        if len(w) < 2:
+            return -1e9
+        low = w.lower()
+        vow = sum(1 for c in low if c in "aeiouy")
+        if vow == 0:
+            return -1e9
+        sc += vow * 1.15 + min(len(w), 11) * 0.85
+    sc -= 0.4 * abs(len(w1) - len(w2))
+    lo2 = w2.lower()
+    if lo2 in _OCR_SURNAME_HINT:
+        sc += 24.0
+    lo1 = w1.lower()
+    if len(w1) == 2 and lo1 in _OCR_SHORT_FIRST and len(w2) >= 3:
+        sc += 16.0
+    # Short trailing token after a long given name (e.g. Li, Wu) — light boost when not in hint set.
+    if len(w1) >= 5 and 2 <= len(w2) <= 4:
+        sc += 3.0
+    return sc
+
+
+def _best_two_word_spaced_singles(s: str) -> str | None:
+    """
+    Split a run like ``AhmadAli`` (from ``A h m a d A l i``) into ``Ahmad Ali``.
+
+    Greedy ``ahead`` counting used elsewhere merges the tail of the first name with the
+    surname (``d`` + ``Ali``), which triggers a bogus break after ``Ahma``.
+    """
+    n = len(s)
+    if n < 6:
+        return None
+    scored: list[tuple[float, int]] = []
+    for k in range(2, min(16, n - 2)):
+        w1, w2 = s[:k], s[k:]
+        if len(w2) < 2:
+            continue
+        if k < 3 and len(w2) < 4:
+            continue
+        if n >= 7 and len(w2) < 3:
+            continue
+        sc = _score_ocr_spaced_two_word_split(w1, w2)
+        scored.append((sc, k))
+    if not scored:
+        return None
+    scored.sort(key=lambda t: (-t[0], abs(t[1] - n // 2)))
+    top, k_best = scored[0][0], scored[0][1]
+    if len(scored) > 1 and top - scored[1][0] < 1.25:
+        # Ambiguous (e.g. long single given name); keep one token.
+        return None
+    w1b, w2b = s[:k_best], s[k_best:]
+    if _score_ocr_spaced_two_word_split(w1b, w2b) < 8.5:
+        return None
+    return f"{w1b} {w2b}"
+
+
+def _score_one_ocr_name_token(w: str) -> float:
+    if len(w) < 2:
+        return -1e9
+    low = w.lower()
+    vow = sum(1 for c in low if c in "aeiouy")
+    if vow == 0:
+        return -1e9
+    return vow * 1.1 + min(len(w), 12) * 0.9
+
+
+def _best_three_word_spaced_singles(s: str) -> str | None:
+    """
+    Reconstruct e.g. ``A h s a n F a r h a n S h e r a z i`` → three tokens (``Ahsan Farhan Sherazi``).
+    The two-way splitter cannot express three name parts; without this the greedy fallback mangles
+    the line and name extraction can pick a garbage line instead.
+    """
+    n = len(s)
+    if n < 10 or n > 50:
+        return None
+    best_sc = -1e9
+    best: tuple[int, int] | None = None
+    for k1 in range(3, min(12, n - 5)):
+        for k2 in range(k1 + 2, min(n - 1, k1 + 12)):
+            if n - k2 < 2:
+                continue
+            w1, w2, w3 = s[:k1], s[k1:k2], s[k2:]
+            if not (2 <= len(w1) <= 12 and 2 <= len(w2) <= 12 and 2 <= len(w3) <= 12):
+                continue
+            sc = _score_one_ocr_name_token(w1) + _score_one_ocr_name_token(w2) + _score_one_ocr_name_token(w3)
+            sc -= 0.2 * (abs(len(w1) - len(w2)) + abs(len(w2) - len(w3)))
+            w1l, w2l, w3l = w1.lower(), w2.lower(), w3.lower()
+            if w3l in _OCR_SURNAME_HINT:
+                sc += 18.0
+            if w2l in _OCR_SURNAME_HINT:
+                sc += 10.0
+            if w1l in _OCR_SHORT_FIRST and len(w1) <= 3:
+                sc += 5.0
+            if sc > best_sc:
+                best_sc = sc
+                best = (k1, k2)
+    if best is None or best_sc < 22.0:
+        return None
+    k1, k2 = best
+    return f"{s[:k1]} {s[k1:k2]} {s[k2:]}"
+
+
 _COMMON_3_FIRST = frozenset(
     {
         "ali",
@@ -56,6 +316,22 @@ def _collapse_spaced_ocr_join_singles(chunk: str, *, break_for_surname: bool) ->
     parts = s.split()
     if len(parts) < 4:
         return chunk
+    # Entire line/chunk is spaced letters (``A h m a d A l i``). Greedy lookahead counts
+    # the rest of the line as one run and can split after ``Ahma``; enumerate a 2-word split.
+    if (
+        break_for_surname
+        and len(parts) >= 6
+        and all(len(p) == 1 and p.isalpha() for p in parts)
+    ):
+        flat = "".join(parts)
+        # Long single-space headers are often "First Middle Last" in South Asian / US résumés.
+        if len(parts) >= 10 and len(flat) >= 14:
+            three = _best_three_word_spaced_singles(flat)
+            if three:
+                return three
+        two = _best_two_word_spaced_singles(flat)
+        if two:
+            return two
     singles = sum(1 for p in parts if len(p) == 1 and p.isalpha())
     if singles / len(parts) < 0.42:
         return chunk
