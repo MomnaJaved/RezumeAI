@@ -73,13 +73,6 @@
     return out;
   }
 
-  function sectionHasContent(sec, minChars) {
-    if (!sec) return false;
-    if (listItems(sec).length > 0) return true;
-    const t = cleanLines((sec.innerText || '').trim());
-    return t.length >= (minChars || 40);
-  }
-
   /** Strip direction marks / ZWJ so headings match (LinkedIn sometimes injects invisible chars). */
   function normalizeHeading(s) {
     return String(s || '')
@@ -88,21 +81,41 @@
       .trim();
   }
 
-  /** Profile section anchors are unique on /in/ pages — prefer global id, then scoped. */
+  /** Section anchors (#experience, …) — global id, layout columns, then open shadow roots. */
   function anchorById(id) {
+    if (!id || !/^[a-zA-Z0-9_-]+$/.test(id)) return null;
+    const sel = `#${id}`;
     try {
       const g = document.getElementById(id);
       if (g) return g;
     } catch {
       /* ignore */
     }
-    const main = profileMain();
-    if (main) {
+    const roots = sectionSearchRoots(profileSectionRoot());
+    for (const root of roots) {
       try {
-        const scoped = main.querySelector(`#${id}`);
-        if (scoped) return scoped;
+        const hit = root.querySelector(sel);
+        if (hit) return hit;
+        const sr = root.shadowRoot;
+        if (sr) {
+          const h = sr.querySelector(sel);
+          if (h) return h;
+        }
       } catch {
-        /* invalid id — fall back */
+        /* ignore */
+      }
+    }
+    const shadowHosts = document.querySelectorAll(
+      'main, [role="main"], div[class*="scaffold"], div[class*="profile"]',
+    );
+    for (let i = 0; i < shadowHosts.length; i++) {
+      try {
+        const sr = shadowHosts[i].shadowRoot;
+        if (!sr) continue;
+        const h = sr.querySelector(sel);
+        if (h) return h;
+      } catch {
+        /* ignore */
       }
     }
     return null;
@@ -113,11 +126,7 @@
    * Many layouts scroll on **window** (not `<main>`), so we drive both.
    */
   function primeProfileSections() {
-    try {
-      primeProfileSectionsInner();
-    } catch {
-      /* LinkedIn DOM changes should not brick extraction */
-    }
+    primeProfileSectionsInner();
   }
 
   function primeProfileSectionsInner() {
@@ -309,25 +318,28 @@
 
   function sectionExperience(root) {
     const anchor = sectionFor('experience');
-    if (sectionHasContent(anchor, 40)) return anchor;
+    if (anchor) return anchor;
     for (const r of sectionSearchRoots(root || profileSectionRoot())) {
       const sec =
         sectionByDataView(r, 'experience') ||
         sectionByHeading(r, experienceHeadingRes) ||
         sectionByArtdecoCardHeader(r, experienceHeadingRes);
-      if (sectionHasContent(sec, 40)) return sec;
+      if (sec) return sec;
     }
-    return anchor;
+    return (
+      sectionByHeading(document.body, experienceHeadingRes) ||
+      sectionByArtdecoCardHeader(document.body, experienceHeadingRes)
+    );
   }
 
   function sectionAbout(root) {
     const anchor = sectionFor('about');
-    if (sectionHasContent(anchor, 20)) return anchor;
+    if (anchor) return anchor;
     for (const r of sectionSearchRoots(root || profileSectionRoot())) {
       const sec = sectionByHeading(r, [/^About$/i, /^Info$/i, /^Über mich$/i, /^À propos$/i, /^Acerca de$/i]);
-      if (sectionHasContent(sec, 20)) return sec;
+      if (sec) return sec;
     }
-    return anchor;
+    return sectionByHeading(document.body, [/^About$/i, /^Info$/i, /^Über mich$/i, /^À propos$/i, /^Acerca de$/i]);
   }
 
   const skillsHeadingRes = [
@@ -339,15 +351,15 @@
 
   function sectionSkills(root) {
     const anchor = sectionFor('skills');
-    if (sectionHasContent(anchor, 25)) return anchor;
+    if (anchor) return anchor;
     for (const r of sectionSearchRoots(root || profileSectionRoot())) {
       const sec =
         sectionByDataView(r, 'skills') ||
         sectionByHeading(r, skillsHeadingRes) ||
         sectionByArtdecoCardHeader(r, skillsHeadingRes);
-      if (sectionHasContent(sec, 25)) return sec;
+      if (sec) return sec;
     }
-    return anchor;
+    return sectionByHeading(document.body, skillsHeadingRes) || sectionByArtdecoCardHeader(document.body, skillsHeadingRes);
   }
 
   const educationHeadingRes = [
@@ -359,28 +371,34 @@
 
   function sectionEducation(root) {
     const anchor = sectionFor('education');
-    if (sectionHasContent(anchor, 25)) return anchor;
+    if (anchor) return anchor;
     for (const r of sectionSearchRoots(root || profileSectionRoot())) {
       const sec =
         sectionByDataView(r, 'education') ||
         sectionByHeading(r, educationHeadingRes) ||
         sectionByArtdecoCardHeader(r, educationHeadingRes);
-      if (sectionHasContent(sec, 25)) return sec;
+      if (sec) return sec;
     }
-    return anchor;
+    return (
+      sectionByHeading(document.body, educationHeadingRes) ||
+      sectionByArtdecoCardHeader(document.body, educationHeadingRes)
+    );
   }
 
   function sectionRecommendations(root) {
     const anchor = sectionFor('recommendations');
-    if (sectionHasContent(anchor, 40)) return anchor;
+    if (anchor) return anchor;
     for (const r of sectionSearchRoots(root || profileSectionRoot())) {
       const sec =
         sectionByDataView(r, 'recommendation') ||
         sectionByHeading(r, [/^Recommendations$/i, /^Empfehlungen$/i, /^Recommandations$/i]) ||
         sectionByArtdecoCardHeader(r, [/^Recommendations(\s|\(|$|:)/i, /^Empfehlungen$/i]);
-      if (sectionHasContent(sec, 40)) return sec;
+      if (sec) return sec;
     }
-    return anchor;
+    return (
+      sectionByHeading(document.body, [/^Recommendations$/i, /^Empfehlungen$/i, /^Recommandations$/i]) ||
+      sectionByArtdecoCardHeader(document.body, [/^Recommendations(\s|\(|$|:)/i, /^Empfehlungen$/i])
+    );
   }
 
   const certHeadingRes = [
@@ -395,17 +413,17 @@
   function sectionCertifications(root) {
     const a1 = sectionFor('licenses_and_certifications');
     const a2 = sectionFor('certifications');
-    if (sectionHasContent(a1, 25)) return a1;
-    if (sectionHasContent(a2, 25)) return a2;
+    if (a1) return a1;
+    if (a2) return a2;
     for (const r of sectionSearchRoots(root || profileSectionRoot())) {
       const sec =
         sectionByDataView(r, 'license') ||
         sectionByDataView(r, 'certification') ||
         sectionByHeading(r, certHeadingRes) ||
         sectionByArtdecoCardHeader(r, certHeadingRes);
-      if (sectionHasContent(sec, 25)) return sec;
+      if (sec) return sec;
     }
-    return a1 || a2;
+    return sectionByHeading(document.body, certHeadingRes) || sectionByArtdecoCardHeader(document.body, certHeadingRes);
   }
 
   /**
@@ -664,6 +682,7 @@
           'li[class*="pvs-entity"]',
           'li.artdeco-list__item',
           'div[class*="pvs-list__paged-list-item"]',
+          '[role="listitem"]',
         ].join(', '),
       )
       .forEach(add);
@@ -1049,16 +1068,27 @@
 
       /** Prefer a tight card around #slug; else the resolved section from headings. */
       function cardFor(anchorId, resolveSection) {
+        let best = null;
+        let bestLen = 0;
+        const consider = node => {
+          if (!node) return;
+          const len = cleanLines((node.innerText || '').trim()).length;
+          if (len > bestLen) {
+            bestLen = len;
+            best = node;
+          }
+        };
         if (anchorId) {
           const a = anchorById(anchorId);
           if (a) {
-            const c = profileCardAround(a);
-            const len = c ? cleanLines((c.innerText || '').trim()).length : 0;
-            if (c && len >= 12) return c;
+            consider(profileCardAround(a));
+            consider(a.closest('section.artdeco-card') || a.closest('div.artdeco-card'));
+            consider(a.closest('section'));
           }
         }
         const s = typeof resolveSection === 'function' ? resolveSection() : null;
-        return s || null;
+        consider(s);
+        return best;
       }
 
       function pushSnapshot(label, sec, onlyIfEmpty) {
@@ -1124,17 +1154,17 @@
       if (!has(/\bWORK EXPERIENCE\b/i) && !has(/EXPERIENCE \(from page\)/i)) {
         const sec = sectionExperience(main);
         const b = sec ? cleanLines((sec.innerText || '').trim()) : '';
-        if (b.length > 60) fullText = `${fullText}\n\nWORK EXPERIENCE (from page)\n${b.slice(0, cap)}`;
+        if (b.length > 28) fullText = `${fullText}\n\nWORK EXPERIENCE (from page)\n${b.slice(0, cap)}`;
       }
       if (!has(/\bEDUCATION\b/i) && !has(/EDUCATION \(from page\)/i)) {
         const sec = sectionEducation(main);
         const b = sec ? cleanLines((sec.innerText || '').trim()) : '';
-        if (b.length > 40) fullText = `${fullText}\n\nEDUCATION (from page)\n${b.slice(0, cap)}`;
+        if (b.length > 22) fullText = `${fullText}\n\nEDUCATION (from page)\n${b.slice(0, cap)}`;
       }
       if (!has(/\bSKILLS\b/i) && !has(/SKILLS \(from page\)/i)) {
         const sec = sectionSkills(main);
         const b = sec ? cleanLines((sec.innerText || '').trim()) : '';
-        if (b.length > 25) fullText = `${fullText}\n\nSKILLS (from page)\n${b.slice(0, cap)}`;
+        if (b.length > 18) fullText = `${fullText}\n\nSKILLS (from page)\n${b.slice(0, cap)}`;
       }
       fullText = fullText.slice(0, 48000);
     })();
