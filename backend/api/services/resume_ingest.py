@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from api.paths import repo_root
+from api.schemas import OcrScanSavePayload
 from src.inference.service import classify_role
 from src.parsing.skill_mining import extract_skill_candidates, is_noise, normalize
 from src.parsing.feature_extractors import extract_certifications, extract_education, estimate_years_experience
@@ -158,12 +159,15 @@ def _build_role_input(raw_clean: str, title: str, skills: str) -> str:
     return "\n".join(parts).strip()
 
 
-def parse_upload(filename: str, content: bytes) -> dict:
+def parse_upload(filename: str, content: bytes, *, skip_heavy_ml: bool = False) -> dict:
     """
     Returns dict: external_id, contact_email (first in text, if any), raw_text (PII-stripped),
     skills str, title, role_label,
     full_name hint from filename, original filename, text_len.
     Raises ValueError with user-facing message on failure.
+
+    ``skip_heavy_ml``: for OCR image preview only — skips the role BERT classifier so the
+    request returns faster; title/role still come from text heuristics + ``infer_role_fine``.
     """
     if len(content) > MAX_UPLOAD_BYTES:
         raise ValueError(f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB).")
@@ -212,11 +216,17 @@ def parse_upload(filename: str, content: bytes) -> dict:
 
     # Infer coarse role *before* the title so headline resolution can map e.g. frontend → "Frontend Developer"
     # when the CV has no explicit title line and skill-based role rules miss (common on sparse résumés).
-    role_in = _build_role_input(raw_clean, "", skills)
-    role_out = classify_role(role_in, strip_pii_input=True, return_probs=False)
-    role_guess = str(role_out.get("label", "") or "").strip().lower()
-    if not role_guess or role_guess not in ROLE_LABELS_MULTI:
-        role_guess = "other"
+    if skip_heavy_ml:
+        rf = infer_role_fine("", skills, raw_hint=raw_clean[:3000]).strip().lower()
+        if rf == "software":
+            rf = "fullstack"
+        role_guess = rf if rf in ROLE_LABELS_MULTI else "other"
+    else:
+        role_in = _build_role_input(raw_clean, "", skills)
+        role_out = classify_role(role_in, strip_pii_input=True, return_probs=False)
+        role_guess = str(role_out.get("label", "") or "").strip().lower()
+        if not role_guess or role_guess not in ROLE_LABELS_MULTI:
+            role_guess = "other"
 
     # Title: explicit line → skills inference → role headline (see candidate_title_resolve).
     title = resolve_title_from_resume_text(
@@ -292,4 +302,80 @@ def parse_upload(filename: str, content: bytes) -> dict:
         "highest_degree": edu.get("highest_degree") or "",
         "education_lines": edu.get("education_lines") or "",
         "certifications": certs or "",
+    }
+
+
+def parse_upload_from_ocr_preview(filename: str, content: bytes, payload: OcrScanSavePayload) -> dict:
+    """
+    Build the same dict shape as parse_upload using OCR preview data + the same file bytes.
+    Skips extract_text_any, ML role classification, skill mining, and heavy title resolution.
+    """
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise ValueError(f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB).")
+
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise ValueError(
+            f"Unsupported type {suffix or '(none)'}. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}."
+        )
+
+    ext_id = external_id_from_content(content)
+    want = (payload.external_id or "").strip()
+    if want != ext_id:
+        raise ValueError(
+            "This file does not match the last OCR scan. Run OCR again on this image, or save without scan data."
+        )
+
+    raw_clean = (payload.raw_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    raw_clean = normalize_resume_text_for_ocr(raw_clean)
+    if len(raw_clean) < MIN_TEXT_CHARS:
+        raise ValueError(
+            "Not enough text in the saved preview. Re-run OCR or use a clearer photo."
+        )
+
+    f = payload.parsed_fields
+    contact_email = (f.contact_email or "").strip()
+    stripped = strip_pii(raw_clean)
+    skills = (f.skills or "").strip()
+    title = (f.title or "").strip() or "Professional"
+
+    role_label = (f.role_label or "").strip().lower()
+    if role_label not in ROLE_LABELS_MULTI:
+        role_label = (title_to_role_label(title, multi_department=True) or "").strip().lower()
+    if role_label not in ROLE_LABELS_MULTI:
+        role_label = "other"
+
+    role_fine = infer_role_fine(title, skills, raw_hint=raw_clean[:5000])
+    full_name = (f.full_name or "").strip()
+
+    years = f.years_experience
+    if years is None:
+        years_val = 0.0
+    else:
+        years_val = round(float(years), 1)
+
+    store_dir = _storage_root() / "uploads" / "raw"
+    store_dir.mkdir(parents=True, exist_ok=True)
+    store_path = store_dir / f"{ext_id}__{_safe_filename(filename)}"
+    try:
+        store_path.write_bytes(content)
+    except OSError:
+        store_path = None
+
+    return {
+        "external_id": ext_id,
+        "contact_email": contact_email,
+        "raw_text": stripped,
+        "skills": skills,
+        "title": title,
+        "role_label": role_label,
+        "role_fine": role_fine,
+        "full_name": full_name,
+        "filename": filename,
+        "storage_path": str(store_path) if store_path else "",
+        "text_len": len(stripped),
+        "years_experience": years_val,
+        "highest_degree": (f.highest_degree or "").strip(),
+        "education_lines": (f.education_lines or "").strip(),
+        "certifications": (f.certifications or "").strip(),
     }

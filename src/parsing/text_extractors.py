@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -86,11 +87,60 @@ def _configure_tesseract() -> None:
         pytesseract.pytesseract.tesseract_cmd = _TESSERACT_WINDOWS_PATH
 
 
+def _pil_variants_for_resume_ocr(im_rgb):
+    """Contrast / invert passes help Tesseract read white-on-dark sidebar text (e.g. teal panels)."""
+    from PIL import ImageEnhance, ImageOps
+
+    variants = [im_rgb]
+    L = im_rgb.convert("L")
+    variants.append(L)
+    try:
+        variants.append(ImageOps.autocontrast(L, cutoff=1))
+        variants.append(ImageEnhance.Contrast(L).enhance(2.2))
+        inv = ImageOps.invert(L)
+        variants.append(inv)
+        variants.append(ImageOps.autocontrast(inv, cutoff=2))
+        variants.append(ImageEnhance.Contrast(inv).enhance(1.9))
+    except Exception:
+        pass
+    return variants
+
+
+def _pil_variants_fast_for_resume_ocr(im_rgb):
+    """First-pass variants only — enough for most printed/light-background résumés."""
+    from PIL import ImageOps
+
+    L = im_rgb.convert("L")
+    try:
+        return [im_rgb, L, ImageOps.autocontrast(L, cutoff=1)]
+    except Exception:
+        return [im_rgb, L]
+
+
+def _tesseract_thread_suffix() -> str:
+    raw = (os.environ.get("REZUME_OCR_TESS_THREADS") or "").strip()
+    if not raw.isdigit():
+        return ""
+    n = max(1, min(int(raw), 8))
+    return f" -c tessedit_num_threads={n}"
+
+
+def _tesseract_config(base: str) -> str | None:
+    """Merge PSM/OEM flags with optional thread count for Tesseract 4/5."""
+    sfx = _tesseract_thread_suffix()
+    s = f"{(base or '').strip()}{sfx}".strip()
+    return s or None
+
+
 def extract_text_image(image_path: Path) -> str:
     """
     OCR for scanned resumes (PNG/JPEG/TIFF/WebP). Requires Pillow + pytesseract
     and the Tesseract binary installed on the system.
     On Windows, auto-detects the default Tesseract install path if not on PATH.
+
+    Speed: two-phase Tesseract — fast passes (3 image modes × PSM 6/3) first, then
+    full variants × extra PSMs only if text still looks thin. Tune with REZUME_OCR_MAX_SIDE
+    (default 1600), REZUME_OCR_TESS_THREADS (e.g. 4).
     """
     try:
         import pytesseract
@@ -100,29 +150,80 @@ def extract_text_image(image_path: Path) -> str:
 
     _configure_tesseract()
 
+    _EMAILISH = re.compile(r"[A-Za-z0-9._%+-]{2,}@[A-Za-z0-9.-]{2,}\.[A-Za-z]{2,}")
+    # Phase 1: document layout modes that work best on single-column résumés.
+    _PSMS_FAST = (r"--psm 6 --oem 3", r"--psm 3 --oem 3")
+    # Phase 2 (heavy image passes): all PSMs — inverted / high-contrast frames need 6/3 too for sidebars.
+    _PSMS_ALL = _PSMS_FAST + (
+        r"--psm 4 --oem 3",
+        r"--psm 11 --oem 3",
+        r"--psm 13 --oem 3",
+        "",
+    )
+
+    def _merged_good(merged: str) -> bool:
+        n = len(merged)
+        if n >= 780:
+            return True
+        if n >= 420 and _EMAILISH.search(merged):
+            return True
+        # Strong body without email yet (e.g. no address on CV)
+        if n >= 1100:
+            return True
+        return False
+
     try:
         im = Image.open(str(image_path))
         if im.mode not in ("RGB", "L"):
             im = im.convert("RGB")
-        # Single-column résumés often read better with PSM 6; multi-block / sidebar layouts with PSM 3.
-        # Pick the run that looks most like a résumé (has an email-shaped token or longest text).
-        _EMAILISH = re.compile(r"[A-Za-z0-9._%+-]{2,}@[A-Za-z0-9.-]{2,}\.[A-Za-z]{2,}")
-        candidates: list[str] = []
-        for cfg in (r"--psm 6 --oem 3", r"--psm 3 --oem 3", r"--psm 4 --oem 3", ""):
+        w, h = im.size
+        try:
+            _max_px = int((os.environ.get("REZUME_OCR_MAX_SIDE") or "1600").strip())
+        except ValueError:
+            _max_px = 1600
+        _max_px = max(960, min(_max_px, 2400))
+        if max(w, h) > _max_px:
+            scale = _max_px / float(max(w, h))
+            im = im.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS)
+
+        blobs: list[str] = []
+        seen: set[str] = set()
+
+        def _run_pass(frame, cfg: str) -> None:
             try:
-                raw = pytesseract.image_to_string(im, config=cfg.strip() or None) or ""
+                raw = pytesseract.image_to_string(frame, config=_tesseract_config(cfg)) or ""
             except Exception:
-                continue
+                return
             t = raw.strip()
-            if t:
-                candidates.append(t)
-        if not candidates:
+            if len(t) < 12 or t in seen:
+                return
+            seen.add(t)
+            blobs.append(t)
+
+        # Phase 1 — typically 6 Tesseract runs; enough for many phone captures.
+        for frame in _pil_variants_fast_for_resume_ocr(im):
+            for cfg in _PSMS_FAST:
+                _run_pass(frame, cfg)
+                merged = "\n".join(blobs)
+                if _merged_good(merged):
+                    return merged[:42000]
+
+        # Phase 2 — contrast + invert variants; run full PSM set (phase 1 only hit first 3 frames).
+        all_variants = _pil_variants_for_resume_ocr(im)
+        for frame in all_variants[3:]:
+            for cfg in _PSMS_ALL:
+                _run_pass(frame, cfg)
+                merged = "\n".join(blobs)
+                if _merged_good(merged):
+                    return merged[:42000]
+
+        if not blobs:
             return ""
-        best = max(
-            candidates,
-            key=lambda s: (1 if _EMAILISH.search(s) else 0, len(s)),
+        blobs.sort(
+            key=lambda s: (1 if _EMAILISH.search(s) else 0, 1 if "@" in s else 0, len(s)),
+            reverse=True,
         )
-        return best
+        return "\n".join(blobs[:18])[:42000]
     except Exception:
         return ""
 

@@ -98,10 +98,21 @@ def create_app() -> FastAPI:
     )
     app.state.limiter = limiter
 
+    # Explicit origins from .env plus RFC1918 LAN dev (Vite --host on http://192.168.x.x:5173, etc.)
+    # so browsers can call the API directly when not using the dev proxy.
+    _lan_dev_origin_regex = (
+        r"^https?://("
+        r"localhost|127\.0\.0\.1"
+        r"|192\.168\.\d{1,3}\.\d{1,3}"
+        r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+        r"|172\.(1[6-9]|2[0-9]|3[0-1])\.\d{1,3}\.\d{1,3}"
+        r")(?::\d+)?$"
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
-        allow_origin_regex=r"chrome-extension://.*",
+        allow_origin_regex=_lan_dev_origin_regex,
+        # allow_origin_regex=r"chrome-extension://.*",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

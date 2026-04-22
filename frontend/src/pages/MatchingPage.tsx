@@ -213,7 +213,9 @@ export default function MatchingPage() {
         try {
           const poolRes = await fetchStage1Pool(selectedJob, 200);
           if (!cancelled) setPool(poolRes.items || []);
-        } catch { /* non-critical */ }
+        } catch {
+          /* non-critical */
+        }
         void checkAndLogLowMatch(newRankings, job?.title ?? "", selectedJob);
       } catch {
         // Fail silently for auto-rank; user can still click Match manually

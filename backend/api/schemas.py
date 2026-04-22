@@ -606,3 +606,18 @@ class OcrParseResponse(BaseModel):
     parsed_fields: OcrParsedFields
     filename: str
     text_len: int
+    external_id: str = Field(
+        ...,
+        description="Stable id for uploaded bytes; include in scan_save_json for fast save.",
+    )
+
+
+class OcrScanSavePayload(BaseModel):
+    """
+    Multipart JSON field for POST /uploads/resume: skips re-OCR / full parse when the file
+    bytes match external_id from a prior /ocr/parse-resume response.
+    """
+
+    external_id: str = Field(..., min_length=12, max_length=64)
+    raw_text: str = Field(..., min_length=1)
+    parsed_fields: OcrParsedFields
