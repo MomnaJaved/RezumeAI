@@ -2,7 +2,7 @@
    RezumeAI Chrome Extension — Popup Controller
    Flow: Sign in → LinkedIn auto scrape + section classify → Select job →
          Match & save (or preview match only)
-   Backend: POST /api/v1/match/preview, ingestions/text, jobs/.../match-candidate-save
+   Backend: POST /api/v1/linkedin/refine-scrape, /match/preview, ingestions/text, jobs/.../match-candidate-save
    =================================================================== */
 'use strict';
 
@@ -476,6 +476,65 @@ function isNoReceiverError(msg) {
   );
 }
 
+/** Merge Grok server refine into scrape payload (candidate_text drives match preview). */
+function applyGrokRefine(d, r) {
+  if (!d || !r || !r.refined_ok) return { ...d, grok_refined: false };
+  const out = { ...d, grok_refined: true };
+  out.candidate_text_canonical = r.candidate_text;
+  out.fullText = r.candidate_text;
+  if (r.candidate_name) out.name = r.candidate_name;
+  if (r.candidate_title) out.title = r.candidate_title;
+  if (r.candidate_location) out.location = r.candidate_location;
+  if (r.candidate_email) out.email = r.candidate_email;
+  if (r.candidate_skills) out.skills = r.candidate_skills;
+  if (r.years_experience != null && !Number.isNaN(Number(r.years_experience)))
+    out.years_experience = Number(r.years_experience);
+  if (r.highest_degree) out.highest_degree = r.highest_degree;
+  if (r.certifications) out.certifications = r.certifications;
+  const pj = out.profile_json;
+  if (pj && typeof pj === 'object' && pj.identity) {
+    out.profile_json = { ...pj, identity: { ...pj.identity } };
+    const id = out.profile_json.identity;
+    if (r.candidate_name) id.full_name = r.candidate_name;
+    if (r.candidate_title) id.headline = r.candidate_title;
+    if (r.candidate_location) id.location = r.candidate_location;
+    if (r.candidate_email) id.email = r.candidate_email;
+  }
+  return out;
+}
+
+/**
+ * Server-side Grok (xAI): noisy scrape → factual candidate_text + fields.
+ * No-op if API returns refined_ok: false (e.g. XAI_API_KEY unset).
+ */
+async function refineLinkedInScrape(d) {
+  if (!d || d.success === false || !extractionIsUsable(d)) return d;
+  try {
+    const body = {
+      raw_full_text: String(d.fullText || '').slice(0, 28000),
+      raw_canonical: d.candidate_text_canonical
+        ? String(d.candidate_text_canonical).slice(0, 28000)
+        : undefined,
+      profile_json: d.profile_json || undefined,
+      name: d.name || undefined,
+      title: d.title || undefined,
+      location: d.location || undefined,
+      email: d.email || undefined,
+      skills: typeof d.skills === 'string' ? d.skills : undefined,
+      years_experience: d.years_experience != null ? Number(d.years_experience) : undefined,
+      highest_degree: d.highest_degree || undefined,
+      certifications: typeof d.certifications === 'string' ? d.certifications : undefined,
+      profile_url: val('c-url') || undefined,
+    };
+    for (const k of Object.keys(body)) if (body[k] === undefined) delete body[k];
+    const r = await api('POST', '/api/v1/linkedin/refine-scrape', body);
+    return applyGrokRefine(d, r);
+  } catch (e) {
+    console.warn('linkedin refine:', e);
+    return { ...d, grok_refined: false };
+  }
+}
+
 async function runExtraction(tab) {
   if (!tab?.id) return null;
 
@@ -703,6 +762,7 @@ function fillForm(d) {
     const bits = [];
     if (d.scrape_chars) bits.push(`${(d.scrape_chars / 1000).toFixed(1)}k chars scraped`);
     if (d.pipeline_version) bits.push(`v${d.pipeline_version}`);
+    if (d.grok_refined) bits.push('Grok refined');
     meta.textContent = bits.join(' · ');
   }
   renderClassifiedPanel(pj);
@@ -896,6 +956,8 @@ async function autoExtract(tab) {
       return;
     }
     if (extractionIsUsable(d)) {
+      if (msgEl) msgEl.textContent = 'Sending scrape to server (Grok) for cleanup…';
+      d = await refineLinkedInScrape(d);
       fillForm(d);
     } else {
       showAlert(
@@ -932,9 +994,14 @@ async function grabLinkedIn() {
     if (!tab?.id) throw new Error('No suitable tab found. Focus a LinkedIn profile tab, then open this popup again.');
     if (!isLinkedInHost(tab.url ?? ''))
       throw new Error('Switch to a LinkedIn tab first.');
-    const d = await runExtraction(tab);
+    let d = await runExtraction(tab);
     if (!d) throw new Error('No data returned from the page.');
     if (d.error) throw new Error(d.error);
+    if (extractionIsUsable(d)) {
+      const m = $('auto-extract-msg');
+      if (m) m.textContent = 'Sending scrape to server (Grok) for cleanup…';
+      d = await refineLinkedInScrape(d);
+    }
     fillForm(d);
     const urlEl = $('c-url');
     if (urlEl && !urlEl.value && tab.url) urlEl.value = tab.url;
