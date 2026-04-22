@@ -38,6 +38,7 @@
    */
   function profileSectionRoot() {
     return (
+      document.querySelector('#profile-content') ||
       document.querySelector('.scaffold-layout__list-detail') ||
       document.querySelector('.scaffold-layout__list-detail-inner') ||
       profileMain() ||
@@ -47,6 +48,36 @@
 
   function rootEl() {
     return profileSectionRoot();
+  }
+
+  /** Deduped layout roots — LinkedIn moves cards between inner main and list-detail; try all. */
+  function sectionSearchRoots(primaryHint) {
+    const cands = [
+      primaryHint,
+      profileSectionRoot(),
+      profileMain(),
+      document.querySelector('.scaffold-layout__list-detail'),
+      document.querySelector('.scaffold-layout__list-container'),
+      document.querySelector('#profile-content'),
+      document.querySelector('[data-member-id]')?.closest?.('div') || null,
+      document.body,
+    ];
+    const out = [];
+    const seen = new Set();
+    for (const el of cands) {
+      if (!el || !(el instanceof Element)) continue;
+      if (seen.has(el)) continue;
+      seen.add(el);
+      out.push(el);
+    }
+    return out;
+  }
+
+  function sectionHasContent(sec, minChars) {
+    if (!sec) return false;
+    if (listItems(sec).length > 0) return true;
+    const t = cleanLines((sec.innerText || '').trim());
+    return t.length >= (minChars || 40);
   }
 
   /** Strip direction marks / ZWJ so headings match (LinkedIn sometimes injects invisible chars). */
@@ -181,7 +212,16 @@
   /** Walk artdeco profile cards and match the visible section title (handles "Experience (2)" etc.). */
   function sectionByArtdecoCardHeader(root, patterns) {
     const r = root || document;
-    for (const card of r.querySelectorAll('section.artdeco-card, div.artdeco-card')) {
+    const cardSel = [
+      'section.artdeco-card',
+      'div.artdeco-card',
+      'section[class*="artdeco-card"]',
+      'div[class*="artdeco-card"]',
+      '[data-view-name*="profile-card"]',
+      'section.pvs-card',
+      'div.pvs-card',
+    ].join(', ');
+    for (const card of r.querySelectorAll(cardSel)) {
       const headerEl =
         card.querySelector('.pvs-header__container h2') ||
         card.querySelector('h2.pvs-header__title') ||
@@ -268,17 +308,26 @@
   ];
 
   function sectionExperience(root) {
-    const r = root || document;
-    return (
-      sectionFor('experience') ||
-      sectionByDataView(r, 'experience') ||
-      sectionByHeading(r, experienceHeadingRes) ||
-      sectionByArtdecoCardHeader(r, experienceHeadingRes)
-    );
+    const anchor = sectionFor('experience');
+    if (sectionHasContent(anchor, 40)) return anchor;
+    for (const r of sectionSearchRoots(root || profileSectionRoot())) {
+      const sec =
+        sectionByDataView(r, 'experience') ||
+        sectionByHeading(r, experienceHeadingRes) ||
+        sectionByArtdecoCardHeader(r, experienceHeadingRes);
+      if (sectionHasContent(sec, 40)) return sec;
+    }
+    return anchor;
   }
 
   function sectionAbout(root) {
-    return sectionFor('about') || sectionByHeading(root, [/^About$/i, /^Info$/i, /^Über mich$/i, /^À propos$/i, /^Acerca de$/i]);
+    const anchor = sectionFor('about');
+    if (sectionHasContent(anchor, 20)) return anchor;
+    for (const r of sectionSearchRoots(root || profileSectionRoot())) {
+      const sec = sectionByHeading(r, [/^About$/i, /^Info$/i, /^Über mich$/i, /^À propos$/i, /^Acerca de$/i]);
+      if (sectionHasContent(sec, 20)) return sec;
+    }
+    return anchor;
   }
 
   const skillsHeadingRes = [
@@ -289,13 +338,16 @@
   ];
 
   function sectionSkills(root) {
-    const r = root || document;
-    return (
-      sectionFor('skills') ||
-      sectionByDataView(r, 'skills') ||
-      sectionByHeading(r, skillsHeadingRes) ||
-      sectionByArtdecoCardHeader(r, skillsHeadingRes)
-    );
+    const anchor = sectionFor('skills');
+    if (sectionHasContent(anchor, 25)) return anchor;
+    for (const r of sectionSearchRoots(root || profileSectionRoot())) {
+      const sec =
+        sectionByDataView(r, 'skills') ||
+        sectionByHeading(r, skillsHeadingRes) ||
+        sectionByArtdecoCardHeader(r, skillsHeadingRes);
+      if (sectionHasContent(sec, 25)) return sec;
+    }
+    return anchor;
   }
 
   const educationHeadingRes = [
@@ -306,23 +358,29 @@
   ];
 
   function sectionEducation(root) {
-    const r = root || document;
-    return (
-      sectionFor('education') ||
-      sectionByDataView(r, 'education') ||
-      sectionByHeading(r, educationHeadingRes) ||
-      sectionByArtdecoCardHeader(r, educationHeadingRes)
-    );
+    const anchor = sectionFor('education');
+    if (sectionHasContent(anchor, 25)) return anchor;
+    for (const r of sectionSearchRoots(root || profileSectionRoot())) {
+      const sec =
+        sectionByDataView(r, 'education') ||
+        sectionByHeading(r, educationHeadingRes) ||
+        sectionByArtdecoCardHeader(r, educationHeadingRes);
+      if (sectionHasContent(sec, 25)) return sec;
+    }
+    return anchor;
   }
 
   function sectionRecommendations(root) {
-    const r = root || document;
-    return (
-      sectionFor('recommendations') ||
-      sectionByDataView(r, 'recommendation') ||
-      sectionByHeading(r, [/^Recommendations$/i, /^Empfehlungen$/i, /^Recommandations$/i]) ||
-      sectionByArtdecoCardHeader(r, [/^Recommendations(\s|\(|$|:)/i, /^Empfehlungen$/i])
-    );
+    const anchor = sectionFor('recommendations');
+    if (sectionHasContent(anchor, 40)) return anchor;
+    for (const r of sectionSearchRoots(root || profileSectionRoot())) {
+      const sec =
+        sectionByDataView(r, 'recommendation') ||
+        sectionByHeading(r, [/^Recommendations$/i, /^Empfehlungen$/i, /^Recommandations$/i]) ||
+        sectionByArtdecoCardHeader(r, [/^Recommendations(\s|\(|$|:)/i, /^Empfehlungen$/i]);
+      if (sectionHasContent(sec, 40)) return sec;
+    }
+    return anchor;
   }
 
   const certHeadingRes = [
@@ -335,15 +393,19 @@
   ];
 
   function sectionCertifications(root) {
-    const r = root || document;
-    return (
-      sectionFor('licenses_and_certifications') ||
-      sectionFor('certifications') ||
-      sectionByDataView(r, 'license') ||
-      sectionByDataView(r, 'certification') ||
-      sectionByHeading(r, certHeadingRes) ||
-      sectionByArtdecoCardHeader(r, certHeadingRes)
-    );
+    const a1 = sectionFor('licenses_and_certifications');
+    const a2 = sectionFor('certifications');
+    if (sectionHasContent(a1, 25)) return a1;
+    if (sectionHasContent(a2, 25)) return a2;
+    for (const r of sectionSearchRoots(root || profileSectionRoot())) {
+      const sec =
+        sectionByDataView(r, 'license') ||
+        sectionByDataView(r, 'certification') ||
+        sectionByHeading(r, certHeadingRes) ||
+        sectionByArtdecoCardHeader(r, certHeadingRes);
+      if (sectionHasContent(sec, 25)) return sec;
+    }
+    return a1 || a2;
   }
 
   /**
