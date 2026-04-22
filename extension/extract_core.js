@@ -5,6 +5,9 @@
 (function initRezumeExtract() {
   if (typeof globalThis.__rezumeExtractLinkedIn === 'function') return;
 
+  /** Hard cap so payloads stay reasonable; raise if LinkedIn ever allows huge skill lists. */
+  const MAX_SKILLS_IN_OUTPUT = 500;
+
   /**
    * Prefer the inner profile column LinkedIn uses in scaffold layouts; plain <main> can miss cards.
    */
@@ -93,6 +96,7 @@
         el?.scrollIntoView({ block: 'center', inline: 'nearest' });
       } catch { /* ignore */ }
     });
+    expandLinkedInSkillsPanel(profileMain());
     /* Do not reset main.scrollTop to 0 — LinkedIn virtualizes sections and will unmount Experience/Skills. */
   }
 
@@ -315,17 +319,54 @@
     );
   }
 
+  /** Clicks "Show all … skills" / "See all … skills" so the full list mounts in the DOM. */
+  function expandLinkedInSkillsPanel(root) {
+    const sec = sectionSkills(root || document);
+    if (!sec) return;
+    const tryClick = el => {
+      if (!el) return false;
+      try {
+        el.click();
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    sec.querySelectorAll('[aria-label]').forEach(el => {
+      const lab = String(el.getAttribute('aria-label') || '').toLowerCase();
+      if (/show all|see all|expand|more skills/.test(lab) && /skill/.test(lab)) tryClick(el);
+    });
+    sec.querySelectorAll('a, button, [role="button"], .artdeco-button').forEach(el => {
+      const raw = normalizeHeading(el.innerText || el.textContent || '');
+      if (!raw || raw.length > 90) return;
+      if (/^show all\b/i.test(raw) && /skill/i.test(raw)) tryClick(el);
+      else if (/^see all\b/i.test(raw) && /skill/i.test(raw)) tryClick(el);
+      else if (/show more/i.test(raw) && /skill/i.test(raw)) tryClick(el);
+    });
+  }
+
+  /** "Top skills" line often appears inside the About body (bullet-separated). */
+  function extractSkillsFromAboutTopSkills(aboutText) {
+    const a = String(aboutText || '');
+    const m = a.match(/\btop\s+skills\b\s*[:\s]*([^\n]+(?:\n[^\n·•]{0,120}){0,6})/i);
+    if (!m) return [];
+    return m[1]
+      .split(/[·•,|]|\s{2,}/)
+      .map(s => s.trim())
+      .filter(s => s.length > 1 && s.length < 120);
+  }
+
   /** Keep skill field clean: real skill phrases only, no LinkedIn UI chrome. */
   function isLikelySkillName(t) {
     const s = String(t || '').replace(/\s+/g, ' ').trim();
-    if (!s || s.length < 2 || s.length > 70) return false;
+    if (!s || s.length < 2 || s.length > 100) return false;
     const low = s.toLowerCase();
     if (/https?:|linkedin\.com|@/.test(s)) return false;
     if (/^\d+$/.test(s)) return false;
     if (/\d{4}\s*[–—-]\s*(present|\d{4})/i.test(s)) return false;
     if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(s) && /\d{4}/.test(s)) return false;
     const words = s.split(/\s+/).length;
-    if (words > 7) return false;
+    if (words > 12) return false;
 
     const junk = [
       'show all',
@@ -380,9 +421,10 @@
   }
 
   /**
-   * LinkedIn Skills card only — prefer skill links / entity titles, not every .t-bold in the card.
+   * LinkedIn Skills card — links, list rows, card text, and optional About "Top skills" line.
+   * Merges every pass so profile text can list the full skill set (up to MAX_SKILLS_IN_OUTPUT).
    */
-  function extractLinkedInSkills(skillsSec) {
+  function extractLinkedInSkills(skillsSec, aboutText) {
     const out = [];
     const seen = new Set();
     const add = raw => {
@@ -391,6 +433,8 @@
         .replace(/[·•]+/g, ' ')
         .trim();
       if (!t) return;
+      if (/^show all\s+\d+\s+skills?$/i.test(t) || /^see all\s+\d+/i.test(t)) return;
+      if (/^endorsed?\s+by\b/i.test(t)) return;
       const k = t.toLowerCase();
       if (seen.has(k)) return;
       if (!isLikelySkillName(t)) return;
@@ -398,37 +442,48 @@
       out.push(t);
     };
 
-    if (!skillsSec) return out;
+    if (skillsSec) {
+      skillsSec
+        .querySelectorAll(
+          [
+            'a[data-field="skill_card_skill_topic"]',
+            'a[href*="/details/skills/"]',
+            'a[href*="/skills/"]',
+          ].join(', '),
+        )
+        .forEach(a => {
+          const s =
+            a.querySelector('span[aria-hidden="true"]')?.textContent?.trim() ||
+            a.querySelector('.hoverable-link-text')?.textContent?.trim() ||
+            a.textContent?.trim().split('\n')[0]?.trim();
+          add(s);
+        });
 
-    skillsSec
-      .querySelectorAll(
-        [
-          'a[data-field="skill_card_skill_topic"]',
-          'a[href*="/details/skills/"]',
-          'a[href*="/skills/"]',
-        ].join(', '),
-      )
-      .forEach(a => {
-        const s =
-          a.querySelector('span[aria-hidden="true"]')?.textContent?.trim() ||
-          a.querySelector('.hoverable-link-text')?.textContent?.trim() ||
-          a.textContent?.trim().split('\n')[0]?.trim();
-        add(s);
+      skillsSec.querySelectorAll('li[class*="pvs-list"] .hoverable-link-text span[aria-hidden="true"]').forEach(el => {
+        add(el.textContent?.trim());
       });
 
-    skillsSec.querySelectorAll('li[class*="pvs-list"] .hoverable-link-text span[aria-hidden="true"]').forEach(el => {
-      add(el.textContent?.trim());
-    });
+      skillsSec.querySelectorAll('li[class*="pvs-list"] .t-bold span[aria-hidden="true"]').forEach(el => {
+        add(el.textContent?.trim());
+      });
 
-    skillsSec.querySelectorAll('li[class*="pvs-list"] .t-bold span[aria-hidden="true"]').forEach(el => {
-      add(el.textContent?.trim());
-    });
+      skillsSec.querySelectorAll('[class*="pvs-list"] span[aria-hidden="true"]').forEach(el => {
+        add(el.textContent?.trim());
+      });
 
-    skillsSec.querySelectorAll('[class*="pvs-list"] span[aria-hidden="true"]').forEach(el => {
-      add(el.textContent?.trim());
-    });
+      listItems(skillsSec).forEach(item => {
+        rowTextParts(item).forEach(part => add(part));
+      });
 
-    return out.slice(0, 50);
+      (skillsSec.innerText || '')
+        .split(/[·•]+|\n+/)
+        .map(s => s.trim())
+        .forEach(line => add(line));
+    }
+
+    extractSkillsFromAboutTopSkills(aboutText).forEach(t => add(t));
+
+    return out.slice(0, MAX_SKILLS_IN_OUTPUT);
   }
 
   function arHidden(item) {
@@ -682,8 +737,9 @@
       });
     });
 
+    expandLinkedInSkillsPanel(main);
     const skillsSec = sectionSkills(main);
-    const skillsList = extractLinkedInSkills(skillsSec);
+    const skillsList = extractLinkedInSkills(skillsSec, about);
 
     const certsList = [];
     const certSec = sectionCertifications(main);
@@ -784,7 +840,7 @@
 
     if (skillsList.length) {
       lines.push('SKILLS');
-      lines.push(skillsList.slice(0, 50).join(', '));
+      lines.push(skillsList.join(', '));
       lines.push('');
     }
 
@@ -957,7 +1013,7 @@
       email,
       phone,
       website,
-      skills: skillsList.slice(0, 50).join(', '),
+      skills: skillsList.join(', '),
       certifications: certsList.slice(0, 20).join(', '),
       languages: langsList.join(', '),
       years_experience: yearsExperience,
@@ -1024,9 +1080,15 @@
         try {
           anchorById(id)?.scrollIntoView({ block: 'center' });
         } catch { /* ignore */ }
-        await new Promise(r => setTimeout(r, 100));
+        if (id === 'skills') {
+          expandLinkedInSkillsPanel(main);
+          await new Promise(r => setTimeout(r, 600));
+        } else {
+          await new Promise(r => setTimeout(r, 100));
+        }
       }
-      await new Promise(r => setTimeout(r, 550));
+      expandLinkedInSkillsPanel(main);
+      await new Promise(r => setTimeout(r, 400));
       /* Leave scroll position — resetting to top unmounts lower profile sections. */
     }
     return globalThis.__rezumeExtractLinkedIn();
