@@ -19,7 +19,13 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
             ? await asyncFn()
             : typeof syncFn === 'function'
               ? syncFn()
-              : { success: false, fullText: '', extracted_ok: false };
+              : {
+                  success: false,
+                  fullText: '',
+                  extracted_ok: false,
+                  error:
+                    'RezumeAI scraper is not loaded on this page. Reload the extension, refresh the LinkedIn tab, and try again.',
+                };
         sendResponse(data);
       } catch (e) {
         sendResponse({ success: false, fullText: '', extracted_ok: false, error: String(e && e.message) });

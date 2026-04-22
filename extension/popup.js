@@ -150,6 +150,7 @@ async function runLinkedInExtraction(tab) {
         });
       });
       if (d && d.success && (d.fullText || d.name || d.title)) return d;
+      if (d && !d.success && d.error) return d;
     } catch { /* retry */ }
   }
 
@@ -178,9 +179,14 @@ async function autoExtract(tab) {
   showAlert('step1-err', '');
   try {
     const d = await runLinkedInExtraction(tab);
+    if (d && !d.success && d.error) {
+      showAlert('step1-err', d.error, 'error');
+      return;
+    }
     const text = (d?.fullText || '').trim();
-    const hasCore = text.length > 40 || (d?.name || '').trim() || (d?.title || '').trim();
-    if (d && hasCore) {
+    const hasCore =
+      text.length > 15 || (d?.name || '').trim().length > 1 || (d?.title || '').trim().length > 1;
+    if (d && d.success && hasCore) {
       fillCandidateForm(d);
       const who = (d.name || d.title || 'Candidate').trim();
       showAlert('step1-err', `Profile loaded: ${who}`, 'success');
@@ -214,9 +220,13 @@ async function grabLinkedIn() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id) throw new Error('No active tab.');
     const d = await runLinkedInExtraction(tab);
+    if (d && !d.success && d.error) {
+      throw new Error(d.error);
+    }
     const text = (d?.fullText || '').trim();
-    const hasCore = text.length > 40 || (d?.name || '').trim() || (d?.title || '').trim();
-    if (!d || !hasCore) {
+    const hasCore =
+      text.length > 15 || (d?.name || '').trim().length > 1 || (d?.title || '').trim().length > 1;
+    if (!d || !d.success || !hasCore) {
       throw new Error('Could not read this profile. Stay on the LinkedIn /in/ page, scroll to load About & Experience, then try again.');
     }
     fillCandidateForm(d);

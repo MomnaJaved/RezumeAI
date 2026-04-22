@@ -12,16 +12,35 @@
    * Prefer the inner profile column LinkedIn uses in scaffold layouts; plain <main> can miss cards.
    */
   function profileMain() {
-    return (
-      document.querySelector('main.scaffold-layout__main') ||
-      document.querySelector('main[role="main"]') ||
-      document.querySelector('main:not([hidden])') ||
-      document.querySelector('main')
-    );
+    const sels = [
+      'main.scaffold-layout__main',
+      'div.scaffold-layout__main',
+      'main[role="main"]',
+      '[role="main"].scaffold-layout__main',
+      '[role="main"]',
+      'main:not([hidden])',
+      'main',
+      '.scaffold-layout__list-detail-inner',
+      '.scaffold-layout__list-detail',
+    ];
+    for (const sel of sels) {
+      try {
+        const el = document.querySelector(sel);
+        if (el) return el;
+      } catch {
+        /* ignore invalid selector in older engines */
+      }
+    }
+    return null;
   }
 
   function rootEl() {
-    return profileMain() || document.body;
+    return (
+      profileMain() ||
+      document.querySelector('.scaffold-layout__list-detail-inner') ||
+      document.querySelector('.scaffold-layout__list-detail') ||
+      document.body
+    );
   }
 
   /** Strip direction marks / ZWJ so headings match (LinkedIn sometimes injects invisible chars). */
@@ -51,6 +70,14 @@
    * Many layouts scroll on **window** (not `<main>`), so we drive both.
    */
   function primeProfileSections() {
+    try {
+      primeProfileSectionsInner();
+    } catch {
+      /* LinkedIn DOM changes should not brick extraction */
+    }
+  }
+
+  function primeProfileSectionsInner() {
     const main = profileMain();
     let maxY = 0;
     try {
@@ -100,15 +127,28 @@
     /* Do not reset main.scrollTop to 0 — LinkedIn virtualizes sections and will unmount Experience/Skills. */
   }
 
-  /** LinkedIn sets stable-ish `data-view-name` on profile cards (e.g. profile-card-experience). */
+  /**
+   * Prefer `profile-card-*` / profile-ish `data-view-name` nodes. A bare fragment `skill` matches
+   * skill-assessment promos first in DOM order and can hijack the whole scrape.
+   */
   function sectionByDataView(root, fragment) {
     const r = root || document;
     const frag = String(fragment || '').toLowerCase();
     if (!frag) return null;
-    const nodes = r.querySelectorAll('[data-view-name]');
-    for (const node of nodes) {
+    const scored = [];
+    r.querySelectorAll('[data-view-name]').forEach(node => {
       const name = (node.getAttribute('data-view-name') || '').toLowerCase();
-      if (!name.includes(frag)) continue;
+      if (!name.includes(frag)) return;
+      let s = 0;
+      if (name.includes('profile-card')) s += 10;
+      else if (name.includes('profile')) s += 4;
+      if (name.includes('pvs')) s += 2;
+      if (/skill-assessment|skills-quiz|endorsement|global-nav|msg-overlay|hiring|rsc-nav/i.test(name)) s -= 30;
+      scored.push({ node, s });
+    });
+    scored.sort((a, b) => b.s - a.s);
+    for (const { node, s } of scored) {
+      if (s < 0) break;
       const selfCard =
         typeof node.matches === 'function' &&
         (node.matches('section.artdeco-card') || node.matches('div.artdeco-card'))
@@ -239,7 +279,7 @@
     const r = root || document;
     return (
       sectionFor('skills') ||
-      sectionByDataView(r, 'skill') ||
+      sectionByDataView(r, 'skills') ||
       sectionByHeading(r, skillsHeadingRes) ||
       sectionByArtdecoCardHeader(r, skillsHeadingRes)
     );
@@ -321,28 +361,32 @@
 
   /** Clicks "Show all … skills" / "See all … skills" so the full list mounts in the DOM. */
   function expandLinkedInSkillsPanel(root) {
-    const sec = sectionSkills(root || document);
-    if (!sec) return;
-    const tryClick = el => {
-      if (!el) return false;
-      try {
-        el.click();
-        return true;
-      } catch {
-        return false;
-      }
-    };
-    sec.querySelectorAll('[aria-label]').forEach(el => {
-      const lab = String(el.getAttribute('aria-label') || '').toLowerCase();
-      if (/show all|see all|expand|more skills/.test(lab) && /skill/.test(lab)) tryClick(el);
-    });
-    sec.querySelectorAll('a, button, [role="button"], .artdeco-button').forEach(el => {
-      const raw = normalizeHeading(el.innerText || el.textContent || '');
-      if (!raw || raw.length > 90) return;
-      if (/^show all\b/i.test(raw) && /skill/i.test(raw)) tryClick(el);
-      else if (/^see all\b/i.test(raw) && /skill/i.test(raw)) tryClick(el);
-      else if (/show more/i.test(raw) && /skill/i.test(raw)) tryClick(el);
-    });
+    try {
+      const sec = sectionSkills(root || document);
+      if (!sec) return;
+      const tryClick = el => {
+        if (!el) return false;
+        try {
+          el.click();
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      sec.querySelectorAll('[aria-label]').forEach(el => {
+        const lab = String(el.getAttribute('aria-label') || '').toLowerCase();
+        if (/show all|see all|expand|more skills/.test(lab) && /skill/.test(lab)) tryClick(el);
+      });
+      sec.querySelectorAll('a, button, [role="button"], .artdeco-button').forEach(el => {
+        const raw = normalizeHeading(el.innerText || el.textContent || '');
+        if (!raw || raw.length > 90) return;
+        if (/^show all\b/i.test(raw) && /skill/i.test(raw)) tryClick(el);
+        else if (/^see all\b/i.test(raw) && /skill/i.test(raw)) tryClick(el);
+        else if (/show more/i.test(raw) && /skill/i.test(raw)) tryClick(el);
+      });
+    } catch {
+      /* ignore */
+    }
   }
 
   /** "Top skills" line often appears inside the About body (bullet-separated). */
@@ -616,7 +660,30 @@
     return words.join(' ').trim();
   }
 
+  function emptyExtractResult(err) {
+    return {
+      success: false,
+      extracted_ok: false,
+      error: err ? String(err.message || err) : '',
+      name: '',
+      title: '',
+      location: '',
+      email: '',
+      phone: '',
+      website: '',
+      skills: '',
+      certifications: '',
+      languages: '',
+      years_experience: null,
+      highest_degree: '',
+      experience_summary: '',
+      education_summary: '',
+      fullText: '',
+    };
+  }
+
   globalThis.__rezumeExtractLinkedIn = function rezumeExtractLinkedIn() {
+    try {
     primeProfileSections();
 
     const main = rootEl();
@@ -1028,12 +1095,16 @@
         .join('; '),
       fullText,
     };
+    } catch (e) {
+      return emptyExtractResult(e);
+    }
   };
 
   /**
    * Scroll profile <main> slowly so LinkedIn mounts Experience/Education/Skills, then run sync extract.
    */
   globalThis.__rezumeExtractLinkedInAsync = async function rezumeExtractLinkedInAsync() {
+    try {
     const main = profileMain();
     let maxY = 0;
     try {
@@ -1092,5 +1163,8 @@
       /* Leave scroll position — resetting to top unmounts lower profile sections. */
     }
     return globalThis.__rezumeExtractLinkedIn();
+    } catch (e) {
+      return emptyExtractResult(e);
+    }
   };
 })();
