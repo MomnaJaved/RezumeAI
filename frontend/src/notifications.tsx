@@ -50,6 +50,8 @@ type NotifCtx = {
   /** Unread incoming DMs (Rezume inbox), scoped for Candidates tab badge. */
   inboxUnreadCandidates: number;
   inboxUnreadDmTotal: number;
+  /** Unread non-DM inbox rows (alerts / candidate account notifications). */
+  inboxUnreadAlerts: number;
   clearAll: () => Promise<void>;
 };
 
@@ -58,6 +60,7 @@ const NotificationContext = createContext<NotifCtx>({
   pollErr: null,
   inboxUnreadCandidates: 0,
   inboxUnreadDmTotal: 0,
+  inboxUnreadAlerts: 0,
   clearAll: async () => {},
 });
 
@@ -68,6 +71,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const [pollErr, setPollErr] = useState<string | null>(null);
   const [inboxUnreadCandidates, setInboxUnreadCandidates] = useState(0);
   const [inboxUnreadDmTotal, setInboxUnreadDmTotal] = useState(0);
+  const [inboxUnreadAlerts, setInboxUnreadAlerts] = useState(0);
   const clearAll = useCallback(async () => {
     await clearActivityNotifications();
     setItems([]);
@@ -91,13 +95,16 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           const inboxList = inboxRes.value;
           let uc = 0;
           let dmTotal = 0;
+          let alertsUnread = 0;
           for (const it of inboxList) {
+            if (!it.direct && !it.read) alertsUnread += 1;
             if (!it.direct || it.direction !== "in" || it.read) continue;
             dmTotal += 1;
             if (it.chat_scope === "candidates") uc += 1;
           }
           setInboxUnreadCandidates(uc);
           setInboxUnreadDmTotal(dmTotal);
+          setInboxUnreadAlerts(alertsUnread);
 
           if (!inboxBootstrapped.current) {
             for (const it of inboxList) {
@@ -197,11 +204,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     setPollErr(null);
     setInboxUnreadCandidates(0);
     setInboxUnreadDmTotal(0);
+    setInboxUnreadAlerts(0);
   }, [token]);
 
   return (
     <NotificationContext.Provider
-      value={{ items, pollErr, inboxUnreadCandidates, inboxUnreadDmTotal, clearAll }}
+      value={{ items, pollErr, inboxUnreadCandidates, inboxUnreadDmTotal, inboxUnreadAlerts, clearAll }}
     >
       {children}
     </NotificationContext.Provider>

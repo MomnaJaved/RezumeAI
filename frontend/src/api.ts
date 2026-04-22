@@ -1309,6 +1309,7 @@ export type CandidateJobListItem = {
   salary_range: string;
   client_display: string;
   created_at: string;
+  applied?: boolean;
 };
 
 export async function fetchCandidateJobs(params: {
@@ -1349,6 +1350,22 @@ export type CandidateApplicationRow = {
 
 export async function fetchCandidateApplications(): Promise<{ items: CandidateApplicationRow[] }> {
   const res = await authedFetch(`${base}/api/v1/candidate/applications`);
+  return parseJson(res);
+}
+
+export type CandidateProfilePatch = {
+  full_name?: string;
+  title?: string;
+  skills?: string;
+  years_experience?: number | null;
+};
+
+export async function updateCandidateProfile(patch: CandidateProfilePatch): Promise<{ status: string }> {
+  const res = await authedFetch(`${base}/api/v1/candidate/profile`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
   return parseJson(res);
 }
 

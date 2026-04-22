@@ -146,20 +146,21 @@ def _process_one_ingestion(ingestion_id: UUID, engine: Engine) -> None:
                 existing.contact_email = parsed["contact_email"]
             if not getattr(existing, "status", ""):
                 existing.status = "new"
-            # Claim unowned candidates; don't overwrite another workspace's ownership.
-            # CRITICAL: Never claim a row that already has a portal account (user_id)
-            # or is already public — doing so would set is_public=False on a
-            # candidate-owned profile, making it deletable by the recruiter.
+            # Claim any unowned candidate (workspace_id still NULL) into the
+            # ingesting recruiter's workspace.  If the candidate is a portal user
+            # (is_public=True / user_id set) we stamp workspace_id so they are
+            # visible in the candidates table but we do NOT touch is_public or
+            # user_id — the candidate keeps full portal ownership.
+            # We never overwrite a workspace that is already set.
             existing_has_portal_link = getattr(existing, "user_id", None) is not None
             existing_is_public = getattr(existing, "is_public", False)
             if (
                 ing_workspace_id is not None
                 and getattr(existing, "workspace_id", None) is None
-                and not existing_has_portal_link
-                and not existing_is_public
             ):
                 existing.workspace_id = ing_workspace_id
-                existing.is_public = False
+                if not existing_has_portal_link and not existing_is_public:
+                    existing.is_public = False
             cand = existing
         else:
             cand = Candidate(

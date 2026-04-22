@@ -85,12 +85,18 @@ def rank_for_external_job_id(
     if use_db:
         job = db.query(Job).filter(Job.external_id == str(external_job_id)).first()
         if job:
+            # Always score the ENTIRE SBERT pool (up to 500 rows) so that:
+            #   • Every candidate in the pool gets an accurate cross-encoder score.
+            #   • The recruiter's Candidates page shows updated match scores for all.
+            #   • Changing the display top-K filter never changes who scored best.
+            # The display top-K is enforced by the frontend only; backend always
+            # persists a JobCandidateRanking row for every scored candidate.
             q = (
                 db.query(JobCandidateSbertScore, Candidate)
                 .join(Candidate, Candidate.id == JobCandidateSbertScore.candidate_id)
                 .filter(JobCandidateSbertScore.job_id == job.id)
                 .order_by(JobCandidateSbertScore.rank_position.asc())
-                .limit(top_k)
+                .limit(500)
             )
             sbert_rows = q.all()
             if not sbert_rows:
@@ -119,7 +125,7 @@ def rank_for_external_job_id(
                 status_code=404,
                 detail=_format_empty_shortlist_detail(external_job_id, refresh_diag),
             )
-        sbert_rows_df = sbert_rows_df.sort_values("rank").head(top_k)
+        sbert_rows_df = sbert_rows_df.sort_values("rank").head(500)
         sbert_rows = [("csv", r) for _, r in sbert_rows_df.iterrows()]
 
     to_score: list[tuple[str, dict[str, Any]]] = []
@@ -163,5 +169,9 @@ def rank_for_external_job_id(
     scores = match_scores_batch(job_text, texts)
     results = [{**p, "cross_encoder_score": s} for s, (_, p) in zip(scores, to_score)]
 
+    # Sort by true cross-encoder score (most accurate signal).
+    # Return ALL scored candidates — the caller persists every row so that
+    # the Candidates page match scores and candidate pool view are always complete.
+    # Display trimming (top-K) is handled by the frontend.
     results.sort(key=lambda x: x["cross_encoder_score"], reverse=True)
     return str(external_job_id), results

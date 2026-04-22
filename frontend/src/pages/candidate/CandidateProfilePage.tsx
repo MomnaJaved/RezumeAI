@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   User,
   Briefcase,
@@ -17,18 +17,23 @@ import {
   ArrowRight,
   X,
   Plus,
+  Pencil,
 } from "lucide-react";
 import {
   fetchCandidate,
   fetchCandidateMe,
   fetchCandidateMatches,
   fetchCandidateFileBlob,
+  deleteAccount,
   normalizedBestJobMatchPercent,
+  updateCandidateProfile,
   type CandidateMe,
   type CandidateDto,
   type CandidateMatchItem,
 } from "../../api";
 import CandidateResumeUploadModal, { CandidateResumeUploadTrigger } from "../../components/CandidateResumeUploadModal";
+import { useToast } from "../../toast";
+import { useAuth } from "../../auth";
 
 /* ── Status display ──────────────────────────────────────────────── */
 const STATUS_MAP: Record<string, { label: string; color: string; bg: string; border: string }> = {
@@ -72,6 +77,106 @@ function SkillTag({ label }: { label: string }) {
 }
 
 /* ── Section card ────────────────────────────────────────────────── */
+function CandidateDeleteAccountSection({ hasLinkedProfile }: { hasLinkedProfile: boolean }) {
+  const toast = useToast();
+  const nav = useNavigate();
+  const { logout } = useAuth();
+  const [deletePwd, setDeletePwd] = useState("");
+  const [deleteAwaitingConfirm, setDeleteAwaitingConfirm] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
+  const handleDeleteAccount = async () => {
+    if (!deletePwd.trim()) {
+      toast.error("Enter your password to confirm.");
+      return;
+    }
+    if (!deleteAwaitingConfirm) {
+      toast.info("This permanently deletes your account and removes your candidate profile from all recruiters.", {
+        title: "Confirm deletion",
+      });
+      setDeleteAwaitingConfirm(true);
+      return;
+    }
+    setDeleteBusy(true);
+    try {
+      await deleteAccount(deletePwd);
+      logout();
+      toast.success("Your account has been deleted.");
+      nav("/");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not delete account.");
+    } finally {
+      setDeleteBusy(false);
+      setDeletePwd("");
+      setDeleteAwaitingConfirm(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        marginTop: "0.25rem",
+        padding: "1.1rem 1.25rem",
+        borderRadius: 18,
+        border: "1px solid rgba(248,113,113,0.35)",
+        background: "rgba(127,29,29,0.18)",
+      }}
+    >
+      <h2 style={{ margin: 0, fontSize: "0.95rem", fontWeight: 700, color: "#fecaca" }}>Delete account</h2>
+      <p style={{ margin: "0.5rem 0 0.75rem", fontSize: "0.82rem", color: "rgba(255,255,255,0.65)", lineHeight: 1.45 }}>
+        {hasLinkedProfile
+          ? "Your login and candidate profile will be permanently removed. Recruiters will no longer see you in their pool, rankings, or applications."
+          : "Your login will be permanently removed. You can register again later with the same email if you want."}
+      </p>
+      <label style={{ display: "block", fontSize: "0.78rem", fontWeight: 600, color: "rgba(255,255,255,0.55)", marginBottom: "0.35rem" }}>
+        Current password
+      </label>
+      <input
+        type="password"
+        autoComplete="current-password"
+        value={deletePwd}
+        onChange={(e) => {
+          setDeletePwd(e.target.value);
+          setDeleteAwaitingConfirm(false);
+        }}
+        placeholder="Enter password to confirm"
+        className="dash-inbox-dir-input"
+        style={{ maxWidth: "22rem", marginBottom: "0.75rem" }}
+      />
+      {deleteAwaitingConfirm ? (
+        <p style={{ margin: "0 0 0.65rem", fontSize: "0.78rem", color: "rgba(252,211,77,0.95)" }} role="status">
+          Tap the red button again to confirm permanent deletion.
+        </p>
+      ) : null}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
+        {deleteAwaitingConfirm ? (
+          <button
+            type="button"
+            className="dash-btn dash-btn-xs dash-btn-ghost"
+            disabled={deleteBusy}
+            onClick={() => setDeleteAwaitingConfirm(false)}
+          >
+            Cancel
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="dash-btn dash-btn-xs"
+          disabled={deleteBusy || !deletePwd.trim()}
+          onClick={() => void handleDeleteAccount()}
+          style={{
+            background: "rgba(220,38,38,0.25)",
+            borderColor: "rgba(248,113,113,0.5)",
+            color: "#fecaca",
+          }}
+        >
+          {deleteBusy ? "Deleting…" : deleteAwaitingConfirm ? "Yes — delete forever" : "Delete my account"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SectionCard({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
   return (
     <div style={{
@@ -108,6 +213,15 @@ export default function CandidateProfilePage() {
   const resumeBlobUrlRef = useRef<string | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
 
+  /* ── Edit-profile state ── */
+  const [editOpen, setEditOpen] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editTitle, setEditTitle] = useState("");
+  const [editSkills, setEditSkills] = useState("");
+  const [editYoe, setEditYoe] = useState<string>("");
+  const [editBusy, setEditBusy] = useState(false);
+  const toast = useToast();
+
   const reload = useCallback(async () => {
     setLoading(true);
     setErr(null);
@@ -131,6 +245,44 @@ export default function CandidateProfilePage() {
       setLoading(false);
     }
   }, []);
+
+  const openEdit = useCallback(() => {
+    setEditName(dto?.full_name || me?.full_name || "");
+    setEditTitle(dto?.title || me?.title || "");
+    const rawSkills = dto?.skills ? dto.skills.split(",").map((s) => s.trim()).filter(Boolean).join(", ") : "";
+    setEditSkills(rawSkills);
+    setEditYoe(dto?.years_experience != null ? String(dto.years_experience) : "");
+    setEditOpen(true);
+  }, [dto, me]);
+
+  const saveEdit = useCallback(async () => {
+    setEditBusy(true);
+    try {
+      const patch: Record<string, unknown> = {
+        full_name: editName.trim(),
+        title: editTitle.trim(),
+        skills: editSkills.trim(),
+      };
+      if (editYoe.trim() !== "") {
+        const n = parseInt(editYoe, 10);
+        if (isNaN(n) || n < 0) {
+          toast.error("Years of experience must be a non-negative number.");
+          return;
+        }
+        patch.years_experience = n;
+      } else {
+        patch.years_experience = null;
+      }
+      await updateCandidateProfile(patch);
+      toast.success("Profile updated! Recruiters will see your changes immediately.");
+      setEditOpen(false);
+      await reload();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not save profile.");
+    } finally {
+      setEditBusy(false);
+    }
+  }, [editName, editTitle, editSkills, editYoe, reload, toast]);
 
   const closeResumePreview = useCallback(() => {
     if (resumeBlobUrlRef.current) {
@@ -207,6 +359,7 @@ export default function CandidateProfilePage() {
             <Plus size={16} strokeWidth={2.25} /> Add resume
           </button>
         </div>
+        <CandidateDeleteAccountSection hasLinkedProfile={false} />
         <CandidateResumeUploadModal open={uploadOpen} onClose={() => setUploadOpen(false)} onUploaded={() => void reload()} />
       </div>
     );
@@ -284,10 +437,168 @@ export default function CandidateProfilePage() {
             This is the profile recruiters see when ranking candidates.
           </p>
         </div>
-        <CandidateResumeUploadTrigger onClick={() => setUploadOpen(true)} title="Upload or replace resume" />
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexShrink: 0 }}>
+          <button
+            type="button"
+            onClick={openEdit}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: "0.35rem",
+              padding: "0.45rem 0.9rem", borderRadius: 10,
+              background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.35)",
+              color: "#a5b4fc", fontWeight: 650, fontSize: "0.84rem",
+              cursor: "pointer", whiteSpace: "nowrap",
+            }}
+          >
+            <Pencil size={14} strokeWidth={2.25} /> Edit profile
+          </button>
+          <CandidateResumeUploadTrigger onClick={() => setUploadOpen(true)} title="Upload or replace resume" />
+        </div>
       </div>
 
       <CandidateResumeUploadModal open={uploadOpen} onClose={() => setUploadOpen(false)} onUploaded={() => void reload()} />
+
+      {/* ── Edit Profile Modal ── */}
+      {editOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-profile-title"
+          onClick={(e) => { if (e.target === e.currentTarget) setEditOpen(false); }}
+          style={{
+            position: "fixed", inset: 0, zIndex: 5000,
+            background: "rgba(0,0,0,0.65)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: "1rem",
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(520px, 96vw)",
+              borderRadius: 20,
+              border: "1px solid rgba(255,255,255,0.14)",
+              background: "rgba(10,14,36,0.97)",
+              boxShadow: "0 24px 80px rgba(0,0,0,0.55)",
+              display: "flex", flexDirection: "column",
+              overflow: "hidden",
+            }}
+          >
+            {/* Header */}
+            <div style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              padding: "1rem 1.25rem", borderBottom: "1px solid rgba(255,255,255,0.1)",
+            }}>
+              <div id="edit-profile-title" style={{ fontWeight: 700, fontSize: "1rem", color: "#fff", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <Pencil size={16} color="#a5b4fc" /> Edit profile
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditOpen(false)}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  width: 32, height: 32, borderRadius: 8,
+                  border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.06)",
+                  color: "#fff", cursor: "pointer",
+                }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div style={{ padding: "1.25rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
+              <p style={{ margin: 0, fontSize: "0.82rem", color: "rgba(255,255,255,0.5)", lineHeight: 1.5 }}>
+                Changes are saved to your profile immediately and will be visible to recruiters. Re-uploading your resume will also refresh all extracted information.
+              </p>
+
+              {/* Full name */}
+              <div>
+                <label style={{ display: "block", fontSize: "0.78rem", fontWeight: 600, color: "rgba(255,255,255,0.55)", marginBottom: "0.3rem" }}>
+                  Full name
+                </label>
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder="Your full name"
+                  className="dash-inbox-dir-input"
+                  style={{ width: "100%" }}
+                />
+              </div>
+
+              {/* Title */}
+              <div>
+                <label style={{ display: "block", fontSize: "0.78rem", fontWeight: 600, color: "rgba(255,255,255,0.55)", marginBottom: "0.3rem" }}>
+                  Job title / role
+                </label>
+                <input
+                  type="text"
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  placeholder="e.g. Senior Frontend Engineer"
+                  className="dash-inbox-dir-input"
+                  style={{ width: "100%" }}
+                />
+              </div>
+
+              {/* Skills */}
+              <div>
+                <label style={{ display: "block", fontSize: "0.78rem", fontWeight: 600, color: "rgba(255,255,255,0.55)", marginBottom: "0.3rem" }}>
+                  Skills <span style={{ fontWeight: 400, color: "rgba(255,255,255,0.35)" }}>(comma-separated)</span>
+                </label>
+                <textarea
+                  value={editSkills}
+                  onChange={(e) => setEditSkills(e.target.value)}
+                  placeholder="e.g. React, TypeScript, Node.js, Python"
+                  rows={3}
+                  className="dash-inbox-dir-input"
+                  style={{ width: "100%", resize: "vertical", fontFamily: "inherit" }}
+                />
+              </div>
+
+              {/* Years of experience */}
+              <div>
+                <label style={{ display: "block", fontSize: "0.78rem", fontWeight: 600, color: "rgba(255,255,255,0.55)", marginBottom: "0.3rem" }}>
+                  Years of experience
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  max="60"
+                  value={editYoe}
+                  onChange={(e) => setEditYoe(e.target.value)}
+                  placeholder="e.g. 5"
+                  className="dash-inbox-dir-input"
+                  style={{ width: "8rem" }}
+                />
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div style={{
+              display: "flex", justifyContent: "flex-end", gap: "0.5rem",
+              padding: "0.9rem 1.25rem", borderTop: "1px solid rgba(255,255,255,0.08)",
+            }}>
+              <button
+                type="button"
+                onClick={() => setEditOpen(false)}
+                disabled={editBusy}
+                className="clients-float-btn clients-float-btn--ghost"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void saveEdit()}
+                disabled={editBusy || !editName.trim()}
+                className="clients-float-btn clients-float-btn--primary"
+              >
+                {editBusy ? "Saving…" : "Save changes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Profile header card ── */}
       <div style={{
@@ -538,6 +849,10 @@ export default function CandidateProfilePage() {
               </div>
             )}
           </SectionCard>
+        </div>
+
+        <div style={{ gridColumn: "1 / -1" }}>
+          <CandidateDeleteAccountSection hasLinkedProfile />
         </div>
 
       </div>

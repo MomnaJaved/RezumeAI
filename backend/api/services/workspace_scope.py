@@ -59,6 +59,10 @@ def candidate_visibility_predicate(workspace_id: UUID):
       2. They appear as an applicant / ranking / shortlist row on any job in
          this workspace (legacy data, portal applicants, cross-linked candidates).
 
+    Self-serve portal profiles (``workspace_id`` NULL, ``is_public``) do **not**
+    appear on the recruiter pool list until (2) applies — e.g. they applied to
+    one of your jobs or you ran matching that created a ranking/shortlist row.
+
     AND the candidate has NOT been soft-deleted by this workspace (no row in
     ``recruiter_candidate_hidden`` for this workspace + candidate pair).
     """

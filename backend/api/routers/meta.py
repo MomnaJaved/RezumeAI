@@ -15,7 +15,7 @@ from api.database import get_db
 from api.dependencies import get_current_user_optional, recruiter_meta_scope, require_user_if_auth_enabled
 from api.models import ActivityEvent, Candidate, Job, JobApplicant, ResumeIngestion, User
 from api.paths import repo_root
-from api.services.activity_feed import build_activity_notifications
+from api.services.activity_feed import build_activity_notifications, build_candidate_user_notifications
 from api.services.workspace_scope import candidate_visibility_predicate, ensure_workspace_for_recruiter
 from api.services.activity_log import log_activity
 from api.services.dashboard_widgets import build_dashboard_preview_job_breadth_scores, build_dashboard_widgets
@@ -98,7 +98,7 @@ def activity_feed(
     Scoping rules (mirrors :func:`recruiter_meta_scope`):
     - Authenticated recruiter → only activity for jobs in their workspace, even
       when ``REQUIRE_AUTH`` is off (prevents cross-tenant leakage on a shared DB).
-    - Candidate accounts → empty list.
+    - Candidate accounts → personal notifications (pipeline, scores) for the linked user.
     - No user with ``REQUIRE_AUTH=true`` → 401.
     - No user with ``REQUIRE_AUTH=false`` → global feed (legacy clients / tests).
     """
@@ -109,7 +109,7 @@ def activity_feed(
         return {"notifications": build_activity_notifications(db, limit=60, recruiter_workspace_id=None)}
     role = (getattr(user, "account_role", None) or "recruiter").strip().lower()
     if role == "candidate":
-        return {"notifications": []}
+        return {"notifications": build_candidate_user_notifications(db, user.id, limit=60)}
     wid = ensure_workspace_for_recruiter(db, user)
     return {
         "notifications": build_activity_notifications(db, limit=60, recruiter_workspace_id=wid),
@@ -133,7 +133,9 @@ def clear_activity(
     if ws_id is not None:
         # Strict: only delete this recruiter's own workspace events.
         db.query(ActivityEvent).filter(ActivityEvent.workspace_id == ws_id).delete(synchronize_session=False)
-    # No-op for unauthenticated / candidate callers — they have no owned events.
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() == "candidate":
+        db.query(ActivityEvent).filter(ActivityEvent.user_id == user.id).delete(synchronize_session=False)
+    # No-op for unauthenticated callers.
     db.commit()
     return
 

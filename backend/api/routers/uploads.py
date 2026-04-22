@@ -4,11 +4,11 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from sqlalchemy.orm import Session
 
 from api.database import get_db
-from api.dependencies import get_current_user_optional, require_user_if_auth_enabled
+from api.dependencies import get_current_user_optional
 from api.errors import RezumeAPIError
 from api.models import Candidate, User
 from api.schemas import CandidateRead, ResumeUploadResponse
@@ -38,7 +38,6 @@ def upload_resume(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user: Optional[User] = Depends(get_current_user_optional),
-    _: Optional[User] = Depends(require_user_if_auth_enabled),
 ):
     """
     Accept PDF, DOCX, TXT, or image (OCR if Tesseract is installed).
@@ -62,6 +61,16 @@ def upload_resume(
             "UNSUPPORTED_MEDIA_TYPE",
             f"Content-Type not accepted: {ct}",
             415,
+        )
+
+    # Always require a signed-in user. Anonymous uploads created Candidate rows
+    # without user_id, so portal users lost their profile after reload and could
+    # not apply or appear to recruiters (REQUIRE_AUTH=false used to allow this).
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sign in to upload a resume. Your profile is saved on your account.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     content = file.file.read()
@@ -110,25 +119,31 @@ def upload_resume(
         # Keep existing.status unless it's empty (back-compat).
         if not getattr(existing, "status", ""):
             existing.status = "new"
-        # Only *claim* unowned candidates. If another workspace already owns
-        # this external_id we don't silently re-assign it — that would let one
-        # tenant yank another tenant's row by guessing the external id.
-        # CRITICAL: Never overwrite is_public=True or claim a row that already
-        # has a linked portal account (user_id set). Doing so would let a
-        # recruiter strip a candidate's public status, making their own profile
-        # vulnerable to hard-deletion.
+        # Force SBERT recompute so updated resume content feeds into matching.
+        existing.embedding_sbert = None
+        # Claim any unowned candidate (workspace_id still NULL) into the
+        # recruiter's workspace.  This covers two cases:
+        #   a) A purely anonymous upload the recruiter now re-uploads → claim it.
+        #   b) A portal candidate (is_public=True / user_id set) whose resume the
+        #      recruiter is explicitly uploading.  The recruiter is saying "I want
+        #      this person in my pool."  We honour that by stamping workspace_id
+        #      so they appear in the candidates table.  Crucially we do NOT touch
+        #      is_public or user_id — the candidate keeps full portal ownership.
+        # We never overwrite a workspace that is already set (that would let a
+        # tenant yank another tenant's row).
         existing_has_portal_link = getattr(existing, "user_id", None) is not None
         existing_is_public = getattr(existing, "is_public", False)
         if (
             recruiter_workspace_id is not None
             and getattr(existing, "workspace_id", None) is None
-            and not existing_has_portal_link
-            and not existing_is_public
         ):
             existing.workspace_id = recruiter_workspace_id
-            if getattr(existing, "created_by_user_id", None) is None:
+            if getattr(existing, "created_by_user_id", None) is None and not existing_has_portal_link:
                 existing.created_by_user_id = recruiter_user_id
-            existing.is_public = False
+            # Only mark non-portal candidates as private.  Portal candidates keep
+            # their is_public=True so the candidate can still manage their profile.
+            if not existing_has_portal_link and not existing_is_public:
+                existing.is_public = False
         db.commit()
         db.refresh(existing)
         cand = existing
@@ -160,9 +175,24 @@ def upload_resume(
         note = "created"
 
     if user is not None and getattr(user, "account_role", "recruiter") == "candidate":
+        # Find old linked candidate row (if any) before we unlink it.
+        # When the candidate uploads a *different* file, a brand-new Candidate row
+        # is created (different external_id).  We copy workspace_id from the old row
+        # so recruiters who previously claimed this person still see the updated profile.
+        old_linked = (
+            db.query(Candidate)
+            .filter(Candidate.user_id == user.id, Candidate.id != cand.id)
+            .first()
+        )
+        if old_linked is not None and getattr(cand, "workspace_id", None) is None:
+            cand.workspace_id = getattr(old_linked, "workspace_id", None)
+            cand.created_by_user_id = getattr(old_linked, "created_by_user_id", None)
+
         db.query(Candidate).filter(Candidate.user_id == user.id, Candidate.id != cand.id).update({"user_id": None}, synchronize_session=False)
         cand.user_id = user.id
         cand.is_public = True
+        # Force SBERT embedding recompute so matching uses the new resume content.
+        cand.embedding_sbert = None
         db.commit()
         db.refresh(cand)
 

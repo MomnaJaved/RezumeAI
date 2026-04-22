@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchCandidateApplications, type CandidateApplicationRow } from "../../api";
+import { useToast } from "../../toast";
 
 const LABELS: Record<string, string> = {
   new: "Applied",
@@ -12,6 +13,7 @@ const LABELS: Record<string, string> = {
 };
 
 export default function CandidateApplicationsPage() {
+  const toast = useToast();
   const [items, setItems] = useState<CandidateApplicationRow[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -21,6 +23,11 @@ export default function CandidateApplicationsPage() {
       try {
         const r = await fetchCandidateApplications();
         if (!cancelled) setItems(r.items);
+      } catch (e) {
+        if (!cancelled) {
+          setItems([]);
+          toast.error(e instanceof Error ? e.message : "Could not load applications");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -28,7 +35,7 @@ export default function CandidateApplicationsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [toast]);
 
   function label(st: string) {
     return LABELS[st.toLowerCase()] || st;

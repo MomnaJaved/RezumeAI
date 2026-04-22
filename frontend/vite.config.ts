@@ -10,7 +10,10 @@ export default defineConfig({
     alias: { "@": srcDir },
   },
   server: {
+    // UI port (5173, or 5174+ if 5173 is already in use). This is NOT the API port.
     port: 5173,
+    strictPort: false,
+    // Browser → same host as Vite → these paths are forwarded to the FastAPI process (default :8000).
     proxy: {
       "/api": { target: "http://127.0.0.1:8000", changeOrigin: true },
       "/health": { target: "http://127.0.0.1:8000", changeOrigin: true },

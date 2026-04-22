@@ -1,8 +1,10 @@
 """Authenticated candidate-facing APIs (job discovery, applications, profile link)."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any, Optional
+import uuid as uuid_lib
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
@@ -12,6 +14,8 @@ from sqlalchemy.orm import Session
 from api.database import get_db, engine
 from api.models import Candidate, Client, Job, JobApplicant, JobCandidateRanking, User
 from api.routers.auth import _get_auth_user
+
+_log = logging.getLogger("rezume.api")
 
 router = APIRouter(prefix="/candidate", tags=["candidate"])
 
@@ -26,6 +30,13 @@ def _require_candidate(request: Request, db: Session) -> User:
 
 def _linked_candidate(db: Session, user: User) -> Optional[Candidate]:
     return db.query(Candidate).filter(Candidate.user_id == user.id).first()
+
+
+def _uuid_key(val: Any) -> UUID:
+    """Normalize ORM/driver UUID values for consistent set membership."""
+    if isinstance(val, UUID):
+        return val
+    return UUID(str(val))
 
 
 @router.get("/me")
@@ -65,8 +76,19 @@ def list_open_jobs(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
 ):
-    _require_candidate(request, db)
-    base = db.query(Job).filter(func.lower(Job.status) == "active")
+    user = _require_candidate(request, db)
+    cand = _linked_candidate(db, user)
+    applied_job_ids: set[UUID] = set()
+    if cand:
+        applied_job_ids = {
+            _uuid_key(jid)
+            for (jid,) in db.query(JobApplicant.job_id).filter(JobApplicant.candidate_id == cand.id).all()
+            if jid is not None
+        }
+
+    # Only jobs tied to a recruiter workspace — same scope as GET /jobs/page for
+    # recruiters, so every application is visible to the posting tenant.
+    base = db.query(Job).filter(func.lower(Job.status) == "active", Job.workspace_id.isnot(None))
     rq = (role_q or "").strip()
     if rq:
         like = f"%{rq}%"
@@ -104,6 +126,7 @@ def list_open_jobs(
                 "salary_range": j.salary_range or "",
                 "client_display": cl_name,
                 "created_at": j.created_at.isoformat() if j.created_at else "",
+                "applied": _uuid_key(j.id) in applied_job_ids,
             }
         )
     return {"total": total, "items": out}
@@ -126,6 +149,11 @@ def apply_to_job(
     job = db.query(Job).filter(Job.external_id == external_id.strip()).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    # Must match jobs visible in list_open_jobs: only tenant-scoped postings so the
+    # owning recruiter sees the applicant in their workspace (legacy rows with NULL
+    # workspace_id are excluded from recruiter job lists).
+    if getattr(job, "workspace_id", None) is None:
+        raise HTTPException(status_code=400, detail="This job is not open for applications.")
     if (job.status or "").strip().lower() != "active":
         raise HTTPException(status_code=400, detail="This job is not accepting applications")
     now = datetime.utcnow()
@@ -136,6 +164,21 @@ def apply_to_job(
     )
     # Any candidate who reaches this point via the portal is a public candidate.
     cand.is_public = True
+
+    # Log if workspace_id mismatch so we can spot cross-workspace applications in
+    # the terminal — the SBERT purge historically deleted these; now protected by
+    # the is_public / user_id guard in sbert_cache.refresh_sbert_for_job.
+    cand_ws = getattr(cand, "workspace_id", None)
+    job_ws = getattr(job, "workspace_id", None)
+    if cand_ws is not None and job_ws is not None and cand_ws != job_ws:
+        _log.info(
+            "Cross-workspace apply: candidate %s (ws=%s) → job %s (ws=%s). "
+            "Application will be preserved (portal candidate).",
+            cand.external_id,
+            cand_ws,
+            job.external_id,
+            job_ws,
+        )
 
     if app:
         # Already in the pipeline (recruiter added them). Mark public and return
@@ -162,8 +205,25 @@ def _rescore_job_after_apply(job_id) -> None:
         from api.services.sbert_cache import refresh_sbert_for_job_id
         refresh_sbert_for_job_id(engine, job_id, top_k=200)
     except Exception as e:
-        import logging
-        logging.getLogger("rezume.api").warning("Post-apply SBERT refresh failed for job %s: %s", job_id, e)
+        _log.warning("Post-apply SBERT refresh failed for job %s: %s", job_id, e)
+
+
+def _refresh_candidate_embedding(cand_id: uuid_lib.UUID) -> None:
+    """Background task: recompute SBERT embedding after profile edit."""
+    try:
+        from sqlalchemy.orm import sessionmaker
+        from api.services.sbert_cache import ensure_candidate_embedding
+
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        db = SessionLocal()
+        try:
+            cand = db.query(Candidate).filter(Candidate.id == cand_id).first()
+            if cand:
+                ensure_candidate_embedding(db, cand)
+        finally:
+            db.close()
+    except Exception as e:
+        _log.warning("Embedding refresh failed for candidate %s: %s", cand_id, e)
 
 
 @router.get("/applications")
@@ -244,3 +304,59 @@ def my_applications(request: Request, db: Session = Depends(get_db)):
             }
         )
     return {"items": items}
+
+
+@router.patch("/profile")
+def update_candidate_profile(
+    request: Request,
+    body: dict,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """
+    Let the candidate update their own profile details (name, title, skills, etc.).
+    Changes are immediately visible to any recruiter viewing this candidate.
+    """
+    user = _require_candidate(request, db)
+    cand = _linked_candidate(db, user)
+    if not cand:
+        raise HTTPException(status_code=404, detail="No profile linked. Upload a resume first.")
+
+    changed = False
+
+    def _set(field: str, value: Any, strip: bool = True) -> None:
+        nonlocal changed
+        if field not in body:
+            return
+        v = (str(value or "").strip()) if strip else value
+        if getattr(cand, field, None) != v:
+            setattr(cand, field, v)
+            changed = True
+
+    _set("full_name", body.get("full_name"))
+    _set("title", body.get("title"))
+    _set("skills", body.get("skills"))
+
+    yoe = body.get("years_experience")
+    if "years_experience" in body:
+        try:
+            parsed_yoe = int(yoe) if yoe not in (None, "") else None
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail="years_experience must be a whole number.")
+        if cand.years_experience != parsed_yoe:
+            cand.years_experience = parsed_yoe
+            changed = True
+
+    if not changed:
+        return {"status": "no_change"}
+
+    # Clear cached SBERT embedding so it is recomputed with the updated skills/text.
+    cand.embedding_sbert = None
+    db.commit()
+    db.refresh(cand)
+
+    # Recompute SBERT embedding in the background so matching results stay fresh.
+    background_tasks.add_task(_refresh_candidate_embedding, cand.id)
+
+    _log.info("Candidate profile updated by user %s (candidate %s)", user.id, cand.external_id)
+    return {"status": "updated"}

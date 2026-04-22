@@ -1308,6 +1308,84 @@ label {
   text-decoration: none;
 }
 
+/* Clients list / add client — fixed bottom-right actions (larger, subtle corners) */
+.clients-float-actions {
+  position: fixed;
+  right: 1.35rem;
+  bottom: 1.35rem;
+  z-index: 45;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  align-items: center;
+  pointer-events: none;
+}
+
+.clients-float-actions > * {
+  pointer-events: auto;
+}
+
+.clients-float-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-height: 40px;
+  height: 40px;
+  padding: 0 1.85rem;
+  font-size: 0.95rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  border-radius: 8px;
+  border: 1px solid rgba(56, 189, 248, 0.42);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42);
+}
+
+.clients-float-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.clients-float-btn--icon-only {
+  width: 64px;
+  min-width: 64px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
+}
+
+.clients-float-btn--primary {
+  background: rgba(56, 189, 248, 0.24);
+  color: #e0f2fe;
+}
+
+.clients-float-btn--primary:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.34);
+  color: #fff;
+  border-color: rgba(56, 189, 248, 0.55);
+}
+
+.clients-float-btn--ghost {
+  background: rgba(15, 23, 42, 0.94);
+  color: rgba(255, 255, 255, 0.9);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.clients-float-btn--ghost:hover:not(:disabled) {
+  background: rgba(30, 41, 59, 0.98);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #fff;
+}
+
+.clients-page-scroll-pad {
+  padding-bottom: 5rem;
+}
+
 .cand-table-wrap {
   border-radius: 18px;
   overflow: hidden;

@@ -83,7 +83,8 @@ def build_activity_notifications(
             evq = evq.filter(ActivityEvent.workspace_id == recruiter_workspace_id)
         else:
             # Unauthenticated / global view: only show NULL-workspace (legacy) events.
-            evq = evq.filter(ActivityEvent.workspace_id.is_(None))
+            # Exclude per-user rows (candidate portal notifications) so they never appear here.
+            evq = evq.filter(ActivityEvent.workspace_id.is_(None), ActivityEvent.user_id.is_(None))
         for ev in evq.order_by(desc(ActivityEvent.created_at)).limit(40).all():
             msg = (ev.message or "").strip() or "Update"
             low = msg.lower()
@@ -218,3 +219,29 @@ def build_activity_notifications(
 
     items.sort(key=lambda x: _parse_at(str(x["at"])), reverse=True)
     return items[:limit]
+
+
+def build_candidate_user_notifications(db: Session, user_id: UUID, limit: int = 60) -> list[dict[str, Any]]:
+    """Activity rows for a candidate account (ActivityEvent.user_id = linked user)."""
+    items: list[dict[str, Any]] = []
+    try:
+        for ev in (
+            db.query(ActivityEvent)
+            .filter(ActivityEvent.user_id == user_id)
+            .order_by(desc(ActivityEvent.created_at))
+            .limit(limit)
+            .all()
+        ):
+            hid = (ev.href or "").strip() or None
+            items.append(
+                {
+                    "id": f"event-{ev.id}",
+                    "kind": (ev.kind or "info").strip() or "info",
+                    "message": (ev.message or "").strip() or "Update",
+                    "at": _iso(ev.created_at),
+                    "href": hid,
+                }
+            )
+    except Exception as e:
+        _log.debug("build_candidate_user_notifications skipped: %s", e)
+    return items

@@ -33,6 +33,28 @@ function roleFromStorage(): AccountRole | null {
   return null;
 }
 
+/** Read `account_role` from JWT payload (no signature verify — UX only; APIs still enforce auth). */
+function accountRoleFromJwt(token: string): AccountRole | null {
+  try {
+    const seg = token.split(".")[1];
+    if (!seg) return null;
+    const b64 = seg.replace(/-/g, "+").replace(/_/g, "/");
+    const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
+    const payload = JSON.parse(atob(b64 + pad)) as { account_role?: string };
+    const r = String(payload.account_role || "").toLowerCase();
+    if (r === "candidate") return "candidate";
+    if (r === "recruiter") return "recruiter";
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function initialAccountRole(): AccountRole | null {
+  if (typeof localStorage === "undefined") return null;
+  return roleFromStorage() ?? accountRoleFromJwt(localStorage.getItem(TOKEN_KEY) || "") ?? null;
+}
+
 /**
  * Remove every "rezume.*" key except the auth markers. Call on logout or when
  * a different email signs in — prevents leaking the previous account's cached
@@ -56,7 +78,7 @@ function purgeUserScopedStorage(): void {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY));
   const [email, setEmail] = useState<string | null>(() => localStorage.getItem(EMAIL_KEY));
-  const [accountRole, setAccountRole] = useState<AccountRole | null>(() => roleFromStorage());
+  const [accountRole, setAccountRole] = useState<AccountRole | null>(() => initialAccountRole());
 
   // Auto-logout when any API call returns 401 (expired/invalidated token).
   useEffect(() => {
@@ -85,8 +107,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setAccountRole(ar);
         }
       } catch {
+        // Never default candidates to recruiter: a transient /auth/me failure
+        // (API down, 401 race) used to wipe their session view after reload.
         if (!cancelled) {
-          const ar: AccountRole = "recruiter";
+          const ar = roleFromStorage() ?? accountRoleFromJwt(token) ?? ("recruiter" as AccountRole);
           localStorage.setItem(ACCOUNT_ROLE_KEY, ar);
           setAccountRole(ar);
         }
@@ -99,10 +123,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const refreshAccountRole = useCallback(async () => {
     if (!token) return;
-    const p = await fetchMyProfile();
-    const ar: AccountRole = p.account_role === "candidate" ? "candidate" : "recruiter";
-    localStorage.setItem(ACCOUNT_ROLE_KEY, ar);
-    setAccountRole(ar);
+    try {
+      const p = await fetchMyProfile();
+      const ar: AccountRole = p.account_role === "candidate" ? "candidate" : "recruiter";
+      localStorage.setItem(ACCOUNT_ROLE_KEY, ar);
+      setAccountRole(ar);
+    } catch {
+      const ar = roleFromStorage() ?? accountRoleFromJwt(token);
+      if (ar) {
+        localStorage.setItem(ACCOUNT_ROLE_KEY, ar);
+        setAccountRole(ar);
+      }
+    }
   }, [token]);
 
   const value = useMemo<AuthContextValue>(() => {

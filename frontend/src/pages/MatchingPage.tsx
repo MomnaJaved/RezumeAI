@@ -204,12 +204,16 @@ export default function MatchingPage() {
     (async () => {
       try {
         setMatchingAll(true);
-        const res = await triggerMatchCandidates(selectedJob, topK);
+        const res = await triggerMatchCandidates(selectedJob, 200);
         if (cancelled) return;
         const newRankings = res.rankings || [];
         setRankings(newRankings);
         setTopInsight((res.top_candidate_insight || "").trim() || null);
         setSortBy("rank_asc");
+        try {
+          const poolRes = await fetchStage1Pool(selectedJob, 200);
+          if (!cancelled) setPool(poolRes.items || []);
+        } catch { /* non-critical */ }
         void checkAndLogLowMatch(newRankings, job?.title ?? "", selectedJob);
       } catch {
         // Fail silently for auto-rank; user can still click Match manually
@@ -231,7 +235,7 @@ export default function MatchingPage() {
 
   const visibleRows = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return [...pool]
+    let rows = [...pool]
       .filter((r) => {
         // Text search
         if (needle) {
@@ -269,9 +273,19 @@ export default function MatchingPage() {
         }
         // score_desc: retrieval score
         return (b.sbert_score || 0) - (a.sbert_score || 0);
-      })
-      .slice(0, showOnlyTop ? topK : undefined);
-  }, [pool, q, sortBy, topK, rankByCandidateId, poolFilter]);
+      });
+
+    if (rankings.length > 0) {
+      // When ranking results exist, show ONLY candidates that were actually ranked
+      // (no unranked pool rows that would show "—" for Match score), then cap at topK.
+      rows = rows.filter((r) => rankByCandidateId.has(r.candidate_id));
+      rows = rows.slice(0, topK);
+    } else if (showOnlyTop) {
+      rows = rows.slice(0, topK);
+    }
+
+    return rows;
+  }, [pool, q, sortBy, topK, rankings, rankByCandidateId, poolFilter, showOnlyTop, autoReject, minScorePct]);
 
   const rankOneRow = useMemo(() => {
     if (!rankings.length) return null;
@@ -451,7 +465,11 @@ export default function MatchingPage() {
                 if (!selectedJob) return;
                 try {
                   setMatchingAll(true);
-                  const res = await triggerMatchCandidates(selectedJob, topK);
+                  // Always request a large pool (200) so the backend scores every
+                  // candidate in the SBERT shortlist and persists all their match
+                  // scores. The display top-K is purely a frontend filter applied
+                  // to the returned rankings — it does not limit scoring.
+                  const res = await triggerMatchCandidates(selectedJob, 200);
                   const newRankings = res.rankings || [];
                   setRankings(newRankings);
                   setTopInsight((res.top_candidate_insight || "").trim() || null);
@@ -461,6 +479,15 @@ export default function MatchingPage() {
                     nextSp.set("sort", "rank_asc");
                     return nextSp;
                   });
+                  // Reload the stage-1 pool so newly applied candidates (who were
+                  // added to the SBERT pool by the backend during this match run)
+                  // appear immediately without requiring a page refresh.
+                  try {
+                    const poolRes = await fetchStage1Pool(selectedJob, 200);
+                    setPool(poolRes.items || []);
+                  } catch {
+                    // Non-critical — pool will be correct on next page load
+                  }
                   toast.success("Matches saved — scores updated across all views.");
                   void checkAndLogLowMatch(newRankings, job?.title ?? "", selectedJob);
                 } catch (e) {

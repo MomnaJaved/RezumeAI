@@ -1,8 +1,11 @@
 import { Link, NavLink } from "react-router-dom";
 import { useAuth } from "./auth";
+import { useNotifications } from "./notifications";
 
 export default function CandidateFrame({ children }: { children: React.ReactNode }) {
   const { email, logout } = useAuth();
+  const { inboxUnreadDmTotal, inboxUnreadAlerts } = useNotifications();
+  const inboxUnread = inboxUnreadDmTotal + inboxUnreadAlerts;
 
   return (
     <div className="dash">
@@ -21,6 +24,14 @@ export default function CandidateFrame({ children }: { children: React.ReactNode
           </NavLink>
           <NavLink to="/candidate/applications" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
             Applications
+          </NavLink>
+          <NavLink to="/candidate/inbox" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
+            Inbox
+            {inboxUnread > 0 ? (
+              <span className="dash-nav-badge" aria-label={`${inboxUnread} unread`}>
+                {inboxUnread > 99 ? "99+" : inboxUnread}
+              </span>
+            ) : null}
           </NavLink>
           <NavLink to="/candidate/profile" className={({ isActive }) => (isActive ? "dash-link active" : "dash-link")}>
             Profile

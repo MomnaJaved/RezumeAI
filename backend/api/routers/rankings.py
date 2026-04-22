@@ -23,6 +23,7 @@ from api.services.ranking_insight_sync import clear_job_ranking_insight_cache, r
 from api.services.top_candidate_insight import build_top_candidate_insight_paragraph
 from api.services.ranking_run import rank_for_external_job_id
 from api.services.workspace_scope import candidate_query_filtered_for_workspace, ensure_workspace_for_recruiter
+from api.services.candidate_notifications import notify_applicants_ranking_updated, notify_candidate_pipeline_status
 from src.inference.service import classify_role, match_scores_batch
 
 _log = logging.getLogger("rezume.api")
@@ -114,6 +115,7 @@ def rank_and_save(
 
     run_at = now
     out_rows: list[StoredRankingRow] = []
+    ranking_notify: list[tuple[Candidate, int, float]] = []
 
     for pos, r in enumerate(rows, start=1):
         cand = db.query(Candidate).filter(Candidate.external_id == r["candidate_id"]).first()
@@ -123,6 +125,7 @@ def rank_and_save(
         raw = float(r.get("cross_encoder_score_raw") or r["cross_encoder_score"])
         adj = adjusted_match_score(job, cand, raw_cross_encoder_score=raw, sbert_similarity=float(r.get("sbert_similarity", 0.0) or 0.0))
         r["cross_encoder_score"] = float(adj["final_score"])
+        ranking_notify.append((cand, pos, float(adj["final_score"])))
         expl_raw = build_ranking_explanation(job, cand, float(adj["final_score"]), raw_cross_encoder_score=raw)
         expl = RankingExplanationOut(**expl_raw)
         jr = JobCandidateRanking(
@@ -160,6 +163,8 @@ def rank_and_save(
     db.commit()
 
     refresh_candidate_best_job_cache(db, [c.id for c in db.query(Candidate).filter(Candidate.external_id.in_([r["candidate_id"] for r in rows])).all()])
+
+    notify_applicants_ranking_updated(db, job, ranking_notify)
 
     db.refresh(job)
     insight = refresh_job_ranking_top_insight(db, job)
@@ -294,6 +299,7 @@ def mutate_shortlist(
             .all()
         }
         cands = db.query(Candidate).filter(Candidate.external_id.in_(list(add_set))).all()
+        promoted_shortlist: list[Candidate] = []
         for c in cands:
             if str(c.id) in existing:
                 continue
@@ -310,12 +316,16 @@ def mutate_shortlist(
                 if (app.status or "new") in _PROMOTE_FROM:
                     app.status = "shortlisted"
                     app.updated_at = datetime.utcnow()
+                    promoted_shortlist.append(c)
             else:
                 db.add(JobApplicant(job_id=job.id, candidate_id=c.id, status="shortlisted", updated_at=datetime.utcnow()))
+                promoted_shortlist.append(c)
             # Mirror on the global candidate row so the Candidates page reflects it.
             if c.status in (None, "new", "screened"):
                 c.status = "shortlisted"
         db.commit()
+        for c in promoted_shortlist:
+            notify_candidate_pipeline_status(db, job, c, "shortlisted")
 
     if add_set or rem_set:
         clear_job_ranking_insight_cache(db, job)
@@ -407,11 +417,13 @@ def rank_shortlist(
 
     run_at = datetime.utcnow()
     out_rows: list[StoredRankingRow] = []
+    ranking_notify: list[tuple[Candidate, int, float]] = []
     for pos, r in enumerate(scored, start=1):
         cand = db.query(Candidate).filter(Candidate.external_id == r["candidate_id"]).first()
         if not cand:
             continue
         snap_role = _snapshot_role(cand, r)
+        ranking_notify.append((cand, pos, float(r["cross_encoder_score"])))
         expl_raw = build_ranking_explanation(
             job,
             cand,
@@ -454,6 +466,8 @@ def rank_shortlist(
     db.commit()
 
     refresh_candidate_best_job_cache(db, [cand.id for _, cand in rows])
+
+    notify_applicants_ranking_updated(db, job, ranking_notify)
 
     db.refresh(job)
     insight = refresh_job_ranking_top_insight(db, job)
@@ -746,6 +760,7 @@ def rank_database_candidates(
     run_at = datetime.utcnow()
     out_rows: list[StoredRankingRow] = []
     insight_pairs: list[tuple[StoredRankingRow, Candidate]] = []
+    ranking_notify: list[tuple[Candidate, int, float]] = []
 
     if persist:
         # Delete only this recruiter's scores for this job, preserving other tenants' data.
@@ -760,6 +775,7 @@ def rank_database_candidates(
         if not cand:
             continue
         snap_role = _snapshot_role(cand, r)
+        ranking_notify.append((cand, pos, float(r["cross_encoder_score"])))
         expl_raw = build_ranking_explanation(
             job,
             cand,
@@ -805,6 +821,7 @@ def rank_database_candidates(
     if persist:
         db.commit()
         refresh_candidate_best_job_cache(db, [c.id for c in cands if c])
+        notify_applicants_ranking_updated(db, job, ranking_notify)
         db.refresh(job)
         insight = refresh_job_ranking_top_insight(db, job)
     else:

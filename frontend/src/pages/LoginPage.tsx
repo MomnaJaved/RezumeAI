@@ -76,9 +76,13 @@ export default function LoginPage() {
       const to = from && from !== "/login" ? from : ar === "candidate" ? "/candidate" : "/dashboard";
       nav(to);
     } catch (e) {
-      const raw = (e as Error).message || "Sign-in failed.";
+      const raw = ((e as Error).message || "").trim() || "Sign-in failed.";
       let msg = raw;
-      if (raw.includes("Invalid email or password")) {
+      if (raw.includes("No account found")) {
+        msg = "No account found.";
+      } else if (raw.includes("Invalid password") || raw.toLowerCase().includes("invalid password")) {
+        msg = "Wrong email or password. Check both and try again, or use “Forgot password?” below.";
+      } else if (raw.includes("Invalid email or password")) {
         msg = "Wrong email or password. Check both and try again, or use “Forgot password?” below.";
       } else if (raw.toLowerCase().includes("not verified") || raw.toLowerCase().includes("email not verified")) {
         msg = "This email is not verified yet. Complete registration from the link in your inbox, or register again.";

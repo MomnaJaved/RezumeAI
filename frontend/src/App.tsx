@@ -275,6 +275,7 @@ export default function App() {
             <Route index element={<CandidateDashboardPage />} />
             <Route path="jobs" element={<CandidateJobsPage />} />
             <Route path="applications" element={<CandidateApplicationsPage />} />
+            <Route path="inbox" element={<InboxPage />} />
             <Route path="profile" element={<CandidateProfilePage />} />
             <Route path="resume" element={<Navigate to="/candidate" replace />} />
           </Route>

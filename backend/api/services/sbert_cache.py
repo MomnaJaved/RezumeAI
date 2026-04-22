@@ -112,11 +112,23 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
         # linking foreign candidates to this job. Those rows make the foreign
         # candidate "visible" through the job-link branch of
         # ``candidate_visibility_predicate`` even after scoping, so the
-        # pollution never clears on its own. We drop only the UNTOUCHED rows
-        # (status still "new") whose candidate belongs to a *different*
-        # workspace — if the recruiter actually progressed someone to
-        # screened/interview/etc. we preserve that deliberate decision and
-        # accept the cross-tenant link as an explicit choice.
+        # pollution never clears on its own.
+        #
+        # SAFETY: Never purge rows for portal/linked candidates (is_public=True
+        # or user_id IS NOT NULL). Those rows were created by the candidate
+        # choosing to apply via the portal — they are NOT pollution even if the
+        # candidate's workspace_id happens to differ from the job's workspace
+        # (e.g. the same resume was previously uploaded by a different recruiter
+        # and the candidate later linked their account to that row, preserving
+        # the original workspace_id). Purging such rows would silently erase a
+        # legitimate application and make the candidate disappear from the
+        # recruiter's pool immediately after applying.
+        #
+        # We drop only UNTOUCHED rows (status still "new") whose candidate has a
+        # non-null workspace_id belonging to a *different* workspace AND who is
+        # NOT a registered portal user — i.e. pure auto-created ghost rows.
+        # If the recruiter progressed someone to screened/interview/etc. we
+        # always preserve that deliberate decision regardless.
         stale_app_ids = [
             a_id
             for (a_id,) in db.query(JobApplicant.id)
@@ -126,10 +138,19 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
                 JobApplicant.status == "new",
                 Candidate.workspace_id.isnot(None),
                 Candidate.workspace_id != job_ws_id,
+                # Portal candidates opted-in voluntarily — keep their rows.
+                Candidate.is_public == False,  # noqa: E712
+                Candidate.user_id.is_(None),
             )
             .all()
         ]
         if stale_app_ids:
+            _log.debug(
+                "Purging %d stale cross-tenant applicant row(s) for job %s (ws %s)",
+                len(stale_app_ids),
+                job.external_id,
+                job_ws_id,
+            )
             db.query(JobApplicant).filter(JobApplicant.id.in_(stale_app_ids)).delete(synchronize_session=False)
             db.commit()
             diag["cross_tenant_applicants_purged"] = len(stale_app_ids)
@@ -139,6 +160,7 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
         # return anyway, but we have to clear them *before* evaluating the
         # visibility predicate below — otherwise the ranking-link branch
         # would still mark foreign candidates as visible on this pass.
+        # Same portal-safety rule: skip rows belonging to registered users.
         stale_rank_ids = [
             r_id
             for (r_id,) in db.query(JobCandidateRanking.id)
@@ -147,6 +169,8 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
                 JobCandidateRanking.job_id == job.id,
                 Candidate.workspace_id.isnot(None),
                 Candidate.workspace_id != job_ws_id,
+                Candidate.is_public == False,  # noqa: E712
+                Candidate.user_id.is_(None),
             )
             .all()
         ]
@@ -200,11 +224,41 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
     filtered.sort(key=lambda x: x[1], reverse=True)
     top = filtered[:k]
 
+    # Force-include job applicants who failed the SBERT/skills/role filters.
+    # A candidate who explicitly applied via the portal should ALWAYS appear in
+    # the recruiter's matching results — even if their resume is too sparse for
+    # the semantic filters (e.g. empty skills field after NLP extraction).
+    # We append them at the end with score 0.0 so the cross-encoder can still
+    # rank them; they won't crowd out better-scoring candidates.
+    top_ext_ids = {ext for ext, _ in top}
+    applicant_rows = (
+        db.query(JobApplicant, Candidate)
+        .join(Candidate, Candidate.id == JobApplicant.candidate_id)
+        .filter(JobApplicant.job_id == job.id)
+        .all()
+    )
+    forced_applicants: list[tuple[str, float]] = []
+    for _app, ac in applicant_rows:
+        if ac.external_id not in top_ext_ids:
+            # Compute embedding if missing so the cross-encoder has something to work with
+            ensure_candidate_embedding(db, ac)
+            forced_applicants.append((ac.external_id, 0.0))
+            by_ext[ac.external_id] = ac
+    if forced_applicants:
+        _log.debug(
+            "Force-including %d applicant(s) excluded by SBERT/skills filters for job %s",
+            len(forced_applicants),
+            job.external_id,
+        )
+        diag["applicants_force_included"] = len(forced_applicants)
+
+    combined = top + forced_applicants
+
     db.query(JobCandidateSbertScore).filter(JobCandidateSbertScore.job_id == job.id).delete()
     db.commit()
 
     now = datetime.utcnow()
-    for pos, (cand_ext, sim) in enumerate(top, start=1):
+    for pos, (cand_ext, sim) in enumerate(combined, start=1):
         cand = by_ext.get(cand_ext)
         if not cand:
             continue
@@ -227,7 +281,7 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
             )
         )
     db.commit()
-    return len(top)
+    return len(combined)
 
 
 def refresh_sbert_for_all_jobs(db: Session, *, top_k: int = 200, only_active: bool = False) -> int:
