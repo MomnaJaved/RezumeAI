@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 
@@ -116,11 +117,21 @@ def skills_overlap_ratio(job_skills: set[str], cand_skills: set[str]) -> float:
     """
     Legacy flat-set overlap. Kept for callers that haven't migrated to the
     canonical/bag pair. Prefer :func:`skills_overlap_ratio_canonical`.
+
+    Denominator is capped by REZUME_MATCH_JOB_SKILLS_DENOM_CAP (default 32) so very
+    long pasted skill lists do not require an unrealistic token hit count.
     """
     if not job_skills:
         return 0.0
     inter = job_skills.intersection(cand_skills)
-    return float(len(inter)) / float(max(1, len(job_skills)))
+    try:
+        cap = int((os.environ.get("REZUME_MATCH_JOB_SKILLS_DENOM_CAP") or "32").strip())
+    except ValueError:
+        cap = 32
+    cap = max(8, min(cap, 200))
+    denom = min(len(job_skills), cap)
+    denom = max(1, denom)
+    return float(len(inter)) / float(denom)
 
 
 def skills_overlap_ratio_canonical(job_canonical: list[set[str]], cand_bag: set[str]) -> float:

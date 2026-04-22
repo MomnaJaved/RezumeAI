@@ -77,7 +77,7 @@ def ocr_parse_resume(
         )
 
     try:
-        parsed = parse_upload(file.filename, content)
+        parsed = parse_upload(file.filename, content, skip_heavy_ml=True)
     except ValueError as e:
         raise RezumeAPIError("PARSE_FAILED", str(e), 422) from e
     except Exception as e:
@@ -101,4 +101,5 @@ def ocr_parse_resume(
         parsed_fields=fields,
         filename=parsed.get("filename") or file.filename,
         text_len=parsed.get("text_len", 0),
+        external_id=parsed.get("external_id") or "",
     )

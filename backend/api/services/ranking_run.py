@@ -67,14 +67,27 @@ def rank_for_external_job_id(
     """
     job_text: str | None = None
     use_db = db is not None
+    job_db: Job | None = None
 
     if use_db:
-        job = db.query(Job).filter(Job.external_id == str(external_job_id)).first()
-        if job:
-            job_text = ml_ranking.build_job_text_from_db(job)
+        job_db = db.query(Job).filter(Job.external_id == str(external_job_id)).first()
+        if job_db:
+            job_text = ml_ranking.build_job_text_from_db(job_db)
 
     if not job_text:
-        jobs_df = ml_ranking.get_jobs_df()
+        # DB job with empty fields must not fall through to training CSVs (often absent in dev).
+        if job_db is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="This job has no title, description, or skills to match against. Edit the job and add those fields, then try again.",
+            )
+        try:
+            jobs_df = ml_ranking.get_jobs_df()
+        except FileNotFoundError as e:
+            raise HTTPException(
+                status_code=503,
+                detail="Offline job CSV is not installed on this server. Create the job in the app with a title, description, and skills.",
+            ) from e
         rows = jobs_df[jobs_df["job_id"].astype(str) == str(external_job_id)]
         if rows.empty:
             raise HTTPException(status_code=404, detail=f"Job not found: {external_job_id}")
@@ -82,43 +95,47 @@ def rank_for_external_job_id(
 
     sbert_rows = None
     refresh_diag: dict | None = None
-    if use_db:
-        job = db.query(Job).filter(Job.external_id == str(external_job_id)).first()
-        if job:
-            # Always score the ENTIRE SBERT pool (up to 500 rows) so that:
-            #   • Every candidate in the pool gets an accurate cross-encoder score.
-            #   • The recruiter's Candidates page shows updated match scores for all.
-            #   • Changing the display top-K filter never changes who scored best.
-            # The display top-K is enforced by the frontend only; backend always
-            # persists a JobCandidateRanking row for every scored candidate.
-            q = (
-                db.query(JobCandidateSbertScore, Candidate)
-                .join(Candidate, Candidate.id == JobCandidateSbertScore.candidate_id)
-                .filter(JobCandidateSbertScore.job_id == job.id)
-                .order_by(JobCandidateSbertScore.rank_position.asc())
-                .limit(500)
-            )
-            sbert_rows = q.all()
-            if not sbert_rows:
-                # Auto-run Stage 1 (SBERT) if cache is missing; this is fast retrieval and must happen before cross-encoder.
-                try:
-                    from api.services.sbert_cache import LAST_REFRESH_DIAGNOSTIC, refresh_sbert_for_job
+    if use_db and job_db is not None:
+        # Always score the ENTIRE SBERT pool (up to 500 rows) so that:
+        #   • Every candidate in the pool gets an accurate cross-encoder score.
+        #   • The recruiter's Candidates page shows updated match scores for all.
+        #   • Changing the display top-K filter never changes who scored best.
+        # The display top-K is enforced by the frontend only; backend always
+        # persists a JobCandidateRanking row for every scored candidate.
+        q = (
+            db.query(JobCandidateSbertScore, Candidate)
+            .join(Candidate, Candidate.id == JobCandidateSbertScore.candidate_id)
+            .filter(JobCandidateSbertScore.job_id == job_db.id)
+            .order_by(JobCandidateSbertScore.rank_position.asc())
+            .limit(500)
+        )
+        sbert_rows = q.all()
+        if not sbert_rows:
+            # Auto-run Stage 1 (SBERT) if cache is missing; this is fast retrieval and must happen before cross-encoder.
+            try:
+                from api.services.sbert_cache import LAST_REFRESH_DIAGNOSTIC, refresh_sbert_for_job
 
-                    refresh_sbert_for_job(db, job, top_k=max(200, int(top_k or 50)))
-                    sbert_rows = q.all()
-                    # Capture the diagnostic *after* the refresh so the 404 below
-                    # can tell the user whether the job has no text, no candidates
-                    # have embeddings, or the skills/SBERT thresholds rejected
-                    # every candidate. Without this the user just sees a generic
-                    # "run the refresh" message for a refresh that already ran.
-                    refresh_diag = LAST_REFRESH_DIAGNOSTIC.get(job.id)
-                except Exception as e:
-                    # Best-effort; fallback to CSV if present.
-                    refresh_diag = {"error": str(e)[:200]}
+                refresh_sbert_for_job(db, job_db, top_k=max(200, int(top_k or 50)))
+                sbert_rows = q.all()
+                # Capture the diagnostic *after* the refresh so the 404 below
+                # can tell the user whether the job has no text, no candidates
+                # have embeddings, or the skills/SBERT thresholds rejected
+                # every candidate. Without this the user just sees a generic
+                # "run the refresh" message for a refresh that already ran.
+                refresh_diag = LAST_REFRESH_DIAGNOSTIC.get(job_db.id)
+            except Exception as e:
+                # Best-effort; fallback to CSV if present.
+                refresh_diag = {"error": str(e)[:200]}
 
     if not sbert_rows:
         # Fallback to legacy CSV shortlist if DB cache is missing.
-        sbert_df = ml_ranking.get_sbert_df()
+        try:
+            sbert_df = ml_ranking.get_sbert_df()
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=404,
+                detail=_format_empty_shortlist_detail(external_job_id, refresh_diag),
+            ) from None
         sbert_rows_df = sbert_df[sbert_df["job_id"].astype(str) == str(external_job_id)]
         if sbert_rows_df.empty:
             raise HTTPException(
@@ -149,7 +166,10 @@ def rank_for_external_job_id(
             meta = meta_from_candidate(cand_db, cand_ext)
 
         if not cand_text:
-            cands_df = ml_ranking.get_cands_df()
+            try:
+                cands_df = ml_ranking.get_cands_df()
+            except FileNotFoundError:
+                continue
             cr = cands_df[cands_df["candidate_id"].astype(str) == cand_ext]
             if cr.empty:
                 continue

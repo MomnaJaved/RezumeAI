@@ -4,15 +4,15 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy.orm import Session
 
 from api.database import get_db
 from api.dependencies import get_current_user_optional
 from api.errors import RezumeAPIError
 from api.models import Candidate, User
-from api.schemas import CandidateRead, ResumeUploadResponse
-from api.services.resume_ingest import ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, parse_upload
+from api.schemas import CandidateRead, OcrScanSavePayload, ResumeUploadResponse
+from api.services.resume_ingest import ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, parse_upload, parse_upload_from_ocr_preview
 from api.services.workspace_scope import ensure_workspace_for_recruiter
 from api.slow_limiter import limiter
 
@@ -36,6 +36,10 @@ _ALLOWED_CT = {
 def upload_resume(
     request: Request,
     file: UploadFile = File(...),
+    scan_save_json: Optional[str] = Form(
+        None,
+        description="If set, JSON of OcrScanSavePayload matching this file's external_id — skips full re-parse/OCR.",
+    ),
     db: Session = Depends(get_db),
     user: Optional[User] = Depends(get_current_user_optional),
 ):
@@ -82,7 +86,14 @@ def upload_resume(
         )
 
     try:
-        parsed = parse_upload(file.filename, content)
+        if scan_save_json and scan_save_json.strip():
+            try:
+                payload = OcrScanSavePayload.model_validate_json(scan_save_json)
+            except Exception as e:
+                raise RezumeAPIError("INVALID_SCAN_SAVE", f"Invalid scan_save_json: {e}", 422) from e
+            parsed = parse_upload_from_ocr_preview(file.filename, content, payload)
+        else:
+            parsed = parse_upload(file.filename, content)
     except ValueError as e:
         raise RezumeAPIError("PARSE_FAILED", str(e), 422) from e
     except Exception as e:

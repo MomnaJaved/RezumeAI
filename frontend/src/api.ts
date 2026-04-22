@@ -1,6 +1,31 @@
 import { getStoredToken } from "./auth";
 
-const base = import.meta.env.VITE_API_BASE ?? "";
+/**
+ * API origin for fetch(). Empty string = same origin (Vite dev proxy → backend).
+ *
+ * If VITE_API_BASE is http://localhost:8000 (or 127.0.0.1) but the UI is opened from
+ * another host (e.g. phone via http://192.168.x.x:5173), requests would hit the wrong
+ * machine's loopback. Clear base so /health and /api/* go through the dev server proxy.
+ */
+function resolveApiBase(): string {
+  const raw = String(import.meta.env.VITE_API_BASE ?? "").trim().replace(/\/+$/, "");
+  if (!raw) return "";
+  if (typeof window === "undefined") return raw;
+  try {
+    const u = new URL(raw);
+    const pageHost = window.location.hostname;
+    const apiIsLoopback = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+    const pageIsLoopback = pageHost === "localhost" || pageHost === "127.0.0.1";
+    if (apiIsLoopback && !pageIsLoopback && pageHost) {
+      return "";
+    }
+  } catch {
+    return raw;
+  }
+  return raw;
+}
+
+const base = resolveApiBase();
 
 async function authedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
   const token = getStoredToken();
@@ -728,8 +753,26 @@ export async function classifyRole(text: string): Promise<ClassifyResponse> {
 }
 
 export async function healthCheck(): Promise<{ status: string }> {
-  const res = await authedFetch(`${base}/health`);
-  return parseJson(res);
+  const primary = `${base}/health`;
+  try {
+    const res = await authedFetch(primary);
+    return parseJson(res);
+  } catch (first) {
+    // Dev + LAN: Vite proxy targets 127.0.0.1:8000 on the dev machine. If the proxy fails or the
+    // browser bypasses it, try the API on the same host as the UI (e.g. phone → laptop :8000).
+    if (!base && import.meta.env.DEV && typeof window !== "undefined") {
+      const h = window.location.hostname;
+      if (h && h !== "localhost" && h !== "127.0.0.1") {
+        try {
+          const res = await authedFetch(`http://${h}:8000/health`);
+          return parseJson(res);
+        } catch {
+          /* throw original */
+        }
+      }
+    }
+    throw first;
+  }
 }
 
 export type ActivityNotification = {
@@ -1060,20 +1103,6 @@ export async function fetchCandidateFileBlob(externalId: string): Promise<{ blob
   return { blob, contentType };
 }
 
-export async function uploadResume(file: File): Promise<{
-  status: string;
-  text_len: number;
-  candidate: CandidateDto;
-}> {
-  const fd = new FormData();
-  fd.append("file", file);
-  const res = await authedFetch(`${base}/api/v1/uploads/resume`, {
-    method: "POST",
-    body: fd,
-  });
-  return parseJson(res);
-}
-
 // --- OCR: parse image without saving to DB ---
 export type OcrParsedFields = {
   full_name: string;
@@ -1092,12 +1121,40 @@ export type OcrParseResponse = {
   parsed_fields: OcrParsedFields;
   filename: string;
   text_len: number;
+  external_id: string;
+};
+
+/** When provided with uploadResume, backend skips re-OCR if file bytes match external_id. */
+export type OcrScanSavePayload = {
+  external_id: string;
+  raw_text: string;
+  parsed_fields: OcrParsedFields;
 };
 
 export async function ocrParseResume(file: File): Promise<OcrParseResponse> {
   const fd = new FormData();
   fd.append("file", file);
   const res = await authedFetch(`${base}/api/v1/ocr/parse-resume`, {
+    method: "POST",
+    body: fd,
+  });
+  return parseJson(res);
+}
+
+export async function uploadResume(
+  file: File,
+  scanSave?: OcrScanSavePayload,
+): Promise<{
+  status: string;
+  text_len: number;
+  candidate: CandidateDto;
+}> {
+  const fd = new FormData();
+  fd.append("file", file);
+  if (scanSave) {
+    fd.append("scan_save_json", JSON.stringify(scanSave));
+  }
+  const res = await authedFetch(`${base}/api/v1/uploads/resume`, {
     method: "POST",
     body: fd,
   });

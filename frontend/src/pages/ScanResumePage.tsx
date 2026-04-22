@@ -17,7 +17,8 @@ function isMobileDevice(): boolean {
 
 type Step = "capture" | "webcam" | "processing" | "edit" | "saving" | "done";
 
-async function compressImage(file: File, maxDim = 1800, quality = 0.88): Promise<File> {
+/** Keep max dimension aligned with server OCR downscale (REZUME_OCR_MAX_SIDE) for faster upload + Tesseract. */
+async function compressImage(file: File, maxDim = 1600, quality = 0.88): Promise<File> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
@@ -366,7 +367,7 @@ export default function ScanResumePage() {
           {previewUrl && <img src={previewUrl} alt="Captured resume" className="scan-preview-img" />}
           <div className="scan-spinner-wrap">
             <div className="scan-spinner" />
-            <p>Extracting text with OCR…<br /><span className="muted">This may take 10–30 seconds</span></p>
+            <p>Extracting text with OCR…<br /><span className="muted">Usually a few seconds; complex photos may take longer</span></p>
           </div>
         </div>
       )}

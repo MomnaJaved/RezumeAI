@@ -61,6 +61,7 @@ def ensure_extra_columns(engine: Engine) -> None:
 
     if existing_rank:
         for col, ddl in [
+            ("workspace_id", "UUID" if dialect == "postgresql" else "VARCHAR(36)"),
             ("candidate_name", "VARCHAR(512) NOT NULL DEFAULT ''"),
             ("candidate_title", "VARCHAR(512) NOT NULL DEFAULT ''"),
             ("candidate_role", "VARCHAR(128) NOT NULL DEFAULT ''"),
@@ -83,13 +84,6 @@ def ensure_extra_columns(engine: Engine) -> None:
                 )
             else:
                 alters.append("ALTER TABLE job_candidate_rankings ADD COLUMN explanation_json TEXT")
-
-        # Recruiter workspace (= recruiter_id) for score isolation across tenants.
-        if "workspace_id" not in existing_rank:
-            if dialect == "postgresql":
-                alters.append("ALTER TABLE job_candidate_rankings ADD COLUMN IF NOT EXISTS workspace_id UUID")
-            else:
-                alters.append("ALTER TABLE job_candidate_rankings ADD COLUMN workspace_id VARCHAR(36)")
 
     # SBERT cache: add workspace_id for per-recruiter score isolation.
     if existing_sbert and "workspace_id" not in existing_sbert:

@@ -188,6 +188,31 @@ def normalize_text_for_email_scan(text: str) -> str:
             break
         t = t2
     t = _repair_ocr_missing_at_before_common_hosts(t)
+    t = _repair_local_stuck_to_public_domain(t)
+    return t
+
+
+def _repair_local_stuck_to_public_domain(t: str) -> str:
+    """
+    OCR often drops '@' so 'shahidmaheen20' and 'gmail.com' become one token or 'shahidmaheen20gmail.com'.
+    Insert @ only when the local part ends with digits (common personal addresses) to limit false positives.
+    """
+    if not t:
+        return t
+    doms = (
+        (r"gmail\.com", "gmail.com"),
+        (r"yahoo\.com", "yahoo.com"),
+        (r"hotmail\.com", "hotmail.com"),
+        (r"outlook\.com", "outlook.com"),
+        (r"protonmail\.com", "protonmail.com"),
+        (r"icloud\.com", "icloud.com"),
+    )
+    for dom_re, dom_lit in doms:
+        t = re.sub(
+            rf"(?i)(?<![@\w.])([a-z0-9][a-z0-9._%+-]{{3,40}}\d)({dom_re})\b",
+            rf"\1@{dom_lit}",
+            t,
+        )
     return t
 
 
@@ -243,7 +268,8 @@ def extract_primary_email(text: str, *, max_len: int = 320) -> str:
             return loose[:max_len]
         return ""
 
-    head = text[:6000]
+    # Merged multi-pass OCR can be long; keep more of the header/contact area.
+    head = text[:12000]
     got = pick(normalize_text_for_email_scan(head))
     if got:
         return got
