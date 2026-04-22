@@ -20,11 +20,13 @@ from api.models import Candidate, Client, Job, JobApplicant, JobCandidateRanking
 from api.schemas import CandidateCreate, CandidateRead, CandidateReadWithScores, CandidateUpdate
 from api.services.activity_log import log_activity
 from api.services.candidate_best_job_cache import workspace_best_scores
-from api.services.candidate_competition_score import compute_competition_payloads_for_list
+from api.services.candidate_competition_score import (
+    compute_competition_payload_for_one_in_cohort,
+    compute_competition_payloads_for_list,
+)
 from api.services.candidate_serialization import candidate_read_dict, resolve_candidate_headline
 from api.services.applicant_status_effective import STORAGE_APPLICANT_STATUSES, effective_applicant_status, sync_candidate_status_from_applicants
 from api.services.workspace_scope import candidate_query_filtered_for_workspace, ensure_workspace_for_recruiter
-from src.parsing.name_extractor import UNKNOWN_CANDIDATE
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
@@ -340,15 +342,10 @@ def get_candidate_with_scores(
         if w is not None:
             cohort_q = candidate_query_filtered_for_workspace(cohort_q, w)
     cohort = cohort_q.order_by(Candidate.created_at.desc()).all()
-    scores_by_id = compute_competition_payloads_for_list(db, cohort)
+    # One candidate at a time: do not re-run job-breadth for the entire workspace (can be
+    # thousands of cross-encoder batches and will hang the dev proxy with "socket hang up").
     base = candidate_read_dict(c)
-    extra = scores_by_id.get(c.id)
-    if not extra:
-        extra = {
-            "profile_percentile_score": 50.0,
-            "avg_job_match_score": 0.0,
-            "competition_score": 50.0,
-        }
+    extra = compute_competition_payload_for_one_in_cohort(db, c, cohort)
     ws = workspace_best_scores(db, w, [c.id]).get(c.id) if w is not None else None
     if ws is not None:
         # Recruiter has a workspace-specific score — use it.
@@ -816,7 +813,7 @@ def create_candidate(
     db.add(cand)
     db.commit()
     db.refresh(cand)
-    name = (cand.full_name or "").strip() or UNKNOWN_CANDIDATE
+    name = (cand.full_name or "").strip() or "A candidate"
     log_activity(db, kind="candidate_added", message=f"{name} added to the pool", href="/candidates", workspace_id=ws_id, user_id=uid)
     return cand
 
@@ -832,7 +829,7 @@ def delete_candidate_by_external_id(
     if not c:
         raise HTTPException(status_code=404, detail="Candidate not found")
 
-    name = (c.full_name or "").strip() or UNKNOWN_CANDIDATE
+    name = (c.full_name or "").strip() or "A candidate"
     caller_role = (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() if user else "recruiter"
 
     # --- Candidate self-deletion ---

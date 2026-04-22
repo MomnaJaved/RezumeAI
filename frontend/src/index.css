@@ -405,8 +405,9 @@ label {
 /* --- App Dashboard (post-login) --- */
 .dash {
   display: grid;
-  grid-template-columns: 250px 1fr;
-  width: 100vw;
+  grid-template-columns: 250px minmax(0, 1fr);
+  width: 100%;
+  max-width: 100%;
   min-height: 100vh;
   color: rgba(255, 255, 255, 0.92);
   background:
@@ -519,6 +520,8 @@ label {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
   align-self: stretch;
 }
 
@@ -526,6 +529,8 @@ label {
   flex-shrink: 0;
   position: relative;
   z-index: 200;
+  min-width: 0;
+  max-width: 100%;
   display: grid;
   grid-template-columns: minmax(0, auto) minmax(0, 1fr) minmax(0, auto);
   align-items: center;
@@ -743,6 +748,8 @@ label {
 
 .dash-toolbar {
   flex-shrink: 0;
+  min-width: 0;
+  max-width: 100%;
   padding: 0.65rem 1.1rem;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(2, 6, 23, 0.12);
@@ -943,6 +950,28 @@ label {
   background: rgba(15, 23, 42, 0.75);
 }
 
+.dash-content .dash-upload-page .small-btn.cand-primary-btn {
+  padding: 0.45rem 0.95rem;
+  font-size: 0.88rem;
+  border-radius: 10px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.12);
+  color: rgba(125, 211, 252, 0.98);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dash-content .dash-upload-page .small-btn.cand-primary-btn:hover:not(:disabled) {
+  border-color: rgba(56, 189, 248, 0.55);
+  background: rgba(56, 189, 248, 0.18);
+  color: #fff;
+}
+
+.dash-content .dash-upload-page .small-btn.cand-primary-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .dash-content .dash-upload-page .upload-input {
   margin-top: 0.85rem;
   padding: 0.45rem;
@@ -998,6 +1027,8 @@ label {
   flex-direction: column;
   gap: 0.4rem;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   padding: 0.45rem 0.65rem;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -1012,6 +1043,8 @@ label {
   align-items: center;
   gap: 0.35rem 0.5rem;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .cand-toolbar-label {
@@ -1388,7 +1421,9 @@ label {
 
 .cand-table-wrap {
   border-radius: 18px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(2, 6, 23, 0.18);
   backdrop-filter: blur(10px);
@@ -2351,6 +2386,8 @@ object.cand-preview-frame {
 .dash-content {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
   overflow: auto;
   padding: 1.1rem 1.2rem 1.5rem;
 }
@@ -2913,7 +2950,9 @@ button.dash-kv-row--click:focus-visible {
 
 .jobs-table-wrap {
   border-radius: 18px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(2, 6, 23, 0.2);
   min-height: 0;
@@ -3139,6 +3178,17 @@ button.dash-kv-row--click:focus-visible {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.85rem;
+  align-items: stretch;
+  min-width: 0;
+}
+
+/* Matching: job summary column + candidates table — minmax keeps fr track from overflowing small viewports */
+.job-overview-grid--matching {
+  grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+}
+
+.job-overview-grid--matching > .job-card {
+  min-width: 0;
 }
 
 .job-card {
@@ -3270,6 +3320,90 @@ button.dash-kv-row--click:focus-visible {
   text-align: center !important;
   padding: 0.55rem 0.5rem !important;
   background: rgba(2, 6, 23, 0.2);
+}
+
+.match-bottom-split {
+  display: flex;
+  gap: 0.85rem;
+  align-items: flex-start;
+}
+
+/* Compare bar: avoid checkbox labels overlapping on narrow widths */
+.match-compare-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.65rem;
+  margin-bottom: 12px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.match-compare-bar__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.65rem;
+  min-width: 0;
+}
+
+.match-compare-bar__fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem 0.75rem;
+  width: 100%;
+}
+
+.match-compare-bar__fields label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  font-size: 0.82rem;
+  color: rgba(203, 213, 225, 0.85);
+  cursor: pointer;
+}
+
+.match-compare-bar__fields label span {
+  min-width: 0;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.match-compare-bar__fields input[type="checkbox"] {
+  flex-shrink: 0;
+  width: 1.05rem;
+  height: 1.05rem;
+  margin: 0;
+  accent-color: rgba(56, 189, 248, 0.9);
+  cursor: pointer;
+}
+
+.match-compare-bar__action {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+@media (min-width: 720px) {
+  .match-compare-bar {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .match-compare-bar__fields {
+    display: flex;
+    flex-wrap: wrap;
+    width: auto;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .match-compare-bar__fields label {
+    flex: 0 0 auto;
+  }
 }
 
 .job-table th,
@@ -5168,7 +5302,7 @@ button.dash-kv-row--click:focus-visible {
 
 @media (max-width: 980px) {
   .dash {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .dash-sidebar {
     display: none;
@@ -5304,10 +5438,16 @@ button.dash-kv-row--click:focus-visible {
 .landing-logo {
   width: 14px;
   height: 14px;
-  border-radius: 4px;
-  background: linear-gradient(135deg, #60a5fa 0%, #22d3ee 100%);
-  box-shadow: 0 0 18px rgba(34, 211, 238, 0.35);
+  flex-shrink: 0;
+  border-radius: 3px;
   display: inline-block;
+  vertical-align: middle;
+  background-color: transparent;
+  background-image: url("/rezume-mark.png");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+  box-shadow: 0 0 14px rgba(34, 211, 238, 0.22);
 }
 
 .landing-name {
@@ -6088,6 +6228,14 @@ button.landing-auth-role-action-btn.primary:hover {
   text-align: left;
 }
 
+.landing-feature-card-title {
+  font-size: 1.08rem;
+  font-weight: 600;
+  letter-spacing: 0.015em;
+  line-height: 1.35;
+  color: #f0f4ff;
+}
+
 .landing-features-on-dark .landing-how-card p {
   text-align: left;
 }
@@ -6538,11 +6686,104 @@ button.landing-auth-role-action-btn.primary:hover {
 }
 
 @media (max-width: 900px) {
+  .reports-page {
+    padding: 1rem 1rem 2rem;
+  }
+
   .reports-kpi-grid {
     grid-template-columns: repeat(2, 1fr);
   }
+
   .reports-mid-grid {
     grid-template-columns: 1fr;
+  }
+
+  .match-bottom-split {
+    flex-direction: column;
+  }
+
+  .cand-search {
+    min-width: 0;
+  }
+
+  .job-table-wrap--scroll .job-table {
+    min-width: 560px;
+  }
+
+  .cand-pager {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .dash-content {
+    padding: 0.85rem 0.75rem 1.25rem;
+  }
+
+  .settings-tabs {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    flex-wrap: nowrap;
+    padding: 0 0.35rem;
+    gap: 0;
+  }
+
+  .settings-tab {
+    flex-shrink: 0;
+    padding: 0.75rem 0.65rem;
+    font-size: 0.82rem;
+  }
+
+  .settings-tab-sep {
+    margin-left: 0.45rem;
+  }
+
+  .st-content {
+    padding: 1rem 0.85rem 1rem;
+  }
+
+  .st-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 0.4rem;
+    padding: 0.65rem 0.85rem;
+  }
+
+  .st-row-control {
+    justify-content: stretch;
+  }
+
+  .st-row-control .st-input,
+  .st-row-control .st-select {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+  }
+
+  .st-profile-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.85rem;
+    padding-right: 0;
+  }
+
+  .st-change-name-btn {
+    position: static;
+    align-self: flex-start;
+  }
+
+  .st-notif-hint {
+    text-align: left;
+  }
+
+  .st-save-row {
+    justify-content: stretch;
+  }
+
+  .st-save-btn {
+    width: 100%;
+    box-sizing: border-box;
   }
 }
 
@@ -6550,7 +6791,8 @@ button.landing-auth-role-action-btn.primary:hover {
 
 .settings-page {
   width: 100%;
-  max-width: none;
+  max-width: 100%;
+  min-width: 0;
   margin: 0;
   padding: 1.25rem clamp(0.75rem, 2vw, 1.5rem) 2.5rem;
   box-sizing: border-box;
@@ -6571,6 +6813,8 @@ button.landing-auth-role-action-btn.primary:hover {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 16px;
   overflow: hidden;
+  max-width: 100%;
+  min-width: 0;
   backdrop-filter: blur(8px);
 }
 
@@ -6716,6 +6960,8 @@ button.landing-auth-role-action-btn.primary:hover {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
   overflow: hidden;
+  max-width: 100%;
+  min-width: 0;
   margin-bottom: 0.9rem;
 }
 
@@ -6787,6 +7033,18 @@ button.landing-auth-role-action-btn.primary:hover {
 /* Chrome / Edge autofill paints bright backgrounds on password fields — match dashboard theme. */
 .settings-page .st-input {
   color-scheme: dark;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.settings-page .st-select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.settings-page .st-name-input {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .settings-page .st-input:-webkit-autofill,
@@ -7107,6 +7365,35 @@ button.landing-auth-role-action-btn.primary:hover {
   margin: 0 auto;
   padding: 0.5rem 0.85rem 2.5rem;
   color: rgba(226, 232, 240, 0.92);
+}
+
+.dash-content .scan-page.dash-upload-page .small-btn {
+  padding: 0.45rem 0.9rem;
+  font-size: 0.88rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(15, 23, 42, 0.55);
+  color: rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.dash-content .scan-page.dash-upload-page .small-btn:hover:not(:disabled) {
+  background: rgba(15, 23, 42, 0.75);
+  border-color: rgba(56, 189, 248, 0.28);
+}
+
+.dash-content .scan-page.dash-upload-page .small-btn.cand-primary-btn {
+  border-color: rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.12);
+  color: rgba(125, 211, 252, 0.98);
+  font-weight: 600;
+}
+
+.dash-content .scan-page.dash-upload-page .small-btn.cand-primary-btn:hover:not(:disabled) {
+  border-color: rgba(56, 189, 248, 0.55);
+  background: rgba(56, 189, 248, 0.18);
+  color: #fff;
 }
 
 .dash-content .scan-page-title {

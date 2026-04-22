@@ -17,7 +17,6 @@ from sqlalchemy.orm import Session
 
 from api.models import ActivityEvent, Candidate, HumanRankingFeedback, Job, JobCandidateRanking
 from api.services.candidate_display import display_full_name_from_db
-from src.parsing.name_extractor import UNKNOWN_CANDIDATE
 
 _log = logging.getLogger("rezume.api")
 
@@ -35,7 +34,7 @@ def _iso(dt: datetime | None) -> str:
 
 def _feedback_message(action: str, cand_name: str, job_label: str) -> str:
     a = (action or "").strip().lower()
-    name = cand_name or UNKNOWN_CANDIDATE
+    name = (cand_name or "").strip() or "A candidate"
     job = job_label or "job"
     if a in ("shortlisted", "shortlist"):
         return f"{name} shortlisted for {job}"

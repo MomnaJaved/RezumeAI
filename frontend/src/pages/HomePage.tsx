@@ -241,16 +241,24 @@ export default function HomePage() {
             <h2 className="landing-section-title landing-section-title-fade">Features</h2>
             <div className="landing-how-grid">
               <div className="landing-how-card">
-                <h3>Add résumés</h3>
-                <p>Upload PDF/DOCX/TXT or bring in extracted text in bulk. PII is stripped before storage.</p>
+                <h3 className="landing-feature-card-title">Printed résumé capture (OCR)</h3>
+                <p>
+                  Photograph hard-copy CVs; new candidates are added to your pool automatically, with no manual re-entry.
+                </p>
               </div>
               <div className="landing-how-card">
-                <h3>Skills + experience signals</h3>
-                <p>Extracts key skills, estimates work experience, and stores structured fields for ranking.</p>
+                <h3 className="landing-feature-card-title">In-browser import (Chrome)</h3>
+                <p>
+                  Import profile or résumé text from the web, then evaluate fit to your open requisitions in the same
+                  workflow.
+                </p>
               </div>
               <div className="landing-how-card">
-                <h3>Job-to-candidate ranking</h3>
-                <p>Shortlist with embeddings then rerank with a cross-encoder for a hiring-style score.</p>
+                <h3 className="landing-feature-card-title">Full-pool job matching &amp; shortlists</h3>
+                <p>
+                  Run fit scoring across your entire candidate database, review ranked results, and save shortlists your
+                  team can use as a single source of truth.
+                </p>
               </div>
             </div>
           </div>

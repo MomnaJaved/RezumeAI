@@ -8,9 +8,6 @@ import pandas as pd
 
 from api.models import Candidate
 from api.services.candidate_title_db import resolved_display_title
-from src.parsing.name_extractor import UNKNOWN_CANDIDATE
-
-
 def _truncate(text: str, max_len: int = 400) -> str:
     s = (text or "").strip()
     if len(s) <= max_len:
@@ -25,10 +22,10 @@ def name_from_filename(filename: str) -> str:
 
 
 def display_full_name_from_db(stored: Optional[str]) -> str:
-    """API/UI label: never surface the legacy placeholder 'Candidate' as a person's name."""
+    """API label for ranking/meta; empty when no name (no legacy 'Unknown Candidate' in DB)."""
     s = (stored or "").strip()
-    if not s or s.lower() == "candidate":
-        return UNKNOWN_CANDIDATE
+    if not s or s.lower() in ("candidate", "unknown candidate", "unknown"):
+        return ""
     return s
 
 

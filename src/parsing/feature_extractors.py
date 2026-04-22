@@ -22,7 +22,9 @@ RE_EDU_LINE = re.compile(
 # Lines that leaked in from other resume sections (whole-line filter).
 _RE_EDU_LEAK = re.compile(
     r"\b(work experience|employment history|professional experience|career history|"
-    r"^skills\s*:|\bskills\s+and\b|\btechnical skills\b)\b",
+    r"skills\s*:|\bskills\s+and\b|\btechnical skills\b|"
+    r"\bprojects?\b|\bportfolio\b|\bachievements?\b|\breferences?\s*(?:available)?|\blanguages?\s*(?:known)?|"
+    r"\binterests?\b|\bhobbies\b|\bawards?\b|\bhonou?rs?\b|\bpublications?\b)\b",
     re.IGNORECASE,
 )
 _RE_CERT_LEAK = re.compile(
@@ -183,7 +185,7 @@ def _refine_education_lines(lines: list[str]) -> list[str]:
             part = _truncate_education_at_skills_tail(part)
             if not part.strip():
                 continue
-            if _RE_EDU_LEAK.search(part) and len(part) > 80:
+            if _RE_EDU_LEAK.search(part) and len(part) > 35:
                 continue
             if part in seen:
                 continue
@@ -306,7 +308,23 @@ def extract_education(text: str) -> Dict:
     edu_lines = [l for l in lines if RE_EDU_LINE.search(l)]
     merged: list[str] = []
     seen: set[str] = set()
-    for l in section_lines + edu_lines:
+    section_norm = {re.sub(r"\s+", " ", x).strip().lower() for x in section_lines}
+
+    if section_lines:
+        body_iter: list[str] = list(section_lines)
+        for l in edu_lines:
+            s = re.sub(r"\s+", " ", l).strip()
+            if not s or s.lower() in section_norm or len(s) > 260:
+                continue
+            if _RE_EDU_LEAK.search(s):
+                continue
+            if not (_line_has_degree_token(s) or (_line_has_institution(s) and len(s) < 220)):
+                continue
+            body_iter.append(l)
+    else:
+        body_iter = list(section_lines) + list(edu_lines)
+
+    for l in body_iter:
         s = re.sub(r"\s+", " ", l).strip()
         s = _truncate_education_at_skills_tail(s)
         if not s or s in seen or len(s) > 480:

@@ -77,7 +77,8 @@ def ocr_parse_resume(
         )
 
     try:
-        parsed = parse_upload(file.filename, content, skip_heavy_ml=True)
+        # Same role classifier + title path as PDF/DOC uploads (skip_heavy_ml=False).
+        parsed = parse_upload(file.filename, content, skip_heavy_ml=False)
     except ValueError as e:
         raise RezumeAPIError("PARSE_FAILED", str(e), 422) from e
     except Exception as e:
@@ -96,10 +97,13 @@ def ocr_parse_resume(
         certifications=parsed.get("certifications") or "",
     )
 
+    # Return line-preserving PII-stripped text so the scan save round-trip still has
+    # newlines; ``raw_text`` alone is whitespace-collapsed and breaks name-from-header.
+    line_preserved = (parsed.get("raw_text_line_preserved") or "").strip() or (parsed.get("raw_text") or "")
     return OcrParseResponse(
-        raw_text=parsed.get("raw_text") or "",
+        raw_text=line_preserved,
         parsed_fields=fields,
         filename=parsed.get("filename") or file.filename,
-        text_len=parsed.get("text_len", 0),
+        text_len=len(line_preserved),
         external_id=parsed.get("external_id") or "",
     )

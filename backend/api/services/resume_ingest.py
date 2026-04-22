@@ -13,7 +13,7 @@ from src.parsing.skill_mining import extract_skill_candidates
 from src.parsing.feature_extractors import extract_certifications, extract_education, estimate_years_experience
 from src.parsing.ocr_normalize import normalize_resume_text_for_ocr
 from src.parsing.text_extractors import extract_text_any
-from src.parsing.name_extractor import resolve_candidate_full_name
+from src.parsing.name_extractor import UNKNOWN_CANDIDATE, resolve_candidate_full_name
 from src.parsing.role_labels import ROLE_LABELS_MULTI, title_to_role_label
 from src.parsing.candidate_title_resolve import resolve_title_from_resume_text
 from src.parsing.role_fine import infer_role_fine
@@ -24,6 +24,54 @@ ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".tif", 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 
 MIN_TEXT_CHARS = 80
+
+
+def _resolve_full_name_reextracted_from_file(filename: str, content: bytes) -> str:
+    """
+    Run the same text extraction + name resolution as ``parse_upload`` (multi-line
+    Tesseract), ignoring ``payload.raw_text`` when it was truncated or
+    one-line-wrapped. Used only when the scan form did not provide a real name
+    and resolution from the client preview is still empty.
+    """
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        return UNKNOWN_CANDIDATE
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+    try:
+        try:
+            raw = extract_text_any(tmp_path) or ""
+        except Exception:
+            return UNKNOWN_CANDIDATE
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    raw = (raw or "").strip()
+    if len(raw) < MIN_TEXT_CHARS:
+        return UNKNOWN_CANDIDATE
+    raw = normalize_resume_text_for_ocr(raw)
+    raw_clean2 = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
+    em2 = extract_primary_email(raw_clean2)
+    n, _ = resolve_candidate_full_name(raw_clean2, em2)
+    return n
+
+
+def _is_placeholder_full_name(name: str) -> bool:
+    """
+    If the scan form still has the default from a failed name parse, re-run
+    ``resolve_candidate_full_name`` on save (with line-preserving raw_text) instead of
+    persisting a placeholder string.
+    """
+    t = (name or "").strip().casefold()
+    if not t:
+        return True
+    # Legacy / mistaken UI values — treat as missing so we re-resolve
+    if t in ("unknown candidate", "unknown", "candidate"):
+        return True
+    return False
 
 
 def external_id_from_content(content: bytes) -> str:
@@ -181,6 +229,10 @@ def parse_upload(filename: str, content: bytes, *, skip_heavy_ml: bool = False) 
         "external_id": ext_id,
         "contact_email": contact_email,
         "raw_text": stripped,
+        # PII-stripped but keeps newlines (``strip_pii`` collapses to one line and breaks
+        # header name heuristics on the scan round-trip). Used by ``/ocr/parse-resume`` only;
+        # DB `Candidate.raw_text` still uses ``stripped`` for consistent storage.
+        "raw_text_line_preserved": pii_safe_structural,
         "skills": skills,
         "title": title,
         "role_label": role_label,
@@ -199,8 +251,10 @@ def parse_upload(filename: str, content: bytes, *, skip_heavy_ml: bool = False) 
 
 def parse_upload_from_ocr_preview(filename: str, content: bytes, payload: OcrScanSavePayload) -> dict:
     """
-    Build the same dict shape as parse_upload using OCR preview data + the same file bytes.
-    Skips extract_text_any, ML role classification, skill mining, and heavy title resolution.
+    Build the same dict shape as parse_upload using OCR preview ``raw_text`` + the same file bytes.
+    Skips re-OCR / ``extract_text_any``. Re-runs the same ML title/role/skill heuristics as
+    ``parse_upload`` on the saved text so DB rows match PDF/DOC quality when the recruiter
+    saves from the scan flow (form fields still override where provided).
     """
     if len(content) > MAX_UPLOAD_BYTES:
         raise ValueError(f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB).")
@@ -226,25 +280,66 @@ def parse_upload_from_ocr_preview(filename: str, content: bytes, payload: OcrSca
         )
 
     f = payload.parsed_fields
-    contact_email = (f.contact_email or "").strip()
+    contact_email = (f.contact_email or "").strip() or (extract_primary_email(raw_clean) or "")
     stripped = strip_pii(raw_clean)
-    skills = (f.skills or "").strip()
-    title = (f.title or "").strip() or "Professional"
+    pii_safe_structural = strip_pii_keep_newlines(raw_clean)
 
-    role_label = (f.role_label or "").strip().lower()
-    if role_label not in ROLE_LABELS_MULTI:
-        role_label = (title_to_role_label(title, multi_department=True) or "").strip().lower()
-    if role_label not in ROLE_LABELS_MULTI:
-        role_label = "other"
+    mined_skills = ", ".join(extract_skill_candidates(stripped)[:80])
+    skills = (f.skills or "").strip() or mined_skills
+
+    role_in = _build_role_input(raw_clean, (f.title or "").strip(), skills)
+    role_out = classify_role(role_in, strip_pii_input=True, return_probs=False)
+    role_guess = str(role_out.get("label", "") or "").strip().lower()
+    if not role_guess or role_guess not in ROLE_LABELS_MULTI:
+        role_guess = "other"
+
+    years_est = estimate_years_experience(raw_clean)
+    if f.years_experience is not None:
+        years_val = round(float(f.years_experience), 1)
+    else:
+        years_val = round(float(years_est), 1)
+
+    title_hint = (f.title or "").strip()
+    if title_hint:
+        title = title_hint
+    else:
+        title = (
+            resolve_title_from_resume_text(
+                raw_clean,
+                skills,
+                years_val if years_val > 0 else None,
+                role_label_hint=role_guess,
+            )
+            or ""
+        ).strip() or "Professional"
+
+    role_label_in = (f.role_label or "").strip().lower()
+    if role_label_in in ROLE_LABELS_MULTI:
+        role_label = role_label_in
+    else:
+        role_label = ""
+        if (title or "").strip().lower() != "fresher" and (title or "").strip():
+            role_label = (title_to_role_label(title, multi_department=True) or "").strip().lower()
+        if not role_label or role_label not in ROLE_LABELS_MULTI:
+            role_label = role_guess if role_guess in ROLE_LABELS_MULTI else "other"
+        if role_label not in ROLE_LABELS_MULTI:
+            role_label = "other"
 
     role_fine = infer_role_fine(title, skills, raw_hint=raw_clean[:5000])
-    full_name = (f.full_name or "").strip()
 
-    years = f.years_experience
-    if years is None:
-        years_val = 0.0
-    else:
-        years_val = round(float(years), 1)
+    full_name = (f.full_name or "").strip()
+    if _is_placeholder_full_name(full_name):
+        full_name, _src = resolve_candidate_full_name(raw_clean, contact_email)
+        if not (full_name or "").strip():
+            n2 = _resolve_full_name_reextracted_from_file(filename, content)
+            if n2 and n2.strip():
+                full_name = n2
+
+    edu = extract_education(pii_safe_structural)
+    certs = extract_certifications(pii_safe_structural)
+    highest_degree = (f.highest_degree or "").strip() or (edu.get("highest_degree") or "")
+    education_lines = (f.education_lines or "").strip() or (edu.get("education_lines") or "")
+    certifications = (f.certifications or "").strip() or (certs or "")
 
     store_dir = _storage_root() / "uploads" / "raw"
     store_dir.mkdir(parents=True, exist_ok=True)
@@ -267,7 +362,7 @@ def parse_upload_from_ocr_preview(filename: str, content: bytes, payload: OcrSca
         "storage_path": str(store_path) if store_path else "",
         "text_len": len(stripped),
         "years_experience": years_val,
-        "highest_degree": (f.highest_degree or "").strip(),
-        "education_lines": (f.education_lines or "").strip(),
-        "certifications": (f.certifications or "").strip(),
+        "highest_degree": highest_degree,
+        "education_lines": education_lines,
+        "certifications": certifications,
     }

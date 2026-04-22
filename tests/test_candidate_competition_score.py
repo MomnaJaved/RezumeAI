@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from api.services.candidate_competition_score import (  # type: ignore[reportMissingImports]
+    compute_competition_payload_for_one_in_cohort,
     compute_competition_payloads,
     compute_profile_scores_0_100,
 )
@@ -160,6 +161,32 @@ def test_competition_combines_profile_and_job_average(monkeypatch):
     assert out[cid]["profile_percentile_score"] == 50.0
     assert out[cid]["avg_job_match_score"] == 60.0
     assert out[cid]["competition_score"] == 55.0  # 0.5 * 50 + 0.5 * 60
+
+
+def test_competition_for_one_in_cohort_matches_batched_stubs(monkeypatch):
+    """Detail endpoint path should score one candidate, not the whole list N times per job."""
+    monkeypatch.setenv("REZUME_COMPETITION_SKIP_JOB_FIT", "0")
+    cohort = [
+        _c(1.0, "a", "BS", ""),
+        _c(3.0, "a", "BS", ""),
+    ]
+    calls: list[int] = []
+
+    def fake_avg_job_match(_db, cands):
+        calls.append(len(cands))
+        return [60.0] * len(cands), 1
+
+    monkeypatch.setattr(
+        "api.services.candidate_competition_score.compute_avg_job_match_0_100",
+        fake_avg_job_match,
+    )
+    out1 = compute_competition_payload_for_one_in_cohort(SimpleNamespace(), cohort[0], cohort)
+    assert calls == [1]
+    assert out1["avg_job_match_score"] == 60.0
+    out2 = compute_competition_payloads(SimpleNamespace(), cohort)
+    # Full batch path still one call with both candidates
+    assert calls == [1, 2]
+    assert out1["profile_percentile_score"] == out2[cohort[0].id]["profile_percentile_score"]
 
 
 def test_scoreboard_includes_competition_score(candidates_client, monkeypatch):

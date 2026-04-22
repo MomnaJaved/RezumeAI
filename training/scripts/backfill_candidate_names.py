@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Recompute Candidate.full_name for broken placeholders (empty / "Candidate" / "Unknown Candidate")
-using the same resolver as ingest: resume text, then email local-part, else "Unknown Candidate".
+Recompute Candidate.full_name for broken placeholders (empty / "Candidate" / legacy "Unknown …")
+using the same resolver as ingest: resume text, then email local-part, else empty string.
 
 Usage:
   PYTHONPATH=backend:. python training/scripts/backfill_candidate_names.py
