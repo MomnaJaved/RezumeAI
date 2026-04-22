@@ -33,6 +33,39 @@ _SENIOR_POS = (
     ("executive", 0.06),
 )
 
+_DS_ML_TITLE = re.compile(
+    r"\b(data\s+scientist|data\s+science|machine\s+learning|deep\s+learning|"
+    r"ml\s+engineer|nlp\s+engineer|computer\s+vision|ai\s+engineer|"
+    r"research\s+scientist|quantitative\s+researcher)\b",
+    re.I,
+)
+_UX_UI_TITLE = re.compile(
+    r"\b(ui/ux|ui\s*/\s*ux|ux\s+designer|ui\s+designer|ux\s+researcher|user\s+experience|user\s+interface|"
+    r"product\s+designer|interaction\s+designer|visual\s+designer|graphic\s+designer|"
+    r"design\s+system)\b",
+    re.I,
+)
+
+
+def _title_discipline_mismatch(job_title: str, cand_title: str) -> float:
+    """
+    Strong penalty when job and candidate titles are from incompatible families
+    (e.g. Data Scientist vs UI/UX Designer). Cross-encoder text can still look vaguely similar.
+    """
+    jt = (job_title or "").strip()
+    ct = (cand_title or "").strip()
+    if len(jt) < 4 or len(ct) < 4:
+        return 0.0
+    j_ds = bool(_DS_ML_TITLE.search(jt))
+    c_ds = bool(_DS_ML_TITLE.search(ct))
+    j_ux = bool(_UX_UI_TITLE.search(jt))
+    c_ux = bool(_UX_UI_TITLE.search(ct))
+    if j_ds and c_ux and not c_ds:
+        return -0.42
+    if j_ux and c_ds and not j_ds:
+        return -0.42
+    return 0.0
+
 
 def _title_role_relevance(job_title: str, cand_title: str) -> float:
     """
@@ -94,7 +127,12 @@ def adjusted_match_score(job: Any, cand: Any, *, raw_cross_encoder_score: float,
     critical_pen = 0.55 + 0.45 * critical_cov  # 0.55..1.0
 
     exp_fit = _clamp01(exp_score(getattr(cand, "years_experience", None), getattr(job, "min_experience", None)))
-    title_rel = _title_role_relevance(getattr(job, "title", "") or "", getattr(cand, "title", "") or "")
+    jt = getattr(job, "title", "") or ""
+    ct = getattr(cand, "title", "") or ""
+    title_rel = max(
+        -0.58,
+        min(0.15, _title_role_relevance(jt, ct) + _title_discipline_mismatch(jt, ct)),
+    )
     cert = _cert_boost(job, cand, critical_s)
     sem = _clamp01(float(sbert_similarity or 0.0))
 

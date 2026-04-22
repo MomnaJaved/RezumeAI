@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.parsing.feature_extractors import estimate_years_experience
+from src.parsing.feature_extractors import estimate_years_experience, extract_education
 
 
 def test_estimate_years_without_experience_header_role_lines():
@@ -55,6 +55,37 @@ def test_estimate_years_with_1_year_experience_colloquial():
     text = "Motivated candidate with 1 year experience in Java and Spring Boot."
     y = estimate_years_experience(text, current_year=2026)
     assert y >= 1.0
+
+
+def test_extract_education_strips_linkedin_fluff_and_mojibake():
+    """LinkedIn-style education blocks often include activities, skill footers, and first-person blurbs."""
+    bad_en = "\u2013".encode("utf-8").decode("cp1252")
+    text = f"""Education
+High Impact Skills Development Program in Artificial Intelligence, Data Science, (NUST), Islamabad
+BS-AI, Artificial Intelligence
+Jun 2023{bad_en}Nov 2023
+Grade: pass
+Activities and societies: Football
+Hello there, I underwent a 6-month AI and data science training program at NUST and now I am a BS student at SZABIST in Pakistan.
+Computer Vision, Data Visualization and +9 skills
+SZABIST University - Islamabad Campus — Bachelor's degree, AI
+Feb 2024{bad_en}Present
+Activities and societies: coding
+sports
+Artificial Intelligence (AI), Computer Vision and +9 skills
+"""
+    out = extract_education(text)
+    lines = (out.get("education_lines") or "").split(" | ")
+    blob = " ".join(lines).lower()
+    assert "activities and societies" not in blob
+    assert "hello there" not in blob
+    assert "underwent" not in blob
+    assert "+9 skills" not in blob
+    assert "grade: pass" not in blob
+    assert "football" not in blob and "sports" not in blob
+    assert " coding " not in f" {blob} "  # standalone activities line, not substring
+    assert "szabist" in blob or "nust" in blob or "bs-ai" in blob
+    assert len(lines) <= 6
 
 
 def test_estimate_years_narrative_operations_cv_not_vetoed_by_education_below():

@@ -22,6 +22,7 @@ from api.services.ranking_explain import build_ranking_explanation
 from api.services.ranking_insight_sync import clear_job_ranking_insight_cache, refresh_job_ranking_top_insight, shortlisted_candidate_ids
 from api.services.top_candidate_insight import build_top_candidate_insight_paragraph
 from api.services.ranking_run import rank_for_external_job_id
+from api.services.match_preview_pool import job_semantic_similarity_for_save
 from api.services.workspace_scope import candidate_query_filtered_for_workspace, ensure_workspace_for_recruiter
 from src.inference.service import classify_role, match_scores_batch
 
@@ -510,6 +511,197 @@ def match_one_candidate(
         "cross_encoder_score_raw": float(adj["raw_cross_encoder_score"]),
         "critical_skill_coverage": float(adj["critical_skill_coverage"]),
         "total_skill_coverage": float(adj["total_skill_coverage"]),
+    }
+
+
+def _reorder_job_rankings_for_workspace(
+    db: Session, job_id: UUID, workspace_id: Optional[UUID]
+) -> None:
+    q = db.query(JobCandidateRanking).filter(JobCandidateRanking.job_id == job_id)
+    if workspace_id is not None:
+        q = q.filter(JobCandidateRanking.workspace_id == workspace_id)
+    else:
+        q = q.filter(JobCandidateRanking.workspace_id.is_(None))
+    rows = list(
+        q.order_by(
+            JobCandidateRanking.cross_encoder_score.desc(),
+            JobCandidateRanking.run_at.desc(),
+        )
+    )
+    for pos, jr in enumerate(rows, start=1):
+        jr.rank_position = int(pos)
+
+
+def _persist_match_candidate_inputs(body: dict, cand: Candidate) -> tuple[object, str]:
+    """
+    Use extension/form fields when provided so the cross-encoder sees the same text as
+    POST /match/preview (title + skills + profile blob). Otherwise fall back to DB fields.
+    """
+    ext = str(body.get("candidate_text_for_match") or body.get("candidate_text") or "").strip()
+    if len(ext) < 10:
+        ct = (ml_ranking.build_cand_text_from_db(cand) or "").strip()
+        return cand, ct
+    title = str(body.get("candidate_title") or "").strip() or (getattr(cand, "title", None) or "")
+    skills = str(body.get("candidate_skills") or "").strip() or (getattr(cand, "skills", None) or "")
+    cert = str(body.get("certifications") or "").strip() or (getattr(cand, "certifications", None) or "")
+    deg_in = body.get("highest_degree")
+    deg = str(deg_in).strip() if deg_in not in (None, "") else (getattr(cand, "highest_degree", None) or "")
+    y_raw = body.get("years_experience")
+    years: float | None
+    if y_raw is not None and y_raw != "":
+        try:
+            years = float(y_raw)
+        except (TypeError, ValueError):
+            years = getattr(cand, "years_experience", None)
+    else:
+        years = getattr(cand, "years_experience", None)
+    snap = SimpleNamespace(
+        title=title,
+        skills=skills,
+        raw_text=ext,
+        years_experience=years,
+        highest_degree=deg or "",
+        certifications=cert or "",
+    )
+    ct = " ".join(p for p in (title, skills, ext) if p).strip()
+    return snap, ct
+
+
+@router.post("/{external_job_id}/match-candidate-save")
+def match_candidate_save(
+    external_job_id: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
+):
+    """
+    Cross-encoder match for ONE candidate vs ONE job, persisted to job_candidate_rankings.
+
+    Same scoring path as POST .../match-one. Optional body fields `candidate_text_for_match`,
+    `candidate_title`, `candidate_skills`, `years_experience`, `highest_degree`, `certifications`
+    align the model input with POST /match/preview (recommended for the Chrome extension).
+    """
+    cand_external_id = str(body.get("candidate_id") or body.get("candidate_external_id") or "").strip()
+    if not cand_external_id:
+        raise HTTPException(status_code=422, detail="candidate_external_id is required")
+
+    job = _require_job_in_workspace(db, external_job_id, user)
+    cand = db.query(Candidate).filter(Candidate.external_id == cand_external_id).first()
+    if not cand:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    recruiter_ws: Optional[UUID] = None
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        recruiter_ws = ensure_workspace_for_recruiter(db, user)
+    if recruiter_ws is not None:
+        scoped = candidate_query_filtered_for_workspace(
+            db.query(Candidate).filter(Candidate.id == cand.id), recruiter_ws
+        )
+        if scoped.first() is None:
+            raise HTTPException(status_code=404, detail="Candidate not found")
+
+    job_text = ml_ranking.build_job_text_from_db(job)
+    if not job_text.strip():
+        raise HTTPException(status_code=422, detail="Job has no description/skills text to match.")
+    cand_for_adj, ct = _persist_match_candidate_inputs(body, cand)
+    if not ct:
+        raise HTTPException(status_code=422, detail="No candidate text could be extracted for scoring.")
+
+    try:
+        raw_score = float(match_scores_batch(job_text, [ct])[0])
+    except Exception as e:
+        _log.exception("match_scores_batch failed: %s", e)
+        raise HTTPException(status_code=503, detail="Model inference failed for match") from e
+
+    sem_save = job_semantic_similarity_for_save(job_text, ct)
+    adj = adjusted_match_score(
+        job,
+        cand_for_adj,
+        raw_cross_encoder_score=float(raw_score),
+        sbert_similarity=sem_save,
+    )
+    final_s = float(adj["final_score"])
+    meta = meta_from_candidate(cand, cand.external_id)
+    title_ov = str(body.get("candidate_title") or "").strip()
+    skills_ov = str(body.get("candidate_skills") or "").strip()
+    deg_ov = str(body.get("highest_degree") or "").strip()
+    y_ov = body.get("years_experience")
+    years_row = meta.get("years_experience")
+    if y_ov is not None and y_ov != "":
+        try:
+            years_row = float(y_ov)
+        except (TypeError, ValueError):
+            pass
+    r_row = {
+        "candidate_name": str(meta.get("candidate_name") or ""),
+        "candidate_title": title_ov or str(meta.get("candidate_title") or ""),
+        "years_experience": years_row,
+        "highest_degree": deg_ov or str(meta.get("highest_degree") or ""),
+        "skills_summary": (skills_ov[:400] if skills_ov else str(meta.get("skills_summary") or "")),
+    }
+    snap_role = _snapshot_role(cand, r_row)
+    expl_raw = build_ranking_explanation(
+        job, cand_for_adj, final_s, raw_cross_encoder_score=float(adj["raw_cross_encoder_score"])
+    )
+    now = datetime.utcnow()
+
+    dq = db.query(JobCandidateRanking).filter(
+        JobCandidateRanking.job_id == job.id,
+        JobCandidateRanking.candidate_id == cand.id,
+    )
+    if recruiter_ws is not None:
+        dq = dq.filter(JobCandidateRanking.workspace_id == recruiter_ws)
+    else:
+        dq = dq.filter(JobCandidateRanking.workspace_id.is_(None))
+    dq.delete(synchronize_session=False)
+
+    db.add(
+        JobCandidateRanking(
+            job_id=job.id,
+            candidate_id=cand.id,
+            workspace_id=recruiter_ws,
+            rank_position=1,
+            cross_encoder_score=final_s,
+            sbert_similarity=float(sem_save),
+            candidate_name=r_row["candidate_name"],
+            candidate_title=r_row["candidate_title"],
+            candidate_role=snap_role,
+            years_experience=r_row["years_experience"],
+            highest_degree=r_row["highest_degree"],
+            skills_summary=r_row["skills_summary"],
+            run_at=now,
+            explanation_json=json.dumps(expl_raw),
+        )
+    )
+    db.flush()
+    _reorder_job_rankings_for_workspace(db, job.id, recruiter_ws)
+    db.commit()
+
+    refresh_candidate_best_job_cache(db, [cand.id])
+    db.refresh(job)
+    refresh_job_ranking_top_insight(db, job)
+
+    rq = db.query(JobCandidateRanking).filter(
+        JobCandidateRanking.job_id == job.id,
+        JobCandidateRanking.candidate_id == cand.id,
+    )
+    if recruiter_ws is not None:
+        rq = rq.filter(JobCandidateRanking.workspace_id == recruiter_ws)
+    else:
+        rq = rq.filter(JobCandidateRanking.workspace_id.is_(None))
+    saved = rq.first()
+    rank_pos = int(getattr(saved, "rank_position", 0) or 0) if saved else 0
+
+    return {
+        "job_external_id": external_job_id,
+        "candidate_id": cand_external_id,
+        "rank_position": rank_pos,
+        "cross_encoder_score": final_s,
+        "cross_encoder_score_raw": float(adj["raw_cross_encoder_score"]),
+        "critical_skill_coverage": float(adj["critical_skill_coverage"]),
+        "total_skill_coverage": float(adj["total_skill_coverage"]),
+        "persisted": True,
     }
 
 

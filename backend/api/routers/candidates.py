@@ -19,6 +19,7 @@ from api.dependencies import get_current_user_optional, require_user_if_auth_ena
 from api.models import Candidate, Client, Job, JobApplicant, JobCandidateRanking, JobCandidateSbertScore, User
 from api.schemas import CandidateCreate, CandidateRead, CandidateReadWithScores, CandidateUpdate
 from api.services.activity_log import log_activity
+from api.services.candidate_best_job_cache import refresh_candidate_best_job_cache
 from api.services.candidate_competition_score import compute_competition_payloads_for_list
 from api.services.candidate_serialization import candidate_read_dict, resolve_candidate_headline
 from api.services.applicant_status_effective import STORAGE_APPLICANT_STATUSES, effective_applicant_status, sync_candidate_status_from_applicants
@@ -152,6 +153,25 @@ def list_candidates_page(
         base = base.order_by(Candidate.created_at.desc())
 
     rows = base.offset(max(0, int(skip or 0))).limit(int(limit)).all()
+
+    # If rankings exist but best_job_match_score was never refreshed (e.g. older saves), recompute cache.
+    need_heal = [r.id for r in rows if getattr(r, "best_job_match_score", None) is None]
+    if need_heal:
+        ranked_ids = {
+            cid
+            for (cid,) in db.query(JobCandidateRanking.candidate_id)
+            .filter(JobCandidateRanking.candidate_id.in_(need_heal))
+            .distinct()
+            .all()
+        }
+        fix_ids = [cid for cid in need_heal if cid in ranked_ids]
+        if fix_ids:
+            refresh_candidate_best_job_cache(db, fix_ids)
+            fix_set = set(fix_ids)
+            for r in rows:
+                if r.id in fix_set:
+                    db.refresh(r)
+
     job_ids = {(getattr(r, "best_job_external_id", "") or "").strip() for r in rows if getattr(r, "best_job_external_id", None)}
     enrich_by_job = _best_job_enrichment_map(db, job_ids)
     items: list[CandidateRead] = []

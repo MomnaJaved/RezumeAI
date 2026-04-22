@@ -1,70 +1,111 @@
-/* ============================================================
-   RezumeAI Chrome Extension — Full Popup Script
-   Covers: auth, structured extraction, real-time ranking,
-           duplicate detection, save & attach to job.
-   ============================================================ */
-
+/* ===================================================================
+   RezumeAI Chrome Extension — Popup Controller
+   Flow: Sign in → LinkedIn auto scrape + section classify → Select job →
+         Match & save (or preview match only)
+   Backend: POST /api/v1/match/preview, ingestions/text, jobs/.../match-candidate-save
+   =================================================================== */
 'use strict';
 
-// ── Storage keys ─────────────────────────────────────────────
-const SK = { TOKEN: 'rezume_token', EMAIL: 'rezume_email', API_BASE: 'rezume_api_base', ROLE: 'rezume_role' };
-
-// ── Global state ─────────────────────────────────────────────
-const G = {
-  apiBase:       'http://127.0.0.1:8000',
-  token:         null,
-  email:         '',
-  lastResult:    null,   // last preview response
-  selectedJobId: null,   // currently selected job external_id
-  savedCandId:   null,   // external_id of saved candidate
+// ── Constants ─────────────────────────────────────────────────────────
+const SK = {
+  TOKEN:    'rezume_token',
+  EMAIL:    'rezume_email',
+  API_BASE: 'rezume_api_base',
+  ROLE:     'rezume_role',
 };
 
-// ── DOM helpers ───────────────────────────────────────────────
-const $   = id => document.getElementById(id);
+const DEFAULT_API = 'http://127.0.0.1:8000';
+
+// ── State ─────────────────────────────────────────────────────────────
+const G = {
+  apiBase:         DEFAULT_API,
+  token:           null,
+  email:           '',
+  lastResult:      null,   // last MatchPreviewResponse
+  selectedJobId:   null,
+  savedCandId:     null,
+  lastProfileJson: null,
+};
+
+// ── DOM helpers ───────────────────────────────────────────────────────
+const $   = id  => document.getElementById(id);
 const show = (...ids) => ids.forEach(id => $(id)?.classList.remove('hidden'));
 const hide = (...ids) => ids.forEach(id => $(id)?.classList.add('hidden'));
-
-function setBtn(id, loading, loadingLabel) {
-  const btn = $(id);
-  if (!btn) return;
-  btn.disabled = loading;
-  const spinner = btn.querySelector('.spinner');
-  const label   = btn.querySelector('.btn-label') || btn.querySelector('span:not(.spinner)');
-  if (spinner) spinner.classList.toggle('hidden', !loading);
-  if (label && loadingLabel) label.textContent = loading ? loadingLabel : label.dataset.orig || label.textContent;
-  if (label && !label.dataset.orig) label.dataset.orig = label.textContent;
-}
+const esc  = s  => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const val  = id => String($(id)?.value ?? '').trim();
 
 function showAlert(id, msg, type = 'error') {
   const el = $(id);
   if (!el) return;
   el.textContent = msg || '';
-  el.className   = `alert alert-${type}${msg ? '' : ' hidden'}`;
+  el.className = `alert alert-${type}${msg ? '' : ' hidden'}`;
   if (!msg) el.classList.add('hidden');
 }
 
-// ── API helpers ───────────────────────────────────────────────
-async function apiReq(method, path, body = null) {
+function setBtn(id, loading, label) {
+  const btn = $(id);
+  if (!btn) return;
+  btn.disabled = loading;
+  const sp  = btn.querySelector('.spinner');
+  const lbl = btn.querySelector('.btn-label') || btn.querySelector('span:not(.spinner)');
+  sp?.classList.toggle('hidden', !loading);
+  if (lbl && label) {
+    if (!lbl.dataset.orig) lbl.dataset.orig = lbl.textContent;
+    lbl.textContent = loading ? label : lbl.dataset.orig;
+  }
+}
+
+// ── API proxy ─────────────────────────────────────────────────────────
+async function api(method, path, body = null) {
+  const bodyStr = body != null ? JSON.stringify(body) : undefined;
+
+  // Try background service worker first (handles auth header from storage)
+  const viaBg = await new Promise(resolve => {
+    try {
+      chrome.runtime.sendMessage(
+        { type: 'rezume_api', method, path, body: bodyStr },
+        res => { chrome.runtime.lastError; resolve(res ?? null); },
+      );
+    } catch { resolve(null); }
+  });
+
+  if (viaBg && typeof viaBg.ok === 'boolean') {
+    let data;
+    try { data = JSON.parse(viaBg.text); } catch { data = { detail: viaBg.text }; }
+    if (!viaBg.ok) {
+      const d = data?.detail ?? data?.error ?? viaBg.text ?? 'Request failed';
+      throw new Error(typeof d === 'string' ? d : JSON.stringify(d));
+    }
+    return data;
+  }
+
+  // Fallback: direct fetch
   const headers = { 'Content-Type': 'application/json' };
   if (G.token) headers['Authorization'] = `Bearer ${G.token}`;
-  const res  = await fetch(`${G.apiBase}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const res  = await fetch(`${G.apiBase}${path}`, { method, headers, body: bodyStr });
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { detail: text }; }
   if (!res.ok) {
-    const d = data?.detail || data?.error || res.statusText;
+    const d = data?.detail ?? data?.error ?? res.statusText;
     throw new Error(typeof d === 'string' ? d : JSON.stringify(d));
   }
   return data;
 }
 
-// ── Auth ──────────────────────────────────────────────────────
+// ── Auth ──────────────────────────────────────────────────────────────
 async function login(email, password) {
-  const data = await apiReq('POST', '/api/v1/auth/login', { email, password });
+  const data = await api('POST', '/api/v1/auth/login', { email, password });
   if (data.requires_otp) throw new Error('OTP required — sign in via the web app first.');
   if (!data.access_token) throw new Error('No access token returned.');
-  G.token = data.access_token; G.email = email;
-  await chrome.storage.local.set({ [SK.TOKEN]: G.token, [SK.EMAIL]: email, [SK.API_BASE]: G.apiBase, [SK.ROLE]: data.account_role || 'recruiter' });
+  G.token = data.access_token;
+  G.email = email;
+  await chrome.storage.local.set({
+    [SK.TOKEN]:    G.token,
+    [SK.EMAIL]:    email,
+    [SK.API_BASE]: G.apiBase,
+    [SK.ROLE]:     data.account_role || 'recruiter',
+  });
 }
 
 async function logout() {
@@ -73,208 +114,73 @@ async function logout() {
   showView('login');
 }
 
-// ── Views & steps ─────────────────────────────────────────────
+// ── Views ─────────────────────────────────────────────────────────────
 function showView(name) {
-  ['login', 'main'].forEach(v => $(  `view-${v}`)?.classList.toggle('hidden', v !== name));
+  ['login', 'main'].forEach(v => $(`view-${v}`)?.classList.toggle('hidden', v !== name));
   if (name === 'main') $('user-email').textContent = G.email;
 }
 
-function goStep(n) {
-  [1, 2, 3].forEach(i => {
-    $(`step-${i}`)?.classList.toggle('active', i === n);
-    $(`step-${i}`)?.classList.toggle('hidden', i !== n);
-    const ind = $(`step-ind-${i}`);
-    if (ind) {
-      ind.classList.toggle('active', i === n);
-      ind.classList.toggle('done',   i < n);
-    }
-  });
+function showStep(n) {
+  const wb   = $('step-workbench');
+  const done = $('step-3');
+  if (n === 1) {
+    wb?.classList.add('active');
+    wb?.classList.remove('hidden');
+    done?.classList.remove('active');
+    done?.classList.add('hidden');
+  } else if (n === 3) {
+    wb?.classList.remove('active');
+    wb?.classList.add('hidden');
+    done?.classList.add('active');
+    done?.classList.remove('hidden');
+  }
 }
 
-// ── Status dot ────────────────────────────────────────────────
-function setDot(state, text) {
-  const dot = $('status-dot'), txt = $('status-text');
-  if (dot) dot.className = `status-dot ${state}`;
-  if (txt) txt.textContent = text;
-}
-
+// ── Health check ──────────────────────────────────────────────────────
 async function checkHealth() {
-  setDot('checking', '…');
+  const dot  = $('status-dot');
+  const txt  = $('status-text');
+  if (dot) dot.className = 'status-dot checking';
+  if (txt) txt.textContent = '…';
   try {
-    const d = await apiReq('GET', '/health');
-    setDot(d.status === 'ok' ? 'online' : 'warn', d.status === 'ok' ? 'Connected' : d.status);
-  } catch { setDot('offline', 'Unreachable'); }
-}
-
-// ── Page context + LinkedIn extraction (content script) ───────
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
-
-async function detectContext() {
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.url) return;
-    const isLI = /linkedin\.com\/in\//i.test(tab.url);
-    const btn = $('btn-grab-linkedin');
-    if (btn) {
-      btn.disabled = !isLI;
-      btn.title = isLI ? 'Re-extract this LinkedIn profile' : 'Navigate to a LinkedIn /in/ profile first';
-    }
-    if (isLI) {
-      const urlEl = $('c-url');
-      if (urlEl && !urlEl.value) urlEl.value = tab.url;
-      const nameOk = ($('c-name')?.value || '').trim().length > 1;
-      const textOk = ($('c-text')?.value || '').trim().length > 200;
-      if (!(nameOk && textOk)) await autoExtract(tab);
-    }
-  } catch { /* no activeTab yet */ }
-}
-
-/**
- * LinkedIn scraping runs inside the tab (extract_core.js + content.js).
- * Retries while the SPA renders; if messaging never connects, inject extract_core.js once.
- */
-async function runLinkedInExtraction(tab) {
-  if (!tab?.id) return null;
-
-  const delays = [0, 400, 900, 1800, 3200, 5200];
-  for (const ms of delays) {
-    if (ms) await sleep(ms);
-    try {
-      const d = await new Promise((resolve, reject) => {
-        chrome.tabs.sendMessage(tab.id, { action: 'extract_profile' }, response => {
-          const err = chrome.runtime.lastError;
-          if (err) reject(new Error(err.message));
-          else resolve(response);
-        });
-      });
-      if (d && d.success && (d.fullText || d.name || d.title)) return d;
-    } catch { /* retry */ }
-  }
-
-  try {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['extract_core.js'] });
-    const inj = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: async () => {
-        if (typeof globalThis.__rezumeExtractLinkedInAsync === 'function') {
-          return await globalThis.__rezumeExtractLinkedInAsync();
-        }
-        if (typeof globalThis.__rezumeExtractLinkedIn === 'function') {
-          return globalThis.__rezumeExtractLinkedIn();
-        }
-        return null;
-      },
-    });
-    return inj?.[0]?.result || null;
+    const d = await api('GET', '/health');
+    const ok = d.status === 'ok';
+    if (dot) dot.className = `status-dot ${ok ? 'online' : 'warn'}`;
+    if (txt) txt.textContent = ok ? 'Connected' : d.status;
   } catch {
-    return null;
+    if (dot) dot.className = 'status-dot offline';
+    if (txt) txt.textContent = 'Unreachable';
   }
 }
 
-async function autoExtract(tab) {
-  setAutoExtractState(true);
-  showAlert('step1-err', '');
+// ── Timing ────────────────────────────────────────────────────────────
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── LinkedIn extraction (DOM; extract_core + profile_pipeline in page) ─
+function isLinkedInHost(url) {
   try {
-    const d = await runLinkedInExtraction(tab);
-    const text = (d?.fullText || '').trim();
-    const hasCore = text.length > 40 || (d?.name || '').trim() || (d?.title || '').trim();
-    if (d && hasCore) {
-      fillCandidateForm(d);
-      const who = (d.name || d.title || 'Candidate').trim();
-      showAlert('step1-err', `Profile loaded: ${who}`, 'success');
-      setTimeout(() => showAlert('step1-err', ''), 3500);
-    } else {
-      showAlert(
-        'step1-err',
-        'Could not read this profile yet. Reload the extension on chrome://extensions, refresh this LinkedIn tab, stay on an /in/… profile URL, scroll so About & Experience appear, then click “Grab LinkedIn”.',
-        'error',
-      );
-    }
-  } catch (e) {
-    console.warn('[RezumeAI] Auto-extract failed:', e?.message);
-    showAlert('step1-err', e?.message || 'Could not read the active LinkedIn tab.', 'error');
-  } finally {
-    setAutoExtractState(false);
-  }
+    const h = new URL(String(url ?? '')).hostname.toLowerCase();
+    return h === 'linkedin.com' || h.endsWith('.linkedin.com');
+  } catch { return false; }
 }
 
-function setAutoExtractState(loading) {
-  const banner = $('auto-extract-banner');
-  if (banner) banner.classList.toggle('hidden', !loading);
-}
-
-async function grabLinkedIn() {
-  showAlert('step1-err', '');
-  const btn = $('btn-grab-linkedin');
-  if (btn) btn.disabled = true;
-  setAutoExtractState(true);
+function isLinkedInProfile(url) {
+  if (!isLinkedInHost(url)) return false;
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) throw new Error('No active tab.');
-    const d = await runLinkedInExtraction(tab);
-    const text = (d?.fullText || '').trim();
-    const hasCore = text.length > 40 || (d?.name || '').trim() || (d?.title || '').trim();
-    if (!d || !hasCore) {
-      throw new Error('Could not read this profile. Stay on the LinkedIn /in/ page, scroll to load About & Experience, then try again.');
-    }
-    fillCandidateForm(d);
-    const urlEl = $('c-url');
-    if (urlEl && !urlEl.value) urlEl.value = tab.url;
-    showAlert('step1-err', `Loaded ${($('c-text')?.value || '').length.toLocaleString()} characters`, 'success');
-    setTimeout(() => showAlert('step1-err', ''), 3500);
-  } catch (e) {
-    showAlert('step1-err', e.message);
-  } finally {
-    setAutoExtractState(false);
-    await detectContext();
-  }
+    return /^\/in\/[^/]+/i.test(new URL(url).pathname);
+  } catch { return false; }
 }
 
-async function grabSelection() {
-  showAlert('step1-err', '');
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const res = await chrome.scripting.executeScript({
-      target: { tabId: tab.id }, func: () => window.getSelection().toString(),
-    });
-    const text = (res?.[0]?.result || '').trim();
-    if (!text) throw new Error('No text selected. Highlight resume text on the page first.');
-    $('c-text').value = text;
-    updateCharCount();
-    hydrateFormFromProfileText({ onlyIfEmpty: true });
-  } catch (e) { showAlert('step1-err', e.message); }
-}
-
-function normalizeDegreeForSelect(raw) {
-  const s = String(raw || '').trim().toLowerCase();
-  if (!s) return '';
-  if (['phd', 'masters', 'bachelors', 'intermediate'].includes(s)) return s;
-  if (/ph\.?d|doctor/.test(s)) return 'phd';
-  if (/mba|master|m\.?s\.?\b|msc|m\.?eng/.test(s)) return 'masters';
-  if (/bachelor|b\.?s\.?\b|b\.?e\.?\b|b\.?sc|b\.?tech|b\.?eng|\bba\b/.test(s)) return 'bachelors';
-  if (/associate|diploma|certificate|a-level|intermediate/.test(s)) return 'intermediate';
-  return '';
-}
-
-/**
- * LinkedIn public URLs are often `first-last-6741a222a` where the last hyphen chunk
- * is an opaque id. Strip that chunk so we only show a readable candidate name.
- */
-function humanNameFromLinkedInSlug(encodedSlug) {
+/** Decode /in/slug → readable name when DOM extract fails (same rules as extract_core slug heuristic). */
+function humanNameFromLinkedInSlugPopup(encodedSlug) {
   let slug = '';
   try {
     slug = decodeURIComponent(String(encodedSlug || '').trim()).replace(/\+/g, ' ');
   } catch {
     slug = String(encodedSlug || '').trim();
   }
-  slug = slug.trim();
-  if (!slug) return '';
-
   const parts = slug.split('-').map(p => p.trim()).filter(Boolean);
-  if (!parts.length) return slug;
-
+  if (!parts.length) return '';
   function looksLikeOpaqueSuffix(seg) {
     const t = String(seg);
     if (t.length < 6 || t.length > 20) return false;
@@ -283,463 +189,1171 @@ function humanNameFromLinkedInSlug(encodedSlug) {
     if (/\d/.test(t) && t.length >= 6) return true;
     return false;
   }
-
-  while (parts.length > 1 && looksLikeOpaqueSuffix(parts[parts.length - 1])) {
-    parts.pop();
-  }
-
-  let out = parts.join(' ').replace(/\s+/g, ' ').trim();
-  const words = out.split(/\s+/).filter(Boolean);
-  while (words.length > 1 && looksLikeOpaqueSuffix(words[words.length - 1])) {
-    words.pop();
-  }
-  return words.join(' ').trim();
+  while (parts.length > 1 && looksLikeOpaqueSuffix(parts[parts.length - 1])) parts.pop();
+  return parts.join(' ').replace(/\s+/g, ' ').trim();
 }
 
-/** Derive display name from a LinkedIn /in/slug URL. */
-function nameFromLinkedInUrl(url) {
-  const m = String(url || '').match(/\/in\/([^/?#]+)/i);
-  if (!m) return '';
-  return humanNameFromLinkedInSlug(m[1]);
+/** Minimal fields from URL so the form is never totally empty on /in/… tabs */
+function fillMinFromLinkedInTab(tab) {
+  const u = String(tab?.url || '');
+  if (!isLinkedInProfile(u)) return;
+  let slug = '';
+  try {
+    const m = new URL(u).pathname.match(/\/in\/([^/?#]+)/i);
+    if (m) slug = m[1];
+  } catch { return; }
+  if (!slug) return;
+  const name = humanNameFromLinkedInSlugPopup(slug);
+  const nEl = $('c-name');
+  if (nEl && name && !(String(nEl.value ?? '').trim())) nEl.value = name;
+  const tEl = $('c-text');
+  if (tEl && !String(tEl.value ?? '').trim()) {
+    tEl.value =
+      `Name (from profile URL): ${name || slug}\nProfile: ${u.split('?')[0]}\n\n` +
+      'If sections stay empty: hard-refresh LinkedIn (Ctrl+Shift+R), reload the extension, scroll About & Experience, then reopen this popup.';
+  }
+  const uEl = $('c-url');
+  if (uEl && !String(uEl.value ?? '').trim()) uEl.value = u.split('?')[0];
+  updateCharCount();
+  syncCandSummary();
+}
+
+function isLinkedInDetailsSubpage(url) {
+  if (!isLinkedInProfile(url)) return false;
+  try {
+    return /\/in\/[^/]+\/details\//i.test(new URL(url).pathname);
+  } catch { return false; }
+}
+
+function linkedInMemberBaseProfileUrl(url) {
+  try {
+    const u = new URL(String(url || ''));
+    const m = u.pathname.match(/^(\/in\/[^/]+)\//i);
+    if (!m) return String(url || '');
+    return `${u.origin}${m[1]}/`;
+  } catch {
+    return String(url || '');
+  }
 }
 
 /**
- * Parse our exported profile blob (and common variants) into structured fields.
+ * Tab to scrape while the action popup is open.
+ * Prefer any open LinkedIn /in/… tab (even in the background) so we never scrape localhost
+ * or the RezumeAI app just because it was the last-focused window’s active tab.
  */
-function parseProfileTextIntoFields(text) {
-  const t = String(text || '');
-  const line = re => {
-    const m = t.match(re);
-    return m ? m[1].replace(/\s+/g, ' ').trim() : '';
+async function getRelevantTab() {
+  const pickBest = tabs => {
+    if (!tabs?.length) return null;
+    const profile = tabs.find(t => t?.id && t.url && isLinkedInHost(t.url) && isLinkedInProfile(t.url));
+    if (profile) return profile;
+    const onLi = tabs.find(t => t?.id && t.url && isLinkedInHost(t.url));
+    if (onLi) return onLi;
+    const web = tabs.find(
+      t =>
+        t?.id &&
+        t.url &&
+        /^https?:\/\//i.test(t.url) &&
+        !/^(chrome|edge|brave|vivaldi|about|devtools):/i.test(t.url),
+    );
+    return web || tabs.find(t => t?.id) || null;
   };
-  const out = {};
-  out.name = line(/^Name:\s*(.+)$/im) || line(/^Name \(from profile URL\):\s*(.+)$/im);
-  out.title = line(/^Current Title:\s*(.+)$/im) || line(/^Headline:\s*(.+)$/im);
-  out.location = line(/^Location:\s*(.+)$/im);
-  out.email = line(/^Email:\s*(.+)$/im);
-  const yrs = t.match(/^Years of Experience:\s*([\d.]+)\s*$/im);
-  if (yrs) {
-    const n = parseFloat(yrs[1]);
-    if (!Number.isNaN(n)) out.years = n;
-  }
-  const deg = line(/^Highest Degree:\s*(.+)$/im);
-  if (deg) out.degreeRaw = deg;
 
-  const sm = t.match(/\nSKILLS\s*\n([\s\S]*?)(?=\n\n|\n(?:CERTIFICATIONS|WORK EXPERIENCE|EDUCATION|LANGUAGES|PROJECTS|VOLUNTEER)|$)/i);
-  if (sm) {
-    const body = sm[1].trim();
-    out.skills = body
-      .split('\n')
-      .map(s => s.trim())
-      .filter(Boolean)
-      .join(', ')
-      .replace(/\s*,\s*/g, ', ');
+  try {
+    const profileTabs = await chrome.tabs.query({
+      url: [
+        'https://*.linkedin.com/in/*',
+        'http://*.linkedin.com/in/*',
+        'https://linkedin.com/in/*',
+        'http://linkedin.com/in/*',
+      ],
+    });
+    if (profileTabs?.length) {
+      let lastWinId = null;
+      try {
+        lastWinId = (await chrome.windows.getLastFocused()).id;
+      } catch {
+        /* ignore */
+      }
+      const inLastWin =
+        lastWinId != null ? profileTabs.filter(t => t.windowId === lastWinId && isLinkedInProfile(t.url || '')) : [];
+      const activeInLast = inLastWin.find(t => t.active);
+      if (activeInLast) return activeInLast;
+      const activeAny = profileTabs.find(t => t.active && isLinkedInProfile(t.url || ''));
+      if (activeAny) return activeAny;
+      if (inLastWin.length === 1) return inLastWin[0];
+      if (inLastWin.length) return inLastWin[0];
+      return profileTabs[0];
+    }
+  } catch {
+    /* fall through */
   }
-  return out;
+
+  try {
+    const allActive = await chrome.tabs.query({ active: true });
+    const t0 = pickBest(allActive);
+    if (t0?.url && isLinkedInHost(t0.url)) return t0;
+  } catch { /* ignore */ }
+
+  try {
+    const w = await chrome.windows.getLastFocused({ populate: true });
+    const tx = pickBest(w.tabs || []);
+    if (tx?.url && isLinkedInHost(tx.url)) return tx;
+    if (tx) return tx;
+  } catch { /* ignore */ }
+
+  return null;
 }
 
-/**
- * Copy parsed values from Profile Text into the form (optionally only where inputs are still empty).
- * @param {{ onlyIfEmpty?: boolean }} opts
- */
-function hydrateFormFromProfileText(opts = {}) {
-  const onlyIfEmpty = opts.onlyIfEmpty !== false;
-  const text = ($('c-text')?.value || '').trim();
-  if (!text) return { filled: 0 };
+function extractionIsUsable(d) {
+  if (!d || d.success === false) return false;
+  if (d.extracted_ok) return true;
+  const pj = d.profile_json;
+  const pjOk =
+    pj &&
+    (String(pj.summary || '').length > 20 ||
+      (Array.isArray(pj.skills) && pj.skills.length > 0) ||
+      (Array.isArray(pj.experience) && pj.experience.length > 0));
+  return (
+    String(d.fullText ?? '').length >= 10 ||
+    String(d.name ?? '').length >= 1 ||
+    String(d.title ?? '').length >= 1 ||
+    String(d.skills ?? '').length >= 3 ||
+    Boolean(pjOk)
+  );
+}
 
-  const parsed = parseProfileTextIntoFields(text);
-  const urlName = nameFromLinkedInUrl($('c-url')?.value || '');
-  if (!parsed.name && urlName) parsed.name = urlName;
-
-  const setField = (id, val) => {
-    const el = $(id);
-    if (!el || val == null || val === '') return false;
-    const v = typeof val === 'string' ? val.trim() : String(val);
-    if (!v) return false;
-    if (onlyIfEmpty && (el.value || '').trim()) return false;
-    el.value = v;
+function extractionIsSubstantial(d) {
+  if (!d?.success) return false;
+  const t = String(d.fullText ?? '');
+  if (/PROFILE SECTIONS|WORK EXPERIENCE|EDUCATION \(from page\)/i.test(t)) return true;
+  if (String(d.skills ?? '').length > 40) return true;
+  const pj = d.profile_json;
+  if (pj && ((pj.experience && pj.experience.length > 0) || String(pj.summary || '').length > 200))
     return true;
-  };
-
-  let filled = 0;
-  if (setField('c-name', parsed.name)) filled++;
-  if (setField('c-title', parsed.title)) filled++;
-  if (setField('c-location', parsed.location)) filled++;
-  if (setField('c-email', parsed.email)) filled++;
-  if (setField('c-skills', parsed.skills)) filled++;
-  if (parsed.years != null && setField('c-years', parsed.years)) filled++;
-
-  const deg = normalizeDegreeForSelect(parsed.degreeRaw);
-  const degEl = $('c-degree');
-  if (degEl && deg && (!onlyIfEmpty || !(degEl.value || '').trim())) {
-    degEl.value = deg;
-    filled++;
-  }
-
-  if (parsed.email) checkDuplicate();
-  return { filled, parsed };
+  return t.length > 1400;
 }
 
-function fillCandidateForm(d) {
-  if (!d) return;
+/** LinkedIn SPA: injecting while status is still "loading" often yields no result. */
+async function waitTabReady(tabId, maxMs = 8000) {
+  const start = Date.now();
+  while (Date.now() - start < maxMs) {
+    try {
+      const t = await chrome.tabs.get(tabId);
+      if (t.discarded) throw new Error('That browser tab was unloaded. Click the LinkedIn tab once, then open the extension again.');
+      if (t.status === 'complete' && t.url && !/^chrome:\/\//i.test(t.url)) return;
+    } catch (e) {
+      const msg = e?.message || String(e);
+      if (/discarded|No tab with id/i.test(msg)) throw e instanceof Error ? e : new Error(msg);
+    }
+    await sleep(200);
+  }
+}
 
-  const setIf = (id, v) => {
-    const el = $(id);
-    if (!el || v == null) return;
-    const t = typeof v === 'string' ? v.trim() : v;
-    if (t === '' || t === false) return;
-    el.value = typeof t === 'number' ? String(t) : t;
-  };
+async function injectAndExtract(tabId, opts = {}) {
+  if (tabId == null) throw new Error('Missing tab id');
+  await waitTabReady(tabId);
 
-  setIf('c-name', d.name);
-  setIf('c-title', d.title);
-  setIf('c-location', d.location);
-  setIf('c-skills', d.skills);
-  setIf('c-email', d.email);
-  setIf('c-text', d.fullText);
-
-  if (d.years_experience != null && !Number.isNaN(Number(d.years_experience))) {
-    const y = Math.round(Number(d.years_experience) * 10) / 10;
-    setIf('c-years', y);
+  if (opts.requireLinkedInProfile) {
+    const live = await chrome.tabs.get(tabId);
+    const u = String(live.url || '');
+    if (!isLinkedInHost(u) || !isLinkedInProfile(u)) {
+      throw new Error(
+        'This browser tab is not on a LinkedIn member profile anymore (it may have navigated to another site). Switch back to linkedin.com/in/…, then open the extension again.',
+      );
+    }
   }
 
-  const deg = normalizeDegreeForSelect(d.highest_degree);
-  const degEl = $('c-degree');
-  if (degEl && deg) degEl.value = deg;
+  let needFiles = true;
+  try {
+    const probe = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () =>
+        typeof globalThis.__rezumeRunProfilePipeline === 'function' &&
+        (typeof globalThis.__rezumeExtractLinkedInAsync === 'function' ||
+          typeof globalThis.__rezumeExtractLinkedIn === 'function'),
+    });
+    needFiles = !probe?.[0]?.result;
+  } catch {
+    needFiles = true;
+  }
 
-  if (d.certifications) {
-    const existing = ($('c-skills')?.value || '').toLowerCase();
-    const newCerts = d.certifications.split(',').map(c => c.trim()).filter(Boolean)
-      .filter(c => !existing.includes(c.toLowerCase()));
-    if (newCerts.length) {
-      const sk = $('c-skills');
-      if (sk) {
-        const cur = (sk.value || '').trim();
-        sk.value = cur ? `${cur}, ${newCerts.join(', ')}` : newCerts.join(', ');
+  if (needFiles) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['extract_core.js', 'profile_pipeline.js'],
+      });
+    } catch (e) {
+      const le = typeof chrome !== 'undefined' ? chrome.runtime.lastError?.message : '';
+      const m = [e?.message, le].filter(Boolean).join(' · ') || String(e);
+      throw new Error(
+        `Could not load extract scripts into this tab (${m}). Close other Chrome profiles, hard-refresh LinkedIn, then open the popup again.`,
+      );
+    }
+  }
+
+  let res;
+  try {
+    /**
+     * Return payload as JSON inside a small object. Chrome’s structured-clone of the raw
+     * pipeline object sometimes yields `result: undefined` on large / complex trees; a string
+     * envelope clones reliably.
+     */
+    res = await chrome.scripting.executeScript({
+      target: { tabId },
+      args:   [{}],
+      func: async req => {
+        const pack = v => {
+          try {
+            return { ok: true, json: JSON.stringify(v === undefined ? null : v) };
+          } catch (ser) {
+            return { ok: false, err: 'JSON.stringify: ' + String(ser && ser.message ? ser.message : ser) };
+          }
+        };
+        try {
+          let data;
+          if (typeof globalThis.__rezumeRunProfilePipeline === 'function')
+            data = await globalThis.__rezumeRunProfilePipeline(req);
+          else if (typeof globalThis.__rezumeExtractLinkedInAsync === 'function')
+            data = await globalThis.__rezumeExtractLinkedInAsync(req);
+          else if (typeof globalThis.__rezumeExtractLinkedIn === 'function')
+            data = globalThis.__rezumeExtractLinkedIn({ skipPrime: false });
+          else
+            data = {
+              success: false,
+              error: 'Extract script not found. Reload the extension on chrome://extensions.',
+              fullText: '',
+              extracted_ok: false,
+            };
+          return pack(data);
+        } catch (runErr) {
+          return pack({
+            success: false,
+            extracted_ok: false,
+            fullText: '',
+            error: String(runErr && runErr.message ? runErr.message : runErr),
+          });
+        }
+      },
+    });
+  } catch (e) {
+    const le = typeof chrome !== 'undefined' ? chrome.runtime.lastError?.message : '';
+    const m = [e?.message, le].filter(Boolean).join(' · ') || String(e);
+    throw new Error(`Extract run failed (${m}).`);
+  }
+  if (!res?.length) {
+    throw new Error(
+      'Chrome returned no script result for this tab. Hard-refresh LinkedIn (Ctrl+Shift+R), reload the extension, then try again.',
+    );
+  }
+  const boxed = res[0]?.result;
+  if (boxed && typeof boxed === 'object' && boxed.ok === true && typeof boxed.json === 'string') {
+    try {
+      return JSON.parse(boxed.json);
+    } catch (pe) {
+      throw new Error(`Extract result could not be parsed: ${pe.message}`);
+    }
+  }
+  if (boxed && typeof boxed === 'object' && boxed.ok === false && boxed.err) {
+    throw new Error(`Extract data could not be sent from the page: ${boxed.err}`);
+  }
+  if (boxed !== undefined && boxed !== null && typeof boxed === 'object' && 'success' in boxed) {
+    return boxed;
+  }
+  throw new Error(
+    'Extract returned no result (page may still be loading, or scripting was blocked in this frame). Wait for the profile to finish loading, hard-refresh LinkedIn, then try again.',
+  );
+}
+
+/** Chrome’s sendMessage error when no content script listener is registered on the tab. */
+function isNoReceiverError(msg) {
+  const s = String(msg || '').toLowerCase();
+  return (
+    s.includes('receiving end') ||
+    s.includes('could not establish connection') ||
+    s.includes('message port closed') ||
+    s.includes('extension context invalidated')
+  );
+}
+
+async function runExtraction(tab) {
+  if (!tab?.id) return null;
+
+  let url = String(tab.url || '');
+  try {
+    const live = await chrome.tabs.get(tab.id);
+    url = String(live.url || url);
+  } catch {
+    /* keep url from caller */
+  }
+  let lastOk = null;
+  let lastErr = '';
+
+  /**
+   * LinkedIn: do NOT rely on content.js being attached (tab predates install, bfcache, races).
+   * Programmatic inject is authoritative — avoids “Could not establish connection. Receiving end does not exist.”
+   */
+  if (isLinkedInHost(url)) {
+    const delays = [0, 450, 1200, 2400];
+    for (let i = 0; i < delays.length; i++) {
+      if (delays[i]) await sleep(delays[i] - (delays[i - 1] ?? 0));
+      try {
+        let liveUrl = url;
+        try {
+          liveUrl = String((await chrome.tabs.get(tab.id)).url || url);
+        } catch {
+          /* use url */
+        }
+        if (!isLinkedInHost(liveUrl) || !isLinkedInProfile(liveUrl)) {
+          lastErr =
+            'That tab left the LinkedIn profile page before scraping finished. Go back to linkedin.com/in/… on that tab, then try again.';
+          break;
+        }
+        const d = await injectAndExtract(tab.id, { requireLinkedInProfile: true });
+        if (d && !d.error) {
+          lastOk = d;
+          if (extractionIsSubstantial(d)) return d;
+        } else if (d?.error) lastErr = String(d.error);
+      } catch (e) {
+        lastErr = String(e?.message ?? e);
+      }
+    }
+    if (lastOk) return lastOk;
+    return {
+      success: false,
+      extracted_ok: false,
+      fullText: '',
+      error:
+        lastErr ||
+        `Could not inject into the LinkedIn tab (${url || 'unknown'}). ` +
+        'Close this popup, click the LinkedIn profile tab so it is focused, then click the RezumeAI icon again. ' +
+        'If it persists: chrome://extensions → Reload RezumeAI, then hard-refresh LinkedIn (Ctrl+Shift+R).',
+    };
+  }
+
+  /* Non-LinkedIn: optional message bridge if a content script is present */
+  const delays = [0, 500, 1100];
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i]) await sleep(delays[i] - (delays[i - 1] ?? 0));
+    try {
+      const d = await new Promise((resolve, reject) => {
+        chrome.tabs.sendMessage(
+          tab.id,
+          { action: 'extract_profile', rescanOnly: i > 0 },
+          res => {
+            const err = chrome.runtime.lastError;
+            if (err) reject(new Error(err.message));
+            else resolve(res ?? null);
+          },
+        );
+      });
+      if (!d) continue;
+      if (d.error) {
+        lastErr = String(d.error);
+        continue;
+      }
+      lastOk = d;
+      return d;
+    } catch (e) {
+      lastErr = String(e?.message ?? e);
+      if (isNoReceiverError(lastErr)) {
+        try {
+          const d = await injectAndExtract(tab.id);
+          if (d && !d.error) return d;
+          if (d?.error) lastErr = String(d.error);
+        } catch (ie) {
+          lastErr = [lastErr, String(ie?.message ?? ie)].filter(Boolean).join(' | ');
+        }
+        break;
       }
     }
   }
 
-  updateCharCount();
-  if (d.email) checkDuplicate();
+  return {
+    success: false,
+    extracted_ok: false,
+    fullText: '',
+    error: lastErr || 'No extractor for this page type.',
+  };
+}
 
-  /* When LinkedIn only yields blob text, fill name/title/skills from exported headers inside it. */
-  hydrateFormFromProfileText({ onlyIfEmpty: true });
+/** Classified sections UI (About / Experience / Education / Skills) */
+function renderClassifiedPanel(pj) {
+  const panel = $('classified-panel');
+  if (!panel) return;
+  if (!pj?.role_sections) {
+    panel.classList.add('hidden');
+    return;
+  }
+  panel.classList.remove('hidden');
+  const rs = pj.role_sections;
+  const pills = $('role-pills');
+  if (pills) {
+    const nSkills = Array.isArray(pj.skills) ? pj.skills.length : 0;
+    pills.innerHTML = [
+      ['About', rs.about?.length || 0],
+      ['Experience', rs.experience?.length || 0],
+      ['Education', rs.education?.length || 0],
+      ['Skills', nSkills || rs.skills?.length || 0],
+    ]
+      .map(([l, n]) => `<span class="role-pill">${esc(l)} <strong>${n}</strong></span>`)
+      .join('');
+  }
+  const setBlocks = (id, arr) => {
+    const el = $(id);
+    if (!el) return;
+    const t = (arr || []).join('\n\n').trim();
+    el.textContent = t || '—';
+    el.style.whiteSpace = 'pre-wrap';
+  };
+  setBlocks('sec-about', rs.about);
+  setBlocks('sec-experience', rs.experience);
+  setBlocks('sec-education', rs.education);
+  const skEl = $('sec-skills');
+  if (skEl) {
+    const skills = pj.skills || [];
+    if (skills.length) {
+      skEl.classList.add('role-skills-chips');
+      skEl.innerHTML = skills.slice(0, 40).map(s => `<span class="chip-skill">${esc(s)}</span>`).join('');
+    } else {
+      skEl.classList.remove('role-skills-chips');
+      const t = (rs.skills || []).join('\n\n').trim();
+      skEl.textContent = t || '—';
+    }
+  }
+}
+
+/** Fill form fields from extractor payload (name, title, skills, email when visible, fullText, etc.) */
+function fillForm(d) {
+  if (!d) return;
+  G.lastProfileJson = d.profile_json || null;
+  const pj = d.profile_json;
+  const set = (id, v) => {
+    const el = $(id);
+    if (!el || v == null) return;
+    const s = typeof v === 'number' ? String(v) : String(v).trim();
+    if (s) el.value = s;
+  };
+  if (pj?.identity) {
+    const id = pj.identity;
+    set('c-name',     id.full_name || d.name);
+    set('c-title',    id.headline || d.title);
+    set('c-location', id.location || d.location);
+    set('c-email',    id.email || d.email);
+  } else {
+    set('c-name',     d.name);
+    set('c-title',    d.title);
+    set('c-location', d.location);
+    set('c-email',    d.email);
+  }
+  const canon = d.candidate_text_canonical || d.fullText;
+  set('c-text', canon);
+  if (pj?.skills?.length) {
+    const joined = pj.skills.join(', ');
+    const sk = $('c-skills');
+    const skCur = String(sk?.value ?? '').trim();
+    if (sk && (!skCur || joined.length >= skCur.length)) sk.value = joined;
+  } else {
+    set('c-skills', d.skills);
+  }
+
+  const emailHint = $('c-email-hint');
+  if (emailHint) {
+    const has = String(d.email || '').trim().length > 0;
+    const msg = has ? '' : String(d.email_hint || '').trim();
+    if (msg) {
+      emailHint.textContent = msg;
+      emailHint.hidden = false;
+    } else {
+      emailHint.textContent = '';
+      emailHint.hidden = true;
+    }
+  }
+  const yExp = pj?.metrics?.years_experience ?? d.years_experience;
+  if (yExp != null && !Number.isNaN(+yExp))
+    set('c-years', Math.round(+yExp * 10) / 10);
+  const deg = normalizeDegree(pj?.metrics?.highest_degree || d.highest_degree);
+  if (deg) { const el = $('c-degree'); if (el) el.value = deg; }
+
+  if (d.certifications) {
+    const existing = val('c-skills').toLowerCase();
+    let certParts = [];
+    if (Array.isArray(d.certifications)) {
+      certParts = d.certifications;
+    } else if (typeof d.certifications === 'string') {
+      certParts = d.certifications.includes('\n')
+        ? d.certifications.split(/\n+/)
+        : d.certifications.split(',');
+    }
+    const certs = certParts
+      .map(c => String(c ?? '').trim())
+      .filter(c => c && !existing.includes(c.toLowerCase()));
+    if (certs.length) {
+      const sk = $('c-skills');
+      if (sk) sk.value = [val('c-skills'), ...certs].filter(Boolean).join(', ');
+    }
+  }
+
+  updateCharCount();
+  syncCandSummary();
+  if (d.email || pj?.identity?.email) scheduleCheckDuplicate();
+
+  const meta = $('cand-meta-disp');
+  if (meta) {
+    const bits = [];
+    if (d.scrape_chars) bits.push(`${(d.scrape_chars / 1000).toFixed(1)}k chars scraped`);
+    if (d.pipeline_version) bits.push(`v${d.pipeline_version}`);
+    meta.textContent = bits.join(' · ');
+  }
+  renderClassifiedPanel(pj);
+}
+
+// ── Form helpers ──────────────────────────────────────────────────────
+function syncCandSummary() {
+  const name  = val('c-name')  || '—';
+  const title = val('c-title') || '—';
+  const el    = $('cand-name-disp');
+  const et    = $('cand-title-disp');
+  const av    = $('cand-avatar');
+  if (el) el.textContent = name;
+  if (et) et.textContent = title;
+  if (av) av.textContent = (name !== '—' ? name[0] : '?').toUpperCase();
+}
+
+function updateCharCount() {
+  const len = (val('c-text')).length;
+  const el  = $('char-count');
+  if (el) el.textContent = `${len.toLocaleString()} chars`;
+}
+
+const DEGREE_MAP = [
+  [/ph\.?d|doctor/i,                   'phd'],
+  [/mba|master|m\.?s\.?\b|msc|m\.?eng/i, 'masters'],
+  [/bachelor|b\.?s\.?\b|b\.?e\.?\b|b\.?sc|b\.?tech|b\.?eng|\bba\b/i, 'bachelors'],
+  [/associate|diploma|certificate|a-level/i, 'intermediate'],
+];
+
+function normalizeDegree(raw) {
+  const s = String(raw ?? '').trim().toLowerCase();
+  if (!s) return '';
+  if (['phd','masters','bachelors','intermediate'].includes(s)) return s;
+  for (const [re, label] of DEGREE_MAP) if (re.test(s)) return label;
+  return '';
+}
+
+/** Parse structured fields from blob text (Name:, Skills: headers) */
+function parseProfileText() {
+  const text = val('c-text');
+  if (!text) return;
+  const setIfEmpty = (id, v) => {
+    const el = $(id);
+    if (el && !String(el.value ?? '').trim() && v) el.value = v;
+  };
+  const line = re => {
+    const m = text.match(re);
+    return m && m[1] != null ? String(m[1]).trim() : '';
+  };
+  setIfEmpty('c-name',     line(/^Name:\s*(.+)$/im));
+  setIfEmpty('c-title',    line(/^Current[_ ]?Title:\s*(.+)$/im));
+  setIfEmpty('c-location', line(/^Location:\s*(.+)$/im));
+  setIfEmpty('c-email',    line(/^Email:\s*(.+)$/im));
+  const skillsLine = line(/^Skills:\s*(.+)$/im);
+  if (skillsLine) setIfEmpty('c-skills', skillsLine);
+  const yearsLine = line(/^Years[_ ]?of[_ ]?Experience:\s*([\d.]+)/im);
+  if (yearsLine) setIfEmpty('c-years', yearsLine);
+  const degLine = line(/^Highest[_ ]?Degree:\s*(.+)$/im);
+  if (degLine) {
+    const d = normalizeDegree(degLine);
+    const el = $('c-degree');
+    if (el && !el.value && d) el.value = d;
+  }
+  syncCandSummary();
 }
 
 function clearForm() {
   ['c-name','c-email','c-title','c-location','c-skills','c-text','c-url','c-years']
-    .forEach(id => { if ($(id)) $(id).value = ''; });
-  $('c-degree').value = '';
+    .forEach(id => { const el = $(id); if (el) el.value = ''; });
+  const eh = $('c-email-hint');
+  if (eh) { eh.textContent = ''; eh.hidden = true; }
+  const deg = $('c-degree'); if (deg) deg.value = '';
   updateCharCount();
-  hide('dup-banner'); showAlert('step1-err', '');
-}
-
-function updateCharCount() {
-  const len = ($('c-text')?.value || '').length;
-  const el = $('char-count');
-  if (el) el.textContent = len.toLocaleString() + ' chars';
-}
-
-// ── Step 1 → 2 ────────────────────────────────────────────────
-function goToAnalyze() {
-  const text = ($('c-text')?.value || '').trim();
-  if (!text && !($('c-skills')?.value || '').trim()) {
-    showAlert('step1-err', 'Please add profile text or skills before continuing.'); return;
-  }
+  syncCandSummary();
+  hide('dup-banner','dup-preview','results-card','save-actions','classified-panel','pipeline-ready');
+  const meta = $('cand-meta-disp');
+  if (meta) meta.textContent = '';
   showAlert('step1-err', '');
-
-  // Update candidate summary
-  const name  = $('c-name')?.value.trim()  || 'Unknown Candidate';
-  const title = $('c-title')?.value.trim() || '';
-  $('cand-name-disp').textContent  = name;
-  $('cand-title-disp').textContent = title;
-  $('cand-avatar').textContent     = (name[0] || '?').toUpperCase();
-
-  goStep(2);
-  loadJobs();
+  showAlert('analyze-err', '');
+  G.lastResult         = null;
+  G.savedCandId        = null;
+  G.lastProfileJson    = null;
 }
 
-// ── Jobs loader ───────────────────────────────────────────────
+// ── Duplicate check ───────────────────────────────────────────────────
+let _dupTimer = null;
+function scheduleCheckDuplicate() {
+  clearTimeout(_dupTimer);
+  _dupTimer = setTimeout(checkDuplicate, 600);
+}
+
+async function checkDuplicate() {
+  const email = val('c-email');
+  const url   = val('c-url');
+  hide('dup-banner');
+  if (!email && !url) return;
+
+  try {
+    let endpoint = '';
+    if (email) endpoint = `/api/v1/candidates/page?skip=0&limit=1&q=${encodeURIComponent(email)}`;
+    else return;
+    const data = await api('GET', endpoint);
+    const items = data.items || [];
+    if (!items.length) return;
+    const c = items[0];
+    const dupText = $('dup-text');
+    if (dupText) dupText.textContent = `Already in pool: ${c.full_name || c.external_id}`;
+    const dupView = $('dup-view');
+    if (dupView) dupView.onclick = () => chrome.tabs.create({ url: `${G.apiBase.replace(':8000',':5173')}/candidates/${c.external_id}` });
+    show('dup-banner');
+  } catch { /* silent */ }
+}
+
+// ── Jobs ──────────────────────────────────────────────────────────────
 async function loadJobs() {
   const sel = $('job-select');
+  if (!sel) return;
   sel.innerHTML = '<option value="">Loading…</option>';
-  sel.disabled = true;
+  sel.disabled  = true;
   try {
-    const data = await apiReq('GET', '/api/v1/jobs/page?skip=0&limit=100&status=active&sort=created_at_desc');
+    const data = await api('GET', '/api/v1/jobs/page?skip=0&limit=100&status=active&sort=created_at_desc');
     const jobs = data.items || [];
     if (!jobs.length) {
       sel.innerHTML = '<option value="">No active jobs found</option>';
       return;
     }
-    sel.innerHTML = `<option value="">— Select a job —</option>` +
+    sel.innerHTML =
+      '<option value="">— Select a job —</option>' +
       jobs.map(j => `<option value="${esc(j.external_id)}">${esc(j.title || 'Untitled')} (${esc(j.external_id)})</option>`).join('');
     sel.disabled = false;
   } catch (e) {
-    sel.innerHTML = `<option value="">Error: ${esc(e.message)}</option>`;
+    sel.innerHTML = `<option value="">Failed: ${esc(e.message)}</option>`;
   }
 }
 
-// ── Analyze / real-time match ──────────────────────────────────
+// ── Context + LinkedIn Grab profile + optional auto-extract ───────────
+async function detectContext() {
+  try {
+    const tab = await getRelevantTab();
+    if (!tab?.url) return;
+
+    const onProfile = isLinkedInProfile(tab.url);
+    const onDetails = isLinkedInDetailsSubpage(tab.url);
+    const btn = $('btn-grab-linkedin');
+    if (btn) {
+      btn.disabled = !isLinkedInHost(tab.url);
+      btn.title    = onProfile
+        ? onDetails
+          ? 'Optional refresh — for full About, open: ' + linkedInMemberBaseProfileUrl(tab.url)
+          : 'Optional manual re-scrape of this tab'
+        : 'Open a LinkedIn /in/… profile tab for automatic extract';
+    }
+
+    if (onProfile) {
+      const urlEl = $('c-url');
+      if (urlEl && !String(urlEl.value ?? '').trim()) urlEl.value = tab.url;
+      const msgEl = $('auto-extract-msg');
+      if (msgEl) msgEl.textContent = 'Scraping page & classifying sections…';
+      await autoExtract(tab);
+    }
+  } catch { /* ignore */ }
+}
+
+function setBanner(on) {
+  const b = $('auto-extract-banner');
+  b?.classList.toggle('hidden', !on);
+}
+
+async function autoExtract(tab) {
+  hide('pipeline-ready');
+  const msgEl = $('auto-extract-msg');
+  let d = null;
+  setBanner(true);
+  showAlert('step1-err', '');
+  if (msgEl) msgEl.textContent = 'Scraping visible page → classifying About / Experience / Education / Skills…';
+  try {
+    d = await runExtraction(tab);
+    if (!d) {
+      showAlert(
+        'step1-err',
+        'No data from this tab. Stay on the LinkedIn profile, hard-refresh (Ctrl+Shift+R), reload the extension, then try again.',
+        'error',
+      );
+      fillMinFromLinkedInTab(tab);
+      return;
+    }
+    if (d.error) {
+      showAlert('step1-err', String(d.error), 'error');
+      fillMinFromLinkedInTab(tab);
+      return;
+    }
+    if (extractionIsUsable(d)) {
+      fillForm(d);
+    } else {
+      showAlert(
+        'step1-err',
+        'LinkedIn returned very little text (selectors may have changed, or the profile did not finish loading). Scroll the full profile, wait a few seconds, then reopen the extension — or use Refresh scrape.',
+        'error',
+      );
+      fillForm(d);
+      fillMinFromLinkedInTab(tab);
+    }
+  } catch (e) {
+    showAlert('step1-err', e?.message || String(e), 'error');
+    fillMinFromLinkedInTab(tab);
+  } finally {
+    setBanner(false);
+    if (d && extractionIsUsable(d)) {
+      show('pipeline-ready');
+      const prt = $('pipeline-ready-text');
+      if (prt) {
+        const sc = d.scrape_chars ? `${(d.scrape_chars / 1000).toFixed(1)}k chars scraped` : 'Page processed';
+        prt.textContent = `Profile ready · ${sc}`;
+      }
+    }
+  }
+}
+
+async function grabLinkedIn() {
+  showAlert('step1-err', '');
+  const btn = $('btn-grab-linkedin');
+  if (btn) btn.disabled = true;
+  setBanner(true);
+  try {
+    const tab = await getRelevantTab();
+    if (!tab?.id) throw new Error('No suitable tab found. Focus a LinkedIn profile tab, then open this popup again.');
+    if (!isLinkedInHost(tab.url ?? ''))
+      throw new Error('Switch to a LinkedIn tab first.');
+    const d = await runExtraction(tab);
+    if (!d) throw new Error('No data returned from the page.');
+    if (d.error) throw new Error(d.error);
+    fillForm(d);
+    const urlEl = $('c-url');
+    if (urlEl && !urlEl.value && tab.url) urlEl.value = tab.url;
+    if (!extractionIsUsable(d)) {
+      fillMinFromLinkedInTab(tab);
+      const hint =
+        isLinkedInDetailsSubpage(tab.url || '')
+          ? ` Open the main profile: ${linkedInMemberBaseProfileUrl(tab.url)}`
+          : '';
+      showAlert(
+        'step1-err',
+        'Partial read — scroll About & Experience on the profile overview, wait a moment, then click Refresh scrape or reopen the extension.' + hint,
+        'error',
+      );
+    } else {
+      const chars = val('c-text').length;
+      let msg = `Loaded ${chars.toLocaleString()} chars from LinkedIn`;
+      if (isLinkedInDetailsSubpage(tab.url || ''))
+        msg += `. For full About, open: ${linkedInMemberBaseProfileUrl(tab.url)}`;
+      showAlert('step1-err', msg, 'success');
+      setTimeout(() => showAlert('step1-err', ''), 4000);
+    }
+  } catch (e) {
+    showAlert('step1-err', e.message);
+    try {
+      const t = await getRelevantTab();
+      if (t) fillMinFromLinkedInTab(t);
+    } catch { /* ignore */ }
+  } finally {
+    setBanner(false);
+    await detectContext();
+  }
+}
+
+// ── Match preview API ─────────────────────────────────────────────────
+async function fetchMatchPreview(jobId) {
+  const text = val('c-text');
+  const skills = val('c-skills');
+  if (!text && !skills)
+    throw new Error('No profile text yet. Stay on a LinkedIn /in/ profile until “Profile ready” appears.');
+  const body = {
+    job_id:             jobId,
+    candidate_text:     text || skills || '(no text)',
+    candidate_name:     val('c-name')     || undefined,
+    candidate_title:    val('c-title')    || undefined,
+    candidate_skills:   skills            || undefined,
+    candidate_email:    val('c-email')    || undefined,
+    candidate_location: val('c-location') || undefined,
+    years_experience:   parseFloat(val('c-years')) || undefined,
+    highest_degree:     val('c-degree')   || undefined,
+    profile_url:        val('c-url')      || undefined,
+  };
+  for (const k of Object.keys(body)) if (body[k] === undefined) delete body[k];
+  return api('POST', '/api/v1/match/preview', body);
+}
+
+// ── Preview match only ───────────────────────────────────────────────
 async function analyzeMatch() {
-  const jobId = $('job-select')?.value;
-  if (!jobId) { showAlert('analyze-err', 'Please select a job first.'); return; }
+  const jobId = val('job-select') || $('job-select')?.value;
+  if (!jobId) { showAlert('analyze-err', 'Select a job first.'); return; }
 
   showAlert('analyze-err', '');
-  hide('results-card', 'save-actions');
+  hide('results-card', 'save-actions', 'dup-preview');
+  syncCandSummary();
 
-  $('btn-analyze').disabled = true;
-  show('analyze-spinner'); $('analyze-label').textContent = 'Analyzing…';
+  const analyzeBtn   = $('btn-analyze');
+  const analyzeLabel = $('analyze-label');
+  const analyzeSpinner = $('analyze-spinner');
+  if (analyzeBtn)    analyzeBtn.disabled   = true;
+  if (analyzeLabel)  analyzeLabel.textContent = 'Matching…';
+  if (analyzeSpinner) analyzeSpinner.classList.remove('hidden');
 
   try {
-    const body = {
-      job_id:            jobId,
-      candidate_text:    $('c-text')?.value.trim()     || $('c-skills')?.value.trim() || '(no text)',
-      candidate_name:    $('c-name')?.value.trim()     || undefined,
-      candidate_title:   $('c-title')?.value.trim()    || undefined,
-      candidate_skills:  $('c-skills')?.value.trim()   || undefined,
-      candidate_email:   $('c-email')?.value.trim()    || undefined,
-      candidate_location:$('c-location')?.value.trim() || undefined,
-      years_experience:  parseFloat($('c-years')?.value) || undefined,
-      highest_degree:    $('c-degree')?.value           || undefined,
-      profile_url:       $('c-url')?.value.trim()       || undefined,
-    };
-    // Clean undefined
-    Object.keys(body).forEach(k => body[k] === undefined && delete body[k]);
-
-    const result = await apiReq('POST', '/api/v1/match/preview', body);
+    const result = await fetchMatchPreview(jobId);
     G.lastResult    = result;
     G.selectedJobId = jobId;
     renderResults(result);
     show('results-card', 'save-actions');
+    $('results-card')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (e) {
     showAlert('analyze-err', e.message);
   } finally {
-    $('btn-analyze').disabled = false;
-    hide('analyze-spinner'); $('analyze-label').textContent = 'Analyze Match';
+    if (analyzeBtn)    analyzeBtn.disabled    = false;
+    if (analyzeLabel)  analyzeLabel.textContent = 'Preview match only';
+    if (analyzeSpinner) analyzeSpinner.classList.add('hidden');
   }
 }
 
-function renderResults(r) {
-  // Score ring
-  const pct    = Math.round(r.match_score);
-  const circum = 2 * Math.PI * 34; // r=34 → 213.6
-  const offset = circum - (pct / 100) * circum;
-  $('score-pct').textContent  = pct;
+// ── Match + save to RezumeAI (ingest + job match row) ─────────────────
+async function matchAndSaveToDashboard() {
+  const jobId = val('job-select') || $('job-select')?.value;
+  if (!jobId) { showAlert('analyze-err', 'Select a job first.'); return; }
 
-  const ring = $('ring-fill');
-  if (ring) {
-    const color = pct >= 70 ? '#3ecf8e' : pct >= 45 ? '#fbbf24' : '#f87171';
-    ring.style.stroke = color;
-    ring.style.strokeDashoffset = circum;   // reset
-    setTimeout(() => { ring.style.strokeDashoffset = offset; }, 50);
+  showAlert('analyze-err', '');
+  hide('dup-preview');
+
+  const btn   = $('btn-match-save');
+  const lbl   = $('match-save-label');
+  const spin  = $('match-save-spinner');
+  if (btn)   btn.disabled = true;
+  if (lbl)   lbl.textContent = 'Matching…';
+  if (spin)  spin.classList.remove('hidden');
+
+  try {
+    const result = await fetchMatchPreview(jobId);
+    G.lastResult    = result;
+    G.selectedJobId = jobId;
+    renderResults(result);
+    show('results-card');
+    hide('save-actions');
+    if (lbl) lbl.textContent = 'Saving to pool…';
+    await saveCandidate(true);
+  } catch (e) {
+    showAlert('analyze-err', e.message);
+  } finally {
+    if (btn)   btn.disabled = false;
+    if (lbl)   lbl.textContent = 'Match & save to dashboard';
+    if (spin)  spin.classList.add('hidden');
+  }
+}
+
+// ── Render results card ───────────────────────────────────────────────
+function renderResults(r) {
+  const pct    = Math.round(Number(r.match_score) || 0);
+  const circum = 2 * Math.PI * 34;
+
+  // Score number
+  const sp = $('score-pct');
+  if (sp) sp.textContent = String(pct);
+
+  const headline = $('score-headline');
+  if (headline) {
+    const pos = r.ranking_position;
+    const n = r.total_ranked;
+    const wsPool = r.pool_ranking_scope === 'workspace_pool';
+    if (pos != null && n >= 0 && (wsPool || n > 0)) {
+      const label = wsPool ? 'workspace' : 'saved';
+      headline.textContent = `${pct}% match · #${pos} of ${n + 1} (${label} pool)`;
+    } else {
+      headline.textContent = `${pct}% match`;
+    }
   }
 
-  // Badge
+  // Animated ring
+  const ring = $('ring-fill');
+  if (ring) {
+    const color  = pct >= 70 ? '#3ecf8e' : pct >= 45 ? '#fbbf24' : '#f87171';
+    ring.style.stroke           = color;
+    ring.style.strokeDashoffset = String(circum);
+    setTimeout(() => {
+      ring.style.strokeDashoffset = String(circum - (pct / 100) * circum);
+    }, 60);
+  }
+
+  // Badge: Strong / Medium / Weak
   const badge = $('score-badge');
   if (badge) {
     const lbl = (r.match_label || 'Unknown').toLowerCase();
-    badge.textContent = r.match_label;
+    badge.textContent = r.match_label || '—';
     badge.className   = `score-badge badge-${lbl}`;
   }
 
-  // Rank info
-  $('rank-info').textContent   = r.total_ranked
-    ? `#${r.ranking_position} of ${r.total_ranked + 1} (est.)`
-    : 'First candidate for this job';
-  $('job-name-disp').textContent = r.job_title ? `vs. "${r.job_title}"` : '';
+  // Ranking position
+  const ri = $('rank-info');
+  if (ri) {
+    const capNote = r.pool_capped ? ' Sample capped for API speed.' : '';
+    if (r.pool_ranking_scope === 'workspace_pool') {
+      if (r.total_ranked > 0) {
+        ri.textContent = `Rank #${r.ranking_position} of ${r.total_ranked + 1} scored profiles in your workspace.${capNote}`;
+      } else {
+        ri.textContent = `No other scored profiles in this workspace — #1 of 1.${capNote}`;
+      }
+    } else if (r.total_ranked > 0) {
+      ri.textContent = `Rank #${r.ranking_position} of ${r.total_ranked + 1} saved job rankings (recruiter sign-in uses full workspace pool).`;
+    } else {
+      ri.textContent = 'First ranked candidate for this job';
+    }
+  }
+
+  const jn = $('job-name-disp');
+  if (jn) jn.textContent = r.job_title ? `Job: ${r.job_title}` : '';
 
   // Breakdown bars
-  function setBar(barId, valId, val) {
-    const pctVal = Math.round((val || 0) * 100);
-    const bar = $(barId), valEl = $(valId);
-    if (bar) { bar.style.width = '0%'; setTimeout(() => { bar.style.width = pctVal + '%'; }, 50); }
-    if (valEl) valEl.textContent = pctVal + '%';
-    const color = pctVal >= 70 ? '#3ecf8e' : pctVal >= 45 ? '#fbbf24' : '#f87171';
-    if (bar) bar.style.background = color;
-  }
   const bd = r.breakdown || {};
   setBar('bar-skills',   'val-skills',   bd.skills_overlap);
   setBar('bar-critical', 'val-critical', bd.critical_skill_coverage);
   setBar('bar-exp',      'val-exp',      bd.experience_match);
+  setBar('bar-edu',      'val-edu',      bd.education_match);
   setBar('bar-title',    'val-title',    bd.title_relevance);
 
   // Skill chips
-  renderChips('matching-skills', r.matching_skills || [], 'chip-match');
-  renderChips('missing-skills',  r.missing_skills  || [], 'chip-missing');
+  renderChips('matching-skills', r.matching_skills        || [], 'chip-match');
+  renderChips('missing-skills',  r.missing_skills         || [], 'chip-missing');
+
+  const crit = r.missing_critical_skills || [];
+  const cb   = $('critical-skills-block');
+  if (crit.length) {
+    renderChips('critical-skills', crit, 'chip-missing');
+    cb?.classList.remove('hidden');
+  } else {
+    cb?.classList.add('hidden');
+  }
+
+  // Duplicate detection banner
+  const dp = $('dup-preview');
+  if (dp) {
+    if (r.duplicate) {
+      const prev = r.duplicate.existing_match_score != null
+        ? ` · previous best match ${r.duplicate.existing_match_score}%`
+        : '';
+      dp.textContent = `Already in pool: ${r.duplicate.full_name || r.duplicate.external_id}${prev}. You can still save or skip.`;
+      show('dup-preview');
+    } else {
+      hide('dup-preview');
+      dp.textContent = '';
+    }
+  }
+}
+
+function setBar(barId, valId, rawVal) {
+  const pctVal = Math.round((rawVal || 0) * 100);
+  const color  = pctVal >= 70 ? '#3ecf8e' : pctVal >= 45 ? '#fbbf24' : '#f87171';
+  const bar    = $(barId);
+  const valEl  = $(valId);
+  if (bar) {
+    bar.style.width      = '0%';
+    bar.style.background = color;
+    setTimeout(() => { bar.style.width = `${pctVal}%`; }, 60);
+  }
+  if (valEl) valEl.textContent = `${pctVal}%`;
 }
 
 function renderChips(containerId, skills, cls) {
   const el = $(containerId);
   if (!el) return;
-  if (!skills.length) { el.innerHTML = '<span style="color:var(--text-muted);font-size:11px">—</span>'; return; }
-  el.innerHTML = skills.slice(0, 12).map(s => `<span class="chip ${cls}">${esc(s)}</span>`).join('');
+  if (!skills.length) {
+    el.innerHTML = '<span style="color:var(--text-muted);font-size:11px">—</span>';
+    return;
+  }
+  el.innerHTML = skills.slice(0, 18).map(s => `<span class="chip ${cls}">${esc(s)}</span>`).join('');
 }
 
-// ── Save candidate ─────────────────────────────────────────────
-/** Ensure ingest text starts with Name:/Current Title: so the API name extractor can resolve full_name. */
-function buildIngestionTextForSave() {
-  let body = ($('c-text')?.value || '').trim();
-  if (!body) body = ($('c-skills')?.value || '').trim() || '(no text)';
-
-  const name = ($('c-name')?.value || '').trim();
-  const title = ($('c-title')?.value || '').trim();
-  const loc = ($('c-location')?.value || '').trim();
-  const email = ($('c-email')?.value || '').trim();
-  const skills = ($('c-skills')?.value || '').trim();
-
-  const hasNameLine = /^Name:\s/im.test(body);
-  const lines = [];
-  if (name && !hasNameLine) lines.push(`Name: ${name}`);
-  if (title) lines.push(`Current Title: ${title}`);
-  if (loc) lines.push(`Location: ${loc}`);
-  if (email) lines.push(`Email: ${email}`);
-  if (skills && !/^Skills:/im.test(body)) lines.push(`Skills: ${skills}`);
-
-  if (lines.length) return `${lines.join('\n')}\n\n${body}`;
-  return body;
+// ── Save candidate (optional step after analysis) ─────────────────────
+function buildSaveText() {
+  let body = val('c-text') || val('c-skills') || '(no text)';
+  const name   = val('c-name');
+  const title  = val('c-title');
+  const loc    = val('c-location');
+  const email  = val('c-email');
+  const skills = val('c-skills');
+  const header = [];
+  if (name   && !/^Name:\s/im.test(body))   header.push(`Name: ${name}`);
+  if (title)                                 header.push(`Current Title: ${title}`);
+  if (loc)                                   header.push(`Location: ${loc}`);
+  if (email)                                 header.push(`Email: ${email}`);
+  if (skills && !/^Skills:\s/im.test(body)) header.push(`Skills: ${skills}`);
+  return header.length ? `${header.join('\n')}\n\n${body}` : body;
 }
 
 async function saveCandidate(attachToJob) {
-  const text = buildIngestionTextForSave();
-  const filename = ($('c-name')?.value.trim() || 'candidate') + '.txt';
-
-  $('btn-save-only').disabled  = true;
-  $('btn-save-match').disabled = true;
+  const sb = $('btn-save-only');
+  const sm = $('btn-save-match');
+  const bms = $('btn-match-save');
+  if (sb) sb.disabled = true;
+  if (sm) sm.disabled = true;
+  if (bms) bms.disabled = true;
 
   try {
-    // 1. Ingest / create candidate
-    const ingestion = await apiReq('POST', '/api/v1/ingestions/text', {
-      text,
+    // 1. Ingest the profile text
+    const ingestion = await api('POST', '/api/v1/ingestions/text', {
+      text:     buildSaveText(),
       source:   'extension',
-      filename,
+      filename: (val('c-name') || 'candidate') + '.txt',
     });
-    G.savedCandId = ingestion.candidate_external_id || null;
 
-    // 2. Optionally persist match score to the selected job
-    if (attachToJob && G.selectedJobId && G.savedCandId) {
-      try {
-        await apiReq('POST',
-          `/api/v1/jobs/${encodeURIComponent(G.selectedJobId)}/match-one`,
-          { candidate_id: G.savedCandId },
-        );
-      } catch (e) {
-        // Non-fatal: candidate saved, match may retry
-        console.warn('match-one failed:', e.message);
+    // 2. Poll until done (max 15 s)
+    let extId = ingestion.candidate_external_id || null;
+    if (ingestion.status !== 'done') {
+      for (let i = 0; i < 15; i++) {
+        await sleep(1000);
+        try {
+          const st = await api('GET', `/api/v1/ingestions/batch/${ingestion.batch_id}`);
+          const row = (st.items || []).find(x => x.id === ingestion.id);
+          if (row?.status === 'done') { extId = row.candidate_external_id; break; }
+          if (row?.status === 'failed') throw new Error(row.error || 'Ingestion failed.');
+        } catch (e) {
+          if (String(e.message).includes('failed')) throw e;
+        }
       }
     }
 
-    // 3. Show confirmation
-    const scoreStr = G.lastResult ? ` — ${Math.round(G.lastResult.match_score)}% match` : '';
-    $('confirm-title').textContent = attachToJob ? 'Saved & Attached' : 'Candidate Saved';
-    $('confirm-msg').textContent   = attachToJob
-      ? `${$('c-name')?.value || 'Candidate'} saved and attached to "${$('job-select')?.options[$('job-select')?.selectedIndex]?.text || G.selectedJobId}"${scoreStr}.`
-      : `${$('c-name')?.value || 'Candidate'} saved to RezumeAI.`;
-    goStep(3);
+    G.savedCandId = extId;
+
+    // 3. Optionally persist match vs selected job (same cross-encoder path as the app)
+    let matchPersistNote = '';
+    if (attachToJob && G.selectedJobId && extId) {
+      try {
+        // Must mirror POST /match/preview: server builds cross-encoder input as
+        // title + skills + candidate_text_for_match. Do NOT repeat title/skills here
+        // (that was inflating/deflating scores vs the extension preview).
+        const profileBlob = String(val('c-text') || val('c-skills') || '').trim();
+        const yRaw = val('c-years');
+        const payload = {
+          candidate_external_id: extId,
+          candidate_text_for_match: profileBlob.length >= 10 ? profileBlob : undefined,
+          candidate_title: val('c-title') || undefined,
+          candidate_skills: val('c-skills') || undefined,
+          highest_degree: val('c-degree') || undefined,
+        };
+        if (yRaw !== '') {
+          const y = parseFloat(yRaw);
+          if (!Number.isNaN(y)) payload.years_experience = y;
+        }
+        await api('POST', `/api/v1/jobs/${G.selectedJobId}/match-candidate-save`, payload);
+      } catch (e) {
+        matchPersistNote = ` Match score was not saved to the job (${e.message}). You can run matching from the job in the web app.`;
+      }
+    }
+
+    // 4. Success screen
+    const title = $('confirm-title');
+    const msg   = $('confirm-msg');
+    if (title) title.textContent = 'Candidate Saved';
+    if (msg) {
+      const name = val('c-name') || extId || 'Candidate';
+      const jobPart = attachToJob && G.lastResult
+        ? ` and matched to job (${Math.round(G.lastResult.match_score)}% preview)`
+        : '';
+      msg.textContent = `${name} added to the pool${jobPart}.${matchPersistNote}`;
+    }
+    showStep(3);
   } catch (e) {
-    showAlert('analyze-err', 'Save failed: ' + e.message);
-  } finally {
-    $('btn-save-only').disabled  = false;
-    $('btn-save-match').disabled = false;
+    showAlert('step1-err', e.message);
+    if (sb) sb.disabled = false;
+    if (sm) sm.disabled = false;
+    if (bms) bms.disabled = false;
   }
 }
 
-// ── Duplicate detection ────────────────────────────────────────
-async function checkDuplicate() {
-  const email = ($('c-email')?.value || '').trim().toLowerCase();
-  if (!email) return;
-  try {
-    const data = await apiReq('GET', `/api/v1/candidates/page?skip=0&limit=1&q=${encodeURIComponent(email)}`);
-    const match = (data.items || []).find(c => (c.contact_email || '').toLowerCase() === email);
-    if (match) {
-      $('dup-text').textContent = `"${match.full_name || email}" already exists (${match.external_id})`;
-      show('dup-banner');
-    } else {
-      hide('dup-banner');
-    }
-  } catch { /* non-fatal */ }
-}
-
-// ── Event wiring ──────────────────────────────────────────────
+// ── Event wiring ──────────────────────────────────────────────────────
 function wireEvents() {
-
   // Login
   $('btn-login')?.addEventListener('click', async () => {
     showAlert('l-err', '');
-    const email = $('l-email')?.value.trim(), password = $('l-pass')?.value;
-    if (!email || !password) { showAlert('l-err', 'Email and password are required.'); return; }
+    const email = val('l-email'), password = $('l-pass')?.value;
+    if (!email || !password) { showAlert('l-err', 'Email and password required.'); return; }
     setBtn('btn-login', true);
     try {
       await login(email, password);
-      showView('main'); checkHealth(); detectContext();
+      showView('main');
+      checkHealth();
+      loadJobs();
+      detectContext();
+      syncCandSummary();
     } catch (e) { showAlert('l-err', e.message); }
     finally { setBtn('btn-login', false); }
   });
   $('l-pass')?.addEventListener('keydown', e => { if (e.key === 'Enter') $('btn-login')?.click(); });
 
-  // Logout / Settings
+  // Logout / settings
   $('btn-logout')?.addEventListener('click', logout);
   $('btn-settings')?.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
-  // Step 1 — Extract
   $('btn-grab-linkedin')?.addEventListener('click', grabLinkedIn);
-  $('btn-grab-selection')?.addEventListener('click', grabSelection);
   $('btn-clear')?.addEventListener('click', clearForm);
-  $('c-text')?.addEventListener('input', updateCharCount);
-  $('c-email')?.addEventListener('blur', checkDuplicate);
+
+  // Profile text: parse fields button
   $('btn-parse-fields')?.addEventListener('click', () => {
     showAlert('step1-err', '');
-    const { filled } = hydrateFormFromProfileText({ onlyIfEmpty: false });
-    if (filled > 0) {
-      showAlert('step1-err', `Updated ${filled} field(s) from profile text.`, 'success');
-      setTimeout(() => showAlert('step1-err', ''), 2500);
-    } else {
-      showAlert(
-        'step1-err',
-        'No lines like “Name: …”, “Current Title: …”, or “SKILLS” were found. Add those lines at the top of Profile Text, or paste a fuller export.',
-        'error',
-      );
-    }
+    parseProfileText();
+    showAlert('step1-err', 'Fields updated from profile text', 'success');
+    setTimeout(() => showAlert('step1-err', ''), 2500);
   });
-  $('btn-to-analyze')?.addEventListener('click', goToAnalyze);
 
-  // Step 2 — Analyze
-  $('btn-back-1')?.addEventListener('click', () => goStep(1));
+  // Char counter + auto-sync avatar
+  $('c-text')?.addEventListener('input', updateCharCount);
+  ['c-name','c-title'].forEach(id => $(`${id}`)?.addEventListener('input', syncCandSummary));
+  $('c-email')?.addEventListener('blur', scheduleCheckDuplicate);
+
+  // Jobs
   $('btn-reload-jobs')?.addEventListener('click', loadJobs);
+
+  $('btn-match-save')?.addEventListener('click', () => void matchAndSaveToDashboard());
   $('btn-analyze')?.addEventListener('click', analyzeMatch);
+
+  // Clear result / pick another job
   $('btn-reanalyze')?.addEventListener('click', () => {
-    hide('results-card', 'save-actions'); showAlert('analyze-err', '');
-    $('job-select').value = '';
+    hide('results-card', 'save-actions');
+    showAlert('analyze-err', '');
+    G.lastResult = null;
   });
 
   // Save actions
-  $('btn-save-only')?.addEventListener('click', () => saveCandidate(false));
+  $('btn-save-only')?.addEventListener('click',  () => saveCandidate(false));
   $('btn-save-match')?.addEventListener('click', () => saveCandidate(true));
   $('btn-skip')?.addEventListener('click', () => {
-    clearForm(); goStep(1); show('step-1'); hide('step-2', 'step-3');
-    ['step-ind-1','step-ind-2','step-ind-3'].forEach(id => { $(id)?.classList.remove('active','done'); });
-    $('step-ind-1')?.classList.add('active');
+    clearForm();
+    showStep(1);
   });
 
-  // Confirmation
+  // Confirmation screen
   $('btn-new-candidate')?.addEventListener('click', () => {
-    clearForm(); goStep(1);
+    clearForm();
+    showStep(1);
+    void detectContext();
   });
   $('btn-open-app')?.addEventListener('click', () => {
-    chrome.tabs.create({ url: G.apiBase.replace(':8000', ':5173') || 'http://localhost:5173' });
+    const frontendBase = G.apiBase.replace(':8000', ':5173');
+    chrome.tabs.create({ url: G.savedCandId
+      ? `${frontendBase}/candidates/${G.savedCandId}`
+      : frontendBase,
+    });
   });
 }
 
-// ── Utilities ─────────────────────────────────────────────────
-function esc(s) {
-  return String(s || '')
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-// ── Init ──────────────────────────────────────────────────────
+// ── Init ──────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
   const stored = await chrome.storage.local.get([SK.TOKEN, SK.EMAIL, SK.API_BASE, SK.ROLE]);
-  G.apiBase = stored[SK.API_BASE] || 'http://127.0.0.1:8000';
+  G.apiBase = stored[SK.API_BASE] || DEFAULT_API;
   G.token   = stored[SK.TOKEN]   || null;
   G.email   = stored[SK.EMAIL]   || '';
 
@@ -748,7 +1362,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   if (G.token) {
     showView('main');
-    goStep(1);
+    showStep(1);
+    syncCandSummary();
+    loadJobs();
     detectContext();
   } else {
     showView('login');

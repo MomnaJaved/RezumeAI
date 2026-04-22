@@ -17,15 +17,13 @@ from sqlalchemy.orm import Session
 from api.database import get_db
 from api.dependencies import get_current_user_optional
 from api.models import Candidate, Job, JobCandidateRanking, User
+from api.services.match_preview_pool import job_text_embedding, semantic_similarity_for_text, workspace_pool_rank
 from api.services.ml_ranking import build_job_text_from_db
 from api.services.ranking_adjust import adjusted_match_score
 from api.services.ranking_explain import build_ranking_explanation
+from api.services.workspace_scope import ensure_workspace_for_recruiter
 from src.inference.service import match_score
-from src.matching.weak_score import (
-    classify_job_skills,
-    overlap_ratio,
-    parse_skill_str,
-)
+from src.matching.weak_score import classify_job_skills, parse_skill_str
 
 _log = logging.getLogger("rezume.api")
 
@@ -67,8 +65,13 @@ class DuplicateInfo(BaseModel):
 class MatchPreviewResponse(BaseModel):
     match_score: float              # 0–100
     match_label: str                # Strong / Medium / Weak
-    ranking_position: int           # estimated position if added
-    total_ranked: int               # how many candidates already ranked for this job
+    ranking_position: int           # 1-based rank vs pool (see pool_ranking_scope)
+    total_ranked: int               # pool size: workspace candidates scored, or saved rankings only
+    pool_ranking_scope: str = Field(
+        "",
+        description="workspace_pool = ranked vs all visible candidates; saved_rankings_only = JobCandidateRanking rows only",
+    )
+    pool_capped: bool = Field(False, description="True if workspace pool hit REZUME_MATCH_PREVIEW_POOL_CAP")
     breakdown: MatchBreakdown
     matching_skills: List[str]
     missing_skills: List[str]
@@ -81,19 +84,34 @@ class MatchPreviewResponse(BaseModel):
 # ── Endpoint ──────────────────────────────────────────────────
 
 @router.post("/match/preview", response_model=MatchPreviewResponse, summary="Real-time match preview (no save)")
+def _preview_enforce_job_access(db: Session, job: Job, user: Optional[User]) -> None:
+    if user is None:
+        return
+    if (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() == "candidate":
+        return
+    w = ensure_workspace_for_recruiter(db, user)
+    if w is not None:
+        jw = getattr(job, "workspace_id", None)
+        if jw is not None and jw != w:
+            raise HTTPException(status_code=404, detail=f"Job '{job.external_id}' not found.")
+
+
 def match_preview(
     req: MatchPreviewRequest,
     db: Session = Depends(get_db),
-    _user: Optional[User] = Depends(get_current_user_optional),
+    user: Optional[User] = Depends(get_current_user_optional),
 ) -> MatchPreviewResponse:
     """
     Evaluate a candidate against a job in real-time without creating any database records.
-    Returns match score, ranking breakdown, estimated ranking position, and duplicate detection.
+    Match % uses the same adjusted path as saved rankings (cross-encoder + semantic SBERT term
+    + skill / experience rules). Rank is vs all workspace-visible candidates when authenticated
+    as a recruiter; otherwise vs stored JobCandidateRanking rows only.
     """
     # 1. Load job
     job = db.query(Job).filter(Job.external_id == req.job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail=f"Job '{req.job_id}' not found.")
+    _preview_enforce_job_access(db, job, user)
 
     # 2. Build candidate text (structured fields improve scoring)
     cand_text_parts = [
@@ -108,14 +126,14 @@ def match_preview(
     # 3. Build a lightweight mock candidate object (no DB write)
     cand_mock = SimpleNamespace(
         title=req.candidate_title or "",
-        skills=req.candidate_skills or req.candidate_text[:500],
+        skills=req.candidate_skills or "",
         raw_text=req.candidate_text,
         years_experience=req.years_experience,
         highest_degree=req.highest_degree or "",
         certifications=req.certifications or "",
     )
 
-    # 4. Run cross-encoder match score
+    # 4. Run cross-encoder match score + adjusted final (incl. semantic, same family as rank-and-save)
     job_text = build_job_text_from_db(job)
     try:
         raw_score: float = match_score(cand_text, job_text)
@@ -123,19 +141,21 @@ def match_preview(
         _log.warning("match_score failed in preview: %s — falling back to heuristic", e)
         raw_score = 0.5
 
-    # 5. Compute adjusted final score
+    job_vec = job_text_embedding(job_text)
+    sem_preview = semantic_similarity_for_text(job_vec, cand_text)
     adj = adjusted_match_score(
-        job, cand_mock,
+        job,
+        cand_mock,
         raw_cross_encoder_score=raw_score,
-        sbert_similarity=0.0,
+        sbert_similarity=sem_preview,
     )
-    final_score: float = adj["final_score"]
+    final_score: float = float(adj["final_score"])
 
     # 6. Build explanation
     expl = build_ranking_explanation(
         job, cand_mock,
         cross_encoder_score=final_score,
-        raw_cross_encoder_score=raw_score,
+        raw_cross_encoder_score=float(adj.get("raw_cross_encoder_score", raw_score)),
     )
 
     # 7. Compute skills overlap for the UI
@@ -144,15 +164,33 @@ def match_preview(
     _all_s, critical_s, _weights = classify_job_skills(job_skills)
     matching_skills: List[str] = sorted((job_skills & cand_skills))[:20]
 
-    # 8. Estimate ranking position (how many existing ranked > this score)
-    existing = (
-        db.query(JobCandidateRanking.cross_encoder_score)
-        .filter(JobCandidateRanking.job_id == job.id)
-        .all()
-    )
-    existing_scores = [row[0] for row in existing]
-    ranking_position = sum(1 for s in existing_scores if s > final_score) + 1
-    total_ranked = len(existing_scores)
+    # 8. Rank vs full workspace candidate pool (recruiter), else saved rankings only
+    pool_capped = False
+    pool_scope = "saved_rankings_only"
+    role = (getattr(user, "account_role", None) or "none").strip().lower() if user else "none"
+    recruiter_ws = None
+    if user is not None and role != "candidate":
+        recruiter_ws = ensure_workspace_for_recruiter(db, user)
+
+    if recruiter_ws is not None:
+        pool_scope = "workspace_pool"
+        ranking_position, total_ranked, pool_capped, _n = workspace_pool_rank(
+            db,
+            job,
+            job_text,
+            job_vec,
+            final_score,
+            workspace_id=recruiter_ws,
+        )
+    else:
+        existing = (
+            db.query(JobCandidateRanking.cross_encoder_score)
+            .filter(JobCandidateRanking.job_id == job.id)
+            .all()
+        )
+        existing_scores = [row[0] for row in existing]
+        ranking_position = sum(1 for s in existing_scores if s > final_score) + 1
+        total_ranked = len(existing_scores)
 
     # 9. Duplicate detection (by email then by profile URL)
     duplicate: Optional[DuplicateInfo] = None
@@ -190,6 +228,8 @@ def match_preview(
         match_label=label,
         ranking_position=ranking_position,
         total_ranked=total_ranked,
+        pool_ranking_scope=pool_scope,
+        pool_capped=pool_capped,
         breakdown=MatchBreakdown(
             skills_overlap=round(float(expl["skills_match_ratio"]), 4),
             critical_skill_coverage=round(float(expl["critical_skill_coverage"]), 4),

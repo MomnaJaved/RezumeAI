@@ -2,17 +2,21 @@
   "manifest_version": 3,
   "name": "RezumeAI Recruiter",
   "short_name": "RezumeAI",
-  "version": "1.0.0",
-  "description": "Capture LinkedIn profiles and resume text directly into RezumeAI's AI matching pipeline.",
+  "version": "1.6.1",
+  "description": "LinkedIn: auto page scrape, section classification (about, experience, education, skills), job match & save to RezumeAI. Comply with LinkedIn and applicable law.",
   "permissions": [
     "activeTab",
+    "tabs",
     "storage",
     "scripting"
   ],
   "host_permissions": [
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*",
-    "https://*.linkedin.com/*"
+    "https://*.linkedin.com/*",
+    "http://*.linkedin.com/*",
+    "https://linkedin.com/*",
+    "http://linkedin.com/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -27,9 +31,11 @@
     {
       "matches": [
         "https://*.linkedin.com/*",
-        "http://*.linkedin.com/*"
+        "http://*.linkedin.com/*",
+        "https://linkedin.com/*",
+        "http://linkedin.com/*"
       ],
-      "js": ["extract_core.js", "content.js"],
+      "js": ["extract_core.js", "profile_pipeline.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

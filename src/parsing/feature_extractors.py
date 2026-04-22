@@ -22,13 +22,81 @@ RE_EDU_LINE = re.compile(
 # Lines that leaked in from other resume sections (whole-line filter).
 _RE_EDU_LEAK = re.compile(
     r"\b(work experience|employment history|professional experience|career history|"
-    r"^skills\s*:|\bskills\s+and\b|\btechnical skills\b)\b",
+    r"^skills\s*:|\bskills\s+and\b|\btechnical skills\b|activities\s+and\s+societies)\b",
+    re.IGNORECASE,
+)
+# LinkedIn-style lines that are not education records.
+_RE_EDU_SKILLS_FOOTER = re.compile(r"\band\s*\+\s*\d+\s*skills?\b", re.IGNORECASE)
+_RE_EDU_FIRST_PERSON_BLURB = re.compile(
+    r"\b(hello there|I underwent|I am now|I am a|I'm a|I’m a|my journey|enrolled in|now I am)\b",
     re.IGNORECASE,
 )
 _RE_CERT_LEAK = re.compile(
     r"\b(work experience|employment history|education\s*:|\beducation\s+background\b)\b",
     re.IGNORECASE,
 )
+
+
+def _fix_cp1252_mojibake_utf8_punct(t: str) -> str:
+    """
+    Fix UTF-8 punctuation that was mis-decoded as Windows-1252 (common in LinkedIn copy-paste).
+    Example: en dash U+2013 becomes the three-character sequence â€" in the UI.
+    """
+    for good in ("\u2013", "\u2014", "\u2019", "\u201c", "\u201d", "\u2022", "\u00b7"):
+        try:
+            bad = good.encode("utf-8").decode("cp1252")
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            continue
+        if bad and bad != good:
+            t = t.replace(bad, good)
+    return t
+
+
+def _education_line_is_noise(s: str) -> bool:
+    """Drop LinkedIn / résumé fluff that often lands under Education."""
+    line = re.sub(r"\s+", " ", (s or "").strip())
+    if not line or len(line) < 2:
+        return True
+    low = line.lower()
+    if _RE_EDU_SKILLS_FOOTER.search(line):
+        return True
+    if re.search(r"^\s*activities\s+and\s+societies\s*:", line, re.IGNORECASE):
+        return True
+    if re.match(r"^\s*grade:\s*pass\s*$", low):
+        return True
+    # Orphan month-year lines (LinkedIn stacks dates without school on their own line).
+    if (
+        len(line) < 44
+        and re.match(
+            r"^[A-Za-z]{3,9}\s+\d{4}\s*[\u2013\u2014–-]\s*(?:[A-Za-z]{3,9}\s+\d{4}|present)\s*$",
+            line,
+            re.IGNORECASE,
+        )
+        and "university" not in low
+        and "college" not in low
+        and "institute" not in low
+        and "degree" not in low
+        and "program" not in low
+    ):
+        return True
+    if low in {"sports", "coding", "football", "music", "cricket"} and len(line) < 24:
+        return True
+    if len(line) > 90 and _RE_EDU_FIRST_PERSON_BLURB.search(line):
+        return True
+    return False
+
+
+def _clamp_education_entry(s: str, max_len: int = 220) -> str:
+    """Keep education lines readable; trim trailing LinkedIn noise after long comma lists."""
+    line = re.sub(r"\s+", " ", (s or "").strip())
+    if len(line) <= max_len:
+        return line
+    cut = line[: max_len + 1]
+    if "," in cut[:-1]:
+        cut = cut.rsplit(",", 1)[0].strip()
+    else:
+        cut = line[:max_len].rsplit(" ", 1)[0].strip()
+    return cut + "…" if cut else line[:max_len] + "…"
 
 
 def _split_resume_bullet_line(line: str, max_chunk: int) -> list[str]:
@@ -54,14 +122,19 @@ def _refine_education_lines(lines: list[str]) -> list[str]:
     refined: list[str] = []
     seen: set[str] = set()
     for line in lines:
-        for part in _split_resume_bullet_line(line, 200):
+        if _education_line_is_noise(line):
+            continue
+        for part in _split_resume_bullet_line(line, 160):
+            if _education_line_is_noise(part):
+                continue
             if _RE_EDU_LEAK.search(part) and len(part) > 80:
                 continue
-            if part in seen:
+            part = _clamp_education_entry(part, 220)
+            if not part or part in seen:
                 continue
             seen.add(part)
             refined.append(part)
-    return refined[:14]
+    return refined[:8]
 
 
 def _refine_certification_lines(lines: list[str]) -> list[str]:
@@ -162,6 +235,8 @@ def extract_education(text: str) -> Dict:
         s = re.sub(r"\s+", " ", l).strip()
         if not s or s in seen or len(s) > 480:
             continue
+        if _education_line_is_noise(s):
+            continue
         seen.add(s)
         merged.append(s)
     merged = _merge_adjacent_education_lines(merged)
@@ -191,7 +266,7 @@ def extract_education(text: str) -> Dict:
 
     return {
         "highest_degree": highest,
-        "education_lines": " | ".join(merged[:12]) if merged else "",
+        "education_lines": " | ".join(merged[:8]) if merged else "",
     }
 
 # ---------- CERTIFICATIONS ----------
@@ -422,6 +497,7 @@ def preprocess_resume_text_for_structure(text: str) -> str:
 
 def _preprocess_resume_text_for_years(text: str) -> str:
     t = text.replace("\r\n", "\n").replace("\r", "\n")
+    t = _fix_cp1252_mojibake_utf8_punct(t)
     # Normalize NBSP and horizontal spaces (common in PDFs) to regular space for regexes.
     t = t.replace("\u00a0", " ").replace("\u2009", " ").replace("\u2002", " ")
     # OCR / PDF: "2 0 2 0 - 2 0 2 4" → "2020-2024"
