@@ -438,10 +438,26 @@ export default function ScanResumePage() {
               <div className="scan-field-group">
                 <label>Full name</label>
                 <input type="text" placeholder="e.g. Jane Smith" {...field("full_name")} />
+                {ocr && !(fields.full_name || "").trim() && (
+                  <p className="muted" style={{ fontSize: "0.8rem", margin: "0.25rem 0 0" }}>
+                    Not detected from this photo — type your name as on the résumé (OCR often misses headers).
+                  </p>
+                )}
               </div>
               <div className="scan-field-group">
                 <label>Email</label>
-                <input type="email" placeholder="e.g. jane@example.com" {...field("contact_email")} />
+                <input
+                  type="text"
+                  inputMode="email"
+                  autoComplete="email"
+                  placeholder="e.g. jane@example.com"
+                  {...field("contact_email")}
+                />
+                {ocr && !(fields.contact_email || "").trim() && (
+                  <p className="muted" style={{ fontSize: "0.8rem", margin: "0.25rem 0 0" }}>
+                    Not detected — add the address from the résumé if you want it stored (blur or glare hides @).
+                  </p>
+                )}
               </div>
               <div className="scan-field-group">
                 <label>Title / Headline</label>
@@ -470,7 +486,11 @@ export default function ScanResumePage() {
               </div>
               <div className="scan-field-group">
                 <label>Certifications</label>
-                <textarea rows={2} placeholder="e.g. AWS Solutions Architect" {...field("certifications")} />
+                <textarea
+                  rows={2}
+                  placeholder="No certifications found — add any here, or leave empty."
+                  {...field("certifications")}
+                />
               </div>
             </div>
 

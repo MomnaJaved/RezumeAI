@@ -39,3 +39,7 @@ def test_extract_primary_email_reach_me_at_not_obfuscation():
     """Literal ' at ' before an address must not become a false @ (regression guard)."""
     t = "Reach me at ahmad.ali@acme.jobs for references."
     assert extract_primary_email(t) == "ahmad.ali@acme.jobs"
+
+def test_extract_primary_email_ocr_line_break_inside_address():
+    t = "Jane Smith\njane.smith@\ngmail.com\nSkills: Python"
+    assert extract_primary_email(t) == "jane.smith@gmail.com"

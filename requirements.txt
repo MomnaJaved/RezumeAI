@@ -40,6 +40,7 @@ sentence-transformers>=2.1.0
 six==1.17.0
 smart_open==7.5.0
 spacy==3.8.11
+# NLP pipeline (``src/parsing/nlp_resume.py``): ``python -m spacy download en_core_web_sm``
 spacy-legacy==3.0.12
 spacy-loggers==1.0.5
 srsly==2.5.2

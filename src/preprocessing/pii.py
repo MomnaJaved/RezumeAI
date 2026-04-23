@@ -214,6 +214,17 @@ def _repair_local_stuck_to_public_domain(t: str) -> str:
             rf"\1@{dom_lit}",
             t,
         )
+    # Academic / regional TLDs (common on PK résumés; OCR often drops ``@``).
+    for dom_lit, dom_re in (
+        ("edu.pk", r"edu\.pk"),
+        ("com.pk", r"com\.pk"),
+        ("ac.uk", r"ac\.uk"),
+    ):
+        t = re.sub(
+            rf"(?i)(?<![@\w.])([a-z0-9][a-z0-9._%+-]{{3,52}})({dom_re})\b",
+            rf"\1@{dom_lit}",
+            t,
+        )
     return t
 
 
@@ -231,6 +242,40 @@ def _pick_email_collapsed_lines(norm: str, addr_ok) -> str:
             addr = m.group(1).strip().lower()
             if addr_ok(addr):
                 return addr
+    return ""
+
+
+def _header_email_blob_for_ocr(norm_head: str) -> str:
+    """
+    Collapse only the email-looking lines (from the first ``@`` / major host hint),
+    so the candidate's name on earlier lines is not glued into the local-part.
+    """
+    lines = [ln.strip() for ln in norm_head.splitlines() if ln.strip()][:40]
+    start: int | None = None
+    for i, ln in enumerate(lines):
+        if "@" in ln or re.search(
+            r"\b(gmail|yahoo|hotmail|outlook|protonmail|icloud|edu\.pk|ac\.uk)\b", ln, re.IGNORECASE
+        ):
+            start = i
+            break
+    if start is None:
+        return ""
+    chunk = lines[start : start + 5]
+    return "".join(re.sub(r"\s+", "", x) for x in chunk)
+
+
+def _pick_email_from_collapsed_text(flat: str, addr_ok) -> str:
+    """Scan text with all whitespace removed (fixes ``user@\\n  gmail.com`` from OCR)."""
+    if not flat or "@" not in flat:
+        return ""
+    for m in RE_EMAIL.finditer(flat):
+        addr = m.group(0).strip().lower()
+        if addr_ok(addr):
+            return addr
+    for m in _RE_AT_TOKEN.finditer(flat):
+        addr = m.group(1).strip().lower()
+        if addr_ok(addr):
+            return addr
     return ""
 
 
@@ -271,7 +316,34 @@ def extract_primary_email(text: str, *, max_len: int = 320) -> str:
 
     # Merged multi-pass OCR can be long; keep more of the header/contact area.
     head = text[:12000]
-    got = pick(normalize_text_for_email_scan(head))
+    norm_head = normalize_text_for_email_scan(head)
+    got = pick(norm_head)
     if got:
         return got
-    return pick(normalize_text_for_email_scan(text))
+    # OCR often breaks an address across lines; collapse helps only on the header (not whole CV),
+    # otherwise names glue into the local-part and produce false matches.
+    head_for_blob = norm_head
+    m_cut = re.search(
+        r"(?i)\n\s*(skills|technical\s+skills|experience|work\s+experience|education|projects|summary|objective)\b\s*:?",
+        head_for_blob,
+    )
+    if m_cut:
+        head_for_blob = head_for_blob[: m_cut.start()]
+    flat = _header_email_blob_for_ocr(head_for_blob)
+    got = _pick_email_from_collapsed_text(flat, addr_ok) if flat else ""
+    if got:
+        return got[:max_len]
+    full_norm = normalize_text_for_email_scan(text)
+    got = pick(full_norm)
+    if got:
+        return got
+    blob_src = full_norm[:16000]
+    m_cut2 = re.search(
+        r"(?i)\n\s*(skills|technical\s+skills|experience|work\s+experience|education|projects|summary|objective)\b\s*:?",
+        blob_src,
+    )
+    if m_cut2:
+        blob_src = blob_src[: m_cut2.start()]
+    flat2 = _header_email_blob_for_ocr(blob_src)
+    got = _pick_email_from_collapsed_text(flat2, addr_ok) if flat2 else ""
+    return got[:max_len] if got else ""

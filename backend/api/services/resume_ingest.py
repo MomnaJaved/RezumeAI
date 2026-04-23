@@ -12,8 +12,14 @@ from api.schemas import OcrScanSavePayload
 from src.inference.service import classify_role
 from src.parsing.skill_mining import extract_skill_candidates, is_noise, normalize
 from src.parsing.feature_extractors import extract_certifications, extract_education, estimate_years_experience
-from src.parsing.ocr_normalize import normalize_resume_text_for_ocr
+from src.parsing.text_cleaning import preprocess_resume_text
 from src.parsing.text_extractors import extract_text_any
+from src.parsing.nlp_resume import (
+    augment_years_experience,
+    enrich_resume_text,
+    merge_skill_candidates,
+    suggest_name_from_nlp,
+)
 from src.parsing.name_extractor import UNKNOWN_CANDIDATE, resolve_candidate_full_name
 from src.parsing.role_labels import ROLE_LABELS_MULTI, title_to_role_label
 from src.parsing.candidate_title_resolve import resolve_title_from_resume_text
@@ -135,7 +141,7 @@ def _resolve_full_name_reextracted_from_file(filename: str, content: bytes) -> s
     raw = (raw or "").strip()
     if len(raw) < MIN_TEXT_CHARS:
         return UNKNOWN_CANDIDATE
-    raw = normalize_resume_text_for_ocr(raw)
+    raw = preprocess_resume_text(raw)
     raw_clean2 = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
     em2 = extract_primary_email(raw_clean2)
     n, _ = resolve_candidate_full_name(raw_clean2, em2)
@@ -240,8 +246,7 @@ def parse_upload(filename: str, content: bytes, *, skip_heavy_ml: bool = False) 
         except OSError:
             pass
 
-    raw = raw.strip()
-    raw = normalize_resume_text_for_ocr(raw)
+    raw = preprocess_resume_text(raw.strip())
     if len(raw) < MIN_TEXT_CHARS:
         raise ValueError(
             "Could not extract enough text. For scanned PDFs/images, install Tesseract + "
@@ -250,6 +255,7 @@ def parse_upload(filename: str, content: bytes, *, skip_heavy_ml: bool = False) 
 
     # Keep a clean-but-not-stripped copy for name heuristics.
     raw_clean = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
+    nlp = enrich_resume_text(raw_clean)
     contact_email = extract_primary_email(raw_clean)
     stripped = strip_pii(raw_clean)
     pii_safe_structural = strip_pii_keep_newlines(raw_clean)
@@ -260,7 +266,7 @@ def parse_upload(filename: str, content: bytes, *, skip_heavy_ml: bool = False) 
     skills = ", ".join(skills_list)
 
     # Years first: drives Fresher vs inferred title and seniority polish.
-    years = estimate_years_experience(raw_clean)
+    years = augment_years_experience(estimate_years_experience(raw_clean), nlp)
 
     # Infer coarse role *before* the title so headline resolution can map e.g. frontend → "Frontend Developer"
     # when the CV has no explicit title line and skill-based role rules miss (common on sparse résumés).
@@ -281,6 +287,8 @@ def parse_upload(filename: str, content: bytes, *, skip_heavy_ml: bool = False) 
         raw_clean, skills, years if years > 0 else None, role_label_hint=role_guess
     )
     title = (title or "").strip() or "Professional"
+    if title == "Professional" and (nlp.title_hint or "").strip():
+        title = (nlp.title_hint or "").strip()
 
     # Coarse role label for filtering/routing (multi-dept). Prefer title mapping; else ML guess above.
     role_label = ""
@@ -295,6 +303,7 @@ def parse_upload(filename: str, content: bytes, *, skip_heavy_ml: bool = False) 
     role_fine = infer_role_fine(title, skills, raw_hint=raw_clean[:5000])
 
     full_name, _name_src = resolve_candidate_full_name(raw_clean, contact_email)
+    full_name = suggest_name_from_nlp(full_name, nlp)
 
     # Extension / paste often omits a "Name:" line (e.g. LinkedIn starts with About). Use .txt stem as hint.
     stem = Path(filename).stem.strip()
@@ -381,18 +390,21 @@ def parse_upload_from_ocr_preview(filename: str, content: bytes, payload: OcrSca
         )
 
     raw_clean = (payload.raw_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    raw_clean = normalize_resume_text_for_ocr(raw_clean)
+    raw_clean = preprocess_resume_text(raw_clean)
     if len(raw_clean) < MIN_TEXT_CHARS:
         raise ValueError(
             "Not enough text in the saved preview. Re-run OCR or use a clearer photo."
         )
 
     f = payload.parsed_fields
+    nlp = enrich_resume_text(raw_clean)
     contact_email = (f.contact_email or "").strip() or (extract_primary_email(raw_clean) or "")
     stripped = strip_pii(raw_clean)
     pii_safe_structural = strip_pii_keep_newlines(raw_clean)
 
-    mined_skills = ", ".join(extract_skill_candidates(stripped)[:80])
+    mined_skills = ", ".join(
+        merge_skill_candidates(extract_skill_candidates(stripped), nlp, max_total=80)
+    )
     skills = (f.skills or "").strip() or mined_skills
 
     role_in = _build_role_input(raw_clean, (f.title or "").strip(), skills)
@@ -401,7 +413,7 @@ def parse_upload_from_ocr_preview(filename: str, content: bytes, payload: OcrSca
     if not role_guess or role_guess not in ROLE_LABELS_MULTI:
         role_guess = "other"
 
-    years_est = estimate_years_experience(raw_clean)
+    years_est = augment_years_experience(estimate_years_experience(raw_clean), nlp)
     if f.years_experience is not None:
         years_val = round(float(f.years_experience), 1)
     else:
@@ -420,6 +432,8 @@ def parse_upload_from_ocr_preview(filename: str, content: bytes, payload: OcrSca
             )
             or ""
         ).strip() or "Professional"
+        if title == "Professional" and (nlp.title_hint or "").strip():
+            title = (nlp.title_hint or "").strip()
 
     role_label_in = (f.role_label or "").strip().lower()
     if role_label_in in ROLE_LABELS_MULTI:
@@ -442,6 +456,7 @@ def parse_upload_from_ocr_preview(filename: str, content: bytes, payload: OcrSca
             n2 = _resolve_full_name_reextracted_from_file(filename, content)
             if n2 and n2.strip():
                 full_name = n2
+    full_name = suggest_name_from_nlp(full_name, nlp)
 
     edu = extract_education(pii_safe_structural)
     certs = extract_certifications(pii_safe_structural)

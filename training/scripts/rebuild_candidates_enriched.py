@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from src.parsing.skill_mining import build_global_vocab, skills_for_resume
+from src.parsing.nlp_resume import augment_years_experience, enrich_resume_text, merge_skill_candidates
 from src.parsing.feature_extractors import (
     extract_education,
     extract_certifications,
@@ -303,11 +304,13 @@ def main():
     years = []
 
     for t_lines in tqdm(texts_for_extractors):
+        nlp = enrich_resume_text(t_lines)
         # Title: extract then strict-clean
         titles.append(clean_title_strict(extract_title_from_text(t_lines)))
 
-        # Skills
-        skills_col.append(", ".join(skills_for_resume(t_lines, vocab)))
+        # Skills (taxonomy / TF-IDF vocab + optional spaCy noun-chunk hints)
+        base_skills = skills_for_resume(t_lines, vocab)
+        skills_col.append(", ".join(merge_skill_candidates(base_skills, nlp, max_total=80)))
 
         # Education
         edu = extract_education(t_lines)
@@ -317,8 +320,10 @@ def main():
         # Certifications
         certs.append(clean_certifications_strict(extract_certifications(t_lines)))
 
-        # Experience estimate
-        years.append(estimate_years_experience(t_lines, current_year=2026))
+        # Experience estimate (+ explicit year-range hint from NLP when available)
+        years.append(
+            augment_years_experience(estimate_years_experience(t_lines, current_year=2026), nlp)
+        )
 
     df["raw_text"] = texts_for_csv
     df["title"] = titles
