@@ -282,8 +282,15 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); opacity: .
 .role-grid {
   display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
 }
+.role-grid-classified {
+  grid-template-columns: 1fr 1fr;
+}
+.role-grid-classified .role-card-wide {
+  grid-column: 1 / -1;
+}
 @media (max-width: 420px) {
   .role-grid { grid-template-columns: 1fr; }
+  .role-grid-classified .role-card-wide { grid-column: auto; }
 }
 .role-card {
   background: var(--bg); border: 1px solid var(--border);
@@ -296,6 +303,14 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); opacity: .
 .role-card-body {
   font-size: 11px; line-height: 1.45; color: var(--text);
   max-height: 120px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+}
+#sec-exp-skills.role-card-body {
+  max-height: 160px;
+}
+.exp-skills-text {
+  font-size: 11px; line-height: 1.45; color: var(--text);
+  white-space: pre-wrap; word-break: break-word;
+  margin-bottom: 6px;
 }
 .role-skills-chips {
   display: flex; flex-wrap: wrap; gap: 4px; max-height: 120px; overflow-y: auto;

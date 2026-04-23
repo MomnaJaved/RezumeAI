@@ -111,8 +111,9 @@ EDU_RANK = {"any": 0, "intermediate": 1, "bachelors": 2, "masters": 3, "phd": 4}
 
 
 def edu_score(cand_deg: str, job_req: str) -> float:
-    jr = (job_req or "any").strip().lower()
-    cd = (cand_deg or "").strip().lower()
+    # DB / JSON may surface non-strings; never call .strip on bare numbers.
+    jr = str(job_req or "any").strip().lower()
+    cd = str(cand_deg or "").strip().lower()
     if jr not in EDU_RANK or jr == "any":
         return 0.5
     if cd not in EDU_RANK:

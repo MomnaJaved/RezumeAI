@@ -7,9 +7,11 @@ before deciding whether to save them.
 from __future__ import annotations
 
 import logging
+import math
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -28,6 +30,52 @@ from src.matching.weak_score import classify_job_skills, parse_skill_str
 _log = logging.getLogger("rezume.api")
 
 router = APIRouter(tags=["match-preview"])
+
+
+def _preview_position_vs_saved_rankings(db: Session, job: Job, final_score: float) -> tuple[int, int]:
+    existing = (
+        db.query(JobCandidateRanking.cross_encoder_score)
+        .filter(JobCandidateRanking.job_id == job.id)
+        .all()
+    )
+    existing_scores: List[float] = []
+    for row in existing:
+        s = row[0]
+        if s is None:
+            continue
+        try:
+            existing_scores.append(float(s))
+        except (TypeError, ValueError):
+            continue
+    ranking_position = sum(1 for s in existing_scores if s > final_score) + 1
+    total_ranked = len(existing_scores)
+    return ranking_position, total_ranked
+
+
+def _finite_float(x: object, default: float = 0.0) -> float:
+    """JSON-serializable float (NaN/inf break FastAPI response encoding)."""
+    try:
+        v = float(x)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(v):
+        return default
+    return v
+
+
+def _str_skill_list(xs: object, *, limit: int) -> List[str]:
+    """Ensure OpenAPI `List[str]` even if upstream returns mixed types."""
+    if not xs:
+        return []
+    seq = xs if isinstance(xs, (list, tuple)) else []
+    out: List[str] = []
+    for x in seq:
+        s = str(x).strip()
+        if s and s not in out:
+            out.append(s)
+        if len(out) >= limit:
+            break
+    return out
 
 
 # ── Request / Response schemas ────────────────────────────────
@@ -83,7 +131,6 @@ class MatchPreviewResponse(BaseModel):
 
 # ── Endpoint ──────────────────────────────────────────────────
 
-@router.post("/match/preview", response_model=MatchPreviewResponse, summary="Real-time match preview (no save)")
 def _preview_enforce_job_access(db: Session, job: Job, user: Optional[User]) -> None:
     if user is None:
         return
@@ -96,6 +143,7 @@ def _preview_enforce_job_access(db: Session, job: Job, user: Optional[User]) -> 
             raise HTTPException(status_code=404, detail=f"Job '{job.external_id}' not found.")
 
 
+@router.post("/match/preview", response_model=MatchPreviewResponse, summary="Real-time match preview (no save)")
 def match_preview(
     req: MatchPreviewRequest,
     db: Session = Depends(get_db),
@@ -136,33 +184,63 @@ def match_preview(
     # 4. Run cross-encoder match score + adjusted final (incl. semantic, same family as rank-and-save)
     job_text = build_job_text_from_db(job)
     try:
-        raw_score: float = match_score(cand_text, job_text)
+        raw_score = _finite_float(match_score(cand_text, job_text), 0.5)
     except Exception as e:
         _log.warning("match_score failed in preview: %s — falling back to heuristic", e)
         raw_score = 0.5
 
-    job_vec = job_text_embedding(job_text)
-    sem_preview = semantic_similarity_for_text(job_vec, cand_text)
-    adj = adjusted_match_score(
-        job,
-        cand_mock,
-        raw_cross_encoder_score=raw_score,
-        sbert_similarity=sem_preview,
-    )
-    final_score: float = float(adj["final_score"])
+    job_vec: np.ndarray
+    sem_preview: float
+    try:
+        job_vec = job_text_embedding(job_text)
+        sem_preview = _finite_float(semantic_similarity_for_text(job_vec, cand_text), 0.0)
+    except Exception as e:
+        _log.warning("preview: SBERT embedding/similarity skipped: %s", e)
+        job_vec = np.zeros(384, dtype=np.float32)
+        sem_preview = 0.0
+
+    try:
+        adj = adjusted_match_score(
+            job,
+            cand_mock,
+            raw_cross_encoder_score=raw_score,
+            sbert_similarity=sem_preview,
+        )
+        final_score = _finite_float(adj.get("final_score"), 0.5)
+    except Exception as e:
+        _log.warning("preview: adjusted_match_score failed: %s", e)
+        adj = {"final_score": raw_score, "raw_cross_encoder_score": raw_score, "role_relevance_adjust": 0.0}
+        final_score = _finite_float(raw_score, 0.5)
 
     # 6. Build explanation
-    expl = build_ranking_explanation(
-        job, cand_mock,
-        cross_encoder_score=final_score,
-        raw_cross_encoder_score=float(adj.get("raw_cross_encoder_score", raw_score)),
-    )
+    try:
+        expl: Dict[str, Any] = build_ranking_explanation(
+            job,
+            cand_mock,
+            _finite_float(final_score, 0.5),
+            raw_cross_encoder_score=_finite_float(adj.get("raw_cross_encoder_score", raw_score), raw_score),
+        )
+    except Exception as e:
+        _log.warning("preview: build_ranking_explanation failed: %s", e)
+        expl = {
+            "skills_match_ratio": 0.0,
+            "critical_skill_coverage": 0.0,
+            "experience_match": 0.0,
+            "education_match": 0.0,
+            "heuristic_weak_score": 0.0,
+            "missing_skills": [],
+            "missing_critical_skills": [],
+        }
 
     # 7. Compute skills overlap for the UI
-    job_skills = parse_skill_str(job.skills or "")
-    cand_skills = parse_skill_str(req.candidate_skills or "")
-    _all_s, critical_s, _weights = classify_job_skills(job_skills)
-    matching_skills: List[str] = sorted((job_skills & cand_skills))[:20]
+    try:
+        job_skills = parse_skill_str(str(job.skills or ""))
+        cand_skills = parse_skill_str(str(req.candidate_skills or ""))
+        _all_s, critical_s, _weights = classify_job_skills(job_skills)
+        matching_skills: List[str] = sorted((job_skills & cand_skills))[:20]
+    except Exception as e:
+        _log.warning("preview: skills overlap step failed: %s", e)
+        matching_skills = []
 
     # 8. Rank vs full workspace candidate pool (recruiter), else saved rankings only
     pool_capped = False
@@ -174,23 +252,22 @@ def match_preview(
 
     if recruiter_ws is not None:
         pool_scope = "workspace_pool"
-        ranking_position, total_ranked, pool_capped, _n = workspace_pool_rank(
-            db,
-            job,
-            job_text,
-            job_vec,
-            final_score,
-            workspace_id=recruiter_ws,
-        )
+        try:
+            ranking_position, total_ranked, pool_capped, _n = workspace_pool_rank(
+                db,
+                job,
+                job_text,
+                job_vec,
+                final_score,
+                workspace_id=recruiter_ws,
+            )
+        except Exception as e:
+            _log.warning("preview: workspace_pool_rank failed; using saved rankings only: %s", e)
+            pool_scope = "saved_rankings_only"
+            pool_capped = False
+            ranking_position, total_ranked = _preview_position_vs_saved_rankings(db, job, final_score)
     else:
-        existing = (
-            db.query(JobCandidateRanking.cross_encoder_score)
-            .filter(JobCandidateRanking.job_id == job.id)
-            .all()
-        )
-        existing_scores = [row[0] for row in existing]
-        ranking_position = sum(1 for s in existing_scores if s > final_score) + 1
-        total_ranked = len(existing_scores)
+        ranking_position, total_ranked = _preview_position_vs_saved_rankings(db, job, final_score)
 
     # 9. Duplicate detection (by email then by profile URL)
     duplicate: Optional[DuplicateInfo] = None
@@ -201,21 +278,27 @@ def match_preview(
             .first()
         )
         if dup:
-            duplicate = DuplicateInfo(
-                external_id=dup.external_id,
-                full_name=dup.full_name or "",
-                existing_match_score=(
-                    round(float(dup.best_job_match_score) * 100, 1)
-                    if dup.best_job_match_score is not None
-                    else None
-                ),
-            )
+            ext_dup = (getattr(dup, "external_id", None) or "").strip()
+            if ext_dup:
+                dup_pct: Optional[float] = None
+                if dup.best_job_match_score is not None:
+                    try:
+                        raw_p = float(dup.best_job_match_score) * 100
+                        if math.isfinite(raw_p):
+                            dup_pct = round(raw_p, 1)
+                    except (TypeError, ValueError):
+                        dup_pct = None
+                duplicate = DuplicateInfo(
+                    external_id=ext_dup,
+                    full_name=(dup.full_name or "") or "",
+                    existing_match_score=dup_pct,
+                )
 
     # 10. Title relevance normalised to 0–1 for UI display
-    title_rel_raw: float = float(adj.get("role_relevance_adjust", 0.0))
+    title_rel_raw = _finite_float(adj.get("role_relevance_adjust", 0.0), 0.0)
     title_rel_norm = round(min(1.0, max(0.0, (title_rel_raw + 0.30) / 0.45)), 4)
 
-    score_pct = round(final_score * 100, 1)
+    score_pct = round(_finite_float(final_score, 0.0) * 100, 1)
     if score_pct >= 70:
         label = "Strong"
     elif score_pct >= 45:
@@ -224,24 +307,24 @@ def match_preview(
         label = "Weak"
 
     return MatchPreviewResponse(
-        match_score=score_pct,
+        match_score=float(score_pct),
         match_label=label,
-        ranking_position=ranking_position,
-        total_ranked=total_ranked,
-        pool_ranking_scope=pool_scope,
-        pool_capped=pool_capped,
+        ranking_position=int(ranking_position),
+        total_ranked=int(total_ranked),
+        pool_ranking_scope=str(pool_scope or ""),
+        pool_capped=bool(pool_capped),
         breakdown=MatchBreakdown(
-            skills_overlap=round(float(expl["skills_match_ratio"]), 4),
-            critical_skill_coverage=round(float(expl["critical_skill_coverage"]), 4),
-            experience_match=round(float(expl["experience_match"]), 4),
-            education_match=round(float(expl["education_match"]), 4),
+            skills_overlap=round(_finite_float(expl.get("skills_match_ratio"), 0.0), 4),
+            critical_skill_coverage=round(_finite_float(expl.get("critical_skill_coverage"), 0.0), 4),
+            experience_match=round(_finite_float(expl.get("experience_match"), 0.0), 4),
+            education_match=round(_finite_float(expl.get("education_match"), 0.0), 4),
             title_relevance=title_rel_norm,
-            heuristic_score=round(float(expl["heuristic_weak_score"]), 4),
+            heuristic_score=round(_finite_float(expl.get("heuristic_weak_score"), 0.0), 4),
         ),
-        matching_skills=matching_skills,
-        missing_skills=expl["missing_skills"][:15],
-        missing_critical_skills=expl["missing_critical_skills"][:10],
+        matching_skills=_str_skill_list(matching_skills, limit=20),
+        missing_skills=_str_skill_list(expl.get("missing_skills"), limit=15),
+        missing_critical_skills=_str_skill_list(expl.get("missing_critical_skills"), limit=10),
         duplicate=duplicate,
-        job_title=job.title or "",
-        job_external_id=job.external_id or "",
+        job_title=str(job.title or ""),
+        job_external_id=str(job.external_id or ""),
     )

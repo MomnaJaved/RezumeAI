@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 from api.services.candidate_title_display import polish_candidate_title, polish_role_fine_display
 from src.parsing.candidate_title_resolve import display_title_for_candidate_row
@@ -158,6 +158,27 @@ class JobRead(BaseModel):
     created_by_user_id: Optional[UUID] = None
     workspace_id: Optional[UUID] = None
 
+    @field_validator(
+        "external_id",
+        "title",
+        "department",
+        "description",
+        "skills",
+        "salary_range",
+        "work_location",
+        "job_type",
+        "recruitment_urgency",
+        "education_required",
+        "status",
+        mode="before",
+    )
+    @classmethod
+    def _null_strings_to_empty(cls, v: object) -> str:
+        """SQLite/legacy rows may have NULL; ORM returns None and breaks response validation."""
+        if v is None:
+            return ""
+        return str(v)
+
 
 # --- Job attachments ---
 class JobAttachmentRead(BaseModel):
@@ -238,6 +259,28 @@ class CandidateRead(BaseModel):
     best_job_client_company: Optional[str] = None
     best_job_client_contact: Optional[str] = None
     best_job_client_email: Optional[str] = None
+
+    @field_validator(
+        "external_id",
+        "full_name",
+        "title",
+        "role_label",
+        "role_fine",
+        "skills",
+        "filename",
+        "storage_path",
+        "highest_degree",
+        "certifications",
+        "education_lines",
+        "status",
+        "status_effective",
+        mode="before",
+    )
+    @classmethod
+    def _candidate_null_strings(cls, v: object) -> str:
+        if v is None:
+            return ""
+        return str(v)
 
     @field_serializer("title")
     def _ser_title(self, v: str) -> str:

@@ -2,7 +2,7 @@
    RezumeAI Chrome Extension — Popup Controller
    Flow: Sign in → LinkedIn auto scrape + section classify → Select job →
          Match & save (or preview match only)
-   Backend: POST /api/v1/linkedin/refine-scrape, /match/preview, ingestions/text, jobs/.../match-candidate-save
+   Backend: POST /api/v1/match/preview, ingestions/text, jobs/.../match-candidate-save
    =================================================================== */
 'use strict';
 
@@ -34,6 +34,66 @@ const hide = (...ids) => ids.forEach(id => $(id)?.classList.add('hidden'));
 const esc  = s  => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const val  = id => String($(id)?.value ?? '').trim();
 
+/** Strip lone UTF-16 surrogates (scraped DOM can produce invalid Unicode / tokenizer issues). */
+function sanitizeText(s) {
+  return String(s ?? '').replace(/[\uD800-\uDFFF]/g, '');
+}
+
+function clipStr(s, maxLen) {
+  const t = sanitizeText(s);
+  if (t.length <= maxLen) return t;
+  return t.slice(0, maxLen);
+}
+
+/**
+ * Comma-separated skills for the API (hidden field filled on scrape, or a `Skills:` line in the profile textarea).
+ * Keeps skill overlap / match breakdown aligned with the backend while the UI shows one combined text area.
+ */
+function skillsForMatchApi() {
+  const h = clipStr(val('c-skills'), 32000).trim();
+  if (h) return h;
+  const m = val('c-text').match(/^Skills:\s*(.+)$/im);
+  if (m && m[1]) return clipStr(m[1].trim(), 32000);
+  return '';
+}
+
+/** Years ≥ 0 for API; preserves 0 (avoid `parseFloat(x) || undefined` which drops zero). */
+function optionalYears(id) {
+  const raw = val(id);
+  if (raw === '') return undefined;
+  const n = parseFloat(raw);
+  if (!Number.isFinite(n) || n < 0) return undefined;
+  return n;
+}
+
+/** Normalize FastAPI / Rezume JSON errors into one readable line. */
+function formatApiError(data, fallbackText) {
+  if (data == null || typeof data !== 'object') return fallbackText || 'Request failed';
+  const det = data.detail;
+  let msg = '';
+  if (typeof data.error === 'string' && data.error.trim()) msg = data.error.trim();
+  if (!msg && typeof data.message === 'string' && data.message.trim()) msg = data.message.trim();
+  if (!msg && typeof det === 'string' && det.trim()) msg = det.trim();
+  if (!msg && Array.isArray(det)) {
+    const first = det[0];
+    if (first && typeof first === 'object') msg = String(first.msg || first.type || JSON.stringify(first));
+    else if (first != null) msg = String(first);
+  }
+  if (!msg && det && typeof det === 'object' && !Array.isArray(det)) {
+    const inner = det.errors;
+    if (Array.isArray(inner) && inner.length) {
+      const e0 = inner[0];
+      msg = typeof e0 === 'object' && e0 ? String(e0.msg || JSON.stringify(e0)) : String(e0);
+    } else {
+      msg = JSON.stringify(det);
+    }
+  }
+  if (!msg && data.errors) msg = typeof data.errors === 'string' ? data.errors : JSON.stringify(data.errors);
+  if (!msg) msg = fallbackText || 'Request failed';
+  if (typeof data.code === 'string' && data.code && !msg.includes(data.code)) msg = `${msg} [${data.code}]`;
+  return msg;
+}
+
 function showAlert(id, msg, type = 'error') {
   const el = $(id);
   if (!el) return;
@@ -64,7 +124,18 @@ async function api(method, path, body = null) {
     try {
       chrome.runtime.sendMessage(
         { type: 'rezume_api', method, path, body: bodyStr },
-        res => { chrome.runtime.lastError; resolve(res ?? null); },
+        res => {
+          const le = chrome.runtime.lastError;
+          if (le) {
+            resolve({
+              ok: false,
+              status: 0,
+              text: JSON.stringify({ detail: le.message || 'Extension could not reach the background worker.' }),
+            });
+            return;
+          }
+          resolve(res ?? null);
+        },
       );
     } catch { resolve(null); }
   });
@@ -73,8 +144,9 @@ async function api(method, path, body = null) {
     let data;
     try { data = JSON.parse(viaBg.text); } catch { data = { detail: viaBg.text }; }
     if (!viaBg.ok) {
-      const d = data?.detail ?? data?.error ?? viaBg.text ?? 'Request failed';
-      throw new Error(typeof d === 'string' ? d : JSON.stringify(d));
+      const msg = formatApiError(data, viaBg.text || 'Request failed');
+      const suffix = viaBg.status ? ` (HTTP ${viaBg.status})` : '';
+      throw new Error(msg + suffix);
     }
     return data;
   }
@@ -87,8 +159,8 @@ async function api(method, path, body = null) {
   let data;
   try { data = JSON.parse(text); } catch { data = { detail: text }; }
   if (!res.ok) {
-    const d = data?.detail ?? data?.error ?? res.statusText;
-    throw new Error(typeof d === 'string' ? d : JSON.stringify(d));
+    const msg = formatApiError(data, res.statusText || 'Request failed');
+    throw new Error(`${msg} (HTTP ${res.status})`);
   }
   return data;
 }
@@ -476,65 +548,6 @@ function isNoReceiverError(msg) {
   );
 }
 
-/** Merge Grok server refine into scrape payload (candidate_text drives match preview). */
-function applyGrokRefine(d, r) {
-  if (!d || !r || !r.refined_ok) return { ...d, grok_refined: false };
-  const out = { ...d, grok_refined: true };
-  out.candidate_text_canonical = r.candidate_text;
-  out.fullText = r.candidate_text;
-  if (r.candidate_name) out.name = r.candidate_name;
-  if (r.candidate_title) out.title = r.candidate_title;
-  if (r.candidate_location) out.location = r.candidate_location;
-  if (r.candidate_email) out.email = r.candidate_email;
-  if (r.candidate_skills) out.skills = r.candidate_skills;
-  if (r.years_experience != null && !Number.isNaN(Number(r.years_experience)))
-    out.years_experience = Number(r.years_experience);
-  if (r.highest_degree) out.highest_degree = r.highest_degree;
-  if (r.certifications) out.certifications = r.certifications;
-  const pj = out.profile_json;
-  if (pj && typeof pj === 'object' && pj.identity) {
-    out.profile_json = { ...pj, identity: { ...pj.identity } };
-    const id = out.profile_json.identity;
-    if (r.candidate_name) id.full_name = r.candidate_name;
-    if (r.candidate_title) id.headline = r.candidate_title;
-    if (r.candidate_location) id.location = r.candidate_location;
-    if (r.candidate_email) id.email = r.candidate_email;
-  }
-  return out;
-}
-
-/**
- * Server-side Grok (xAI): noisy scrape → factual candidate_text + fields.
- * No-op if API returns refined_ok: false (e.g. XAI_API_KEY unset).
- */
-async function refineLinkedInScrape(d) {
-  if (!d || d.success === false || !extractionIsUsable(d)) return d;
-  try {
-    const body = {
-      raw_full_text: String(d.fullText || '').slice(0, 28000),
-      raw_canonical: d.candidate_text_canonical
-        ? String(d.candidate_text_canonical).slice(0, 28000)
-        : undefined,
-      profile_json: d.profile_json || undefined,
-      name: d.name || undefined,
-      title: d.title || undefined,
-      location: d.location || undefined,
-      email: d.email || undefined,
-      skills: typeof d.skills === 'string' ? d.skills : undefined,
-      years_experience: d.years_experience != null ? Number(d.years_experience) : undefined,
-      highest_degree: d.highest_degree || undefined,
-      certifications: typeof d.certifications === 'string' ? d.certifications : undefined,
-      profile_url: val('c-url') || undefined,
-    };
-    for (const k of Object.keys(body)) if (body[k] === undefined) delete body[k];
-    const r = await api('POST', '/api/v1/linkedin/refine-scrape', body);
-    return applyGrokRefine(d, r);
-  } catch (e) {
-    console.warn('linkedin refine:', e);
-    return { ...d, grok_refined: false };
-  }
-}
-
 async function runExtraction(tab) {
   if (!tab?.id) return null;
 
@@ -636,7 +649,7 @@ async function runExtraction(tab) {
   };
 }
 
-/** Classified sections UI (About / Experience / Education / Skills) */
+/** Classified sections UI (About / Experience+skills / Education) */
 function renderClassifiedPanel(pj) {
   const panel = $('classified-panel');
   if (!panel) return;
@@ -648,12 +661,14 @@ function renderClassifiedPanel(pj) {
   const rs = pj.role_sections;
   const pills = $('role-pills');
   if (pills) {
-    const nSkills = Array.isArray(pj.skills) ? pj.skills.length : 0;
+    const xpN = rs.experience?.length || 0;
+    const nChipSkills = Array.isArray(pj.skills) ? pj.skills.length : 0;
+    const nRoleSkills = rs.skills?.length || 0;
+    const expSkillsItems = xpN + (nChipSkills || nRoleSkills);
     pills.innerHTML = [
       ['About', rs.about?.length || 0],
-      ['Experience', rs.experience?.length || 0],
       ['Education', rs.education?.length || 0],
-      ['Skills', nSkills || rs.skills?.length || 0],
+      ['Experience & skills', expSkillsItems],
     ]
       .map(([l, n]) => `<span class="role-pill">${esc(l)} <strong>${n}</strong></span>`)
       .join('');
@@ -666,20 +681,43 @@ function renderClassifiedPanel(pj) {
     el.style.whiteSpace = 'pre-wrap';
   };
   setBlocks('sec-about', rs.about);
-  setBlocks('sec-experience', rs.experience);
   setBlocks('sec-education', rs.education);
-  const skEl = $('sec-skills');
-  if (skEl) {
-    const skills = pj.skills || [];
-    if (skills.length) {
-      skEl.classList.add('role-skills-chips');
-      skEl.innerHTML = skills.slice(0, 40).map(s => `<span class="chip-skill">${esc(s)}</span>`).join('');
-    } else {
-      skEl.classList.remove('role-skills-chips');
-      const t = (rs.skills || []).join('\n\n').trim();
-      skEl.textContent = t || '—';
+
+  const combo = $('sec-exp-skills');
+  if (!combo) return;
+  combo.replaceChildren();
+  combo.className = 'role-card-body';
+  const xpText = (rs.experience || []).join('\n\n').trim();
+  const chipSkills = Array.isArray(pj.skills) ? pj.skills : [];
+  if (xpText) {
+    const d = document.createElement('div');
+    d.className = 'exp-skills-text';
+    d.textContent = xpText;
+    combo.appendChild(d);
+  }
+  if (chipSkills.length) {
+    const wrap = document.createElement('div');
+    wrap.className = 'role-skills-chips';
+    if (xpText) wrap.style.marginTop = '6px';
+    for (const s of chipSkills.slice(0, 40)) {
+      const span = document.createElement('span');
+      span.className = 'chip-skill';
+      span.textContent = String(s ?? '').trim();
+      if (span.textContent) wrap.appendChild(span);
+    }
+    combo.appendChild(wrap);
+  } else {
+    const roleSkillLines = (rs.skills || []).join('\n\n').trim();
+    if (roleSkillLines) {
+      const d = document.createElement('div');
+      d.className = 'exp-skills-text';
+      if (xpText) d.style.marginTop = '6px';
+      d.style.whiteSpace = 'pre-wrap';
+      d.textContent = roleSkillLines;
+      combo.appendChild(d);
     }
   }
+  if (!combo.childNodes.length) combo.textContent = '—';
 }
 
 /** Fill form fields from extractor payload (name, title, skills, email when visible, fullText, etc.) */
@@ -762,7 +800,6 @@ function fillForm(d) {
     const bits = [];
     if (d.scrape_chars) bits.push(`${(d.scrape_chars / 1000).toFixed(1)}k chars scraped`);
     if (d.pipeline_version) bits.push(`v${d.pipeline_version}`);
-    if (d.grok_refined) bits.push('Grok refined');
     meta.textContent = bits.join(' · ');
   }
   renderClassifiedPanel(pj);
@@ -938,7 +975,7 @@ async function autoExtract(tab) {
   let d = null;
   setBanner(true);
   showAlert('step1-err', '');
-  if (msgEl) msgEl.textContent = 'Scraping visible page → classifying About / Experience / Education / Skills…';
+  if (msgEl) msgEl.textContent = 'Scraping visible page → classifying About / Experience & skills / Education…';
   try {
     d = await runExtraction(tab);
     if (!d) {
@@ -956,8 +993,6 @@ async function autoExtract(tab) {
       return;
     }
     if (extractionIsUsable(d)) {
-      if (msgEl) msgEl.textContent = 'Sending scrape to server (Grok) for cleanup…';
-      d = await refineLinkedInScrape(d);
       fillForm(d);
     } else {
       showAlert(
@@ -994,14 +1029,9 @@ async function grabLinkedIn() {
     if (!tab?.id) throw new Error('No suitable tab found. Focus a LinkedIn profile tab, then open this popup again.');
     if (!isLinkedInHost(tab.url ?? ''))
       throw new Error('Switch to a LinkedIn tab first.');
-    let d = await runExtraction(tab);
+    const d = await runExtraction(tab);
     if (!d) throw new Error('No data returned from the page.');
     if (d.error) throw new Error(d.error);
-    if (extractionIsUsable(d)) {
-      const m = $('auto-extract-msg');
-      if (m) m.textContent = 'Sending scrape to server (Grok) for cleanup…';
-      d = await refineLinkedInScrape(d);
-    }
     fillForm(d);
     const urlEl = $('c-url');
     if (urlEl && !urlEl.value && tab.url) urlEl.value = tab.url;
@@ -1013,7 +1043,7 @@ async function grabLinkedIn() {
           : '';
       showAlert(
         'step1-err',
-        'Partial read — scroll About & Experience on the profile overview, wait a moment, then click Refresh scrape or reopen the extension.' + hint,
+        'Partial read — scroll About, experience, and skills on the profile overview, wait a moment, then click Refresh scrape or reopen the extension.' + hint,
         'error',
       );
     } else {
@@ -1038,21 +1068,27 @@ async function grabLinkedIn() {
 
 // ── Match preview API ─────────────────────────────────────────────────
 async function fetchMatchPreview(jobId) {
-  const text = val('c-text');
-  const skills = val('c-skills');
+  const text = clipStr(val('c-text'), 100000).trim();
+  const skills = skillsForMatchApi();
   if (!text && !skills)
     throw new Error('No profile text yet. Stay on a LinkedIn /in/ profile until “Profile ready” appears.');
+  // API requires min_length 10; main narrative in candidate_text, structured skills in candidate_skills.
+  const merged = [text, skills].filter(Boolean).join('\n\n').trim();
+  if (merged.length < 10)
+    throw new Error('Profile text is too short to match (need at least 10 characters). Scroll the profile and scrape again, or add a “Skills:” line in the text box.');
+  const jid = clipStr(String(jobId || '').trim(), 64);
+  if (!jid) throw new Error('No job selected.');
   const body = {
-    job_id:             jobId,
-    candidate_text:     text || skills || '(no text)',
-    candidate_name:     val('c-name')     || undefined,
-    candidate_title:    val('c-title')    || undefined,
-    candidate_skills:   skills            || undefined,
-    candidate_email:    val('c-email')    || undefined,
-    candidate_location: val('c-location') || undefined,
-    years_experience:   parseFloat(val('c-years')) || undefined,
-    highest_degree:     val('c-degree')   || undefined,
-    profile_url:        val('c-url')      || undefined,
+    job_id:             jid,
+    candidate_text:     clipStr(text || merged, 120000),
+    candidate_name:     clipStr(val('c-name'), 512) || undefined,
+    candidate_title:    clipStr(val('c-title'), 512) || undefined,
+    candidate_skills:   skills || undefined,
+    candidate_email:    clipStr(val('c-email'), 320) || undefined,
+    candidate_location: clipStr(val('c-location'), 256) || undefined,
+    years_experience:   optionalYears('c-years'),
+    highest_degree:     clipStr(val('c-degree'), 256) || undefined,
+    profile_url:        clipStr(val('c-url'), 1024) || undefined,
   };
   for (const k of Object.keys(body)) if (body[k] === undefined) delete body[k];
   return api('POST', '/api/v1/match/preview', body);
@@ -1246,12 +1282,12 @@ function renderChips(containerId, skills, cls) {
 
 // ── Save candidate (optional step after analysis) ─────────────────────
 function buildSaveText() {
-  let body = val('c-text') || val('c-skills') || '(no text)';
+  let body = val('c-text') || skillsForMatchApi() || '(no text)';
   const name   = val('c-name');
   const title  = val('c-title');
   const loc    = val('c-location');
   const email  = val('c-email');
-  const skills = val('c-skills');
+  const skills = skillsForMatchApi();
   const header = [];
   if (name   && !/^Name:\s/im.test(body))   header.push(`Name: ${name}`);
   if (title)                                 header.push(`Current Title: ${title}`);
@@ -1302,13 +1338,13 @@ async function saveCandidate(attachToJob) {
         // Must mirror POST /match/preview: server builds cross-encoder input as
         // title + skills + candidate_text_for_match. Do NOT repeat title/skills here
         // (that was inflating/deflating scores vs the extension preview).
-        const profileBlob = String(val('c-text') || val('c-skills') || '').trim();
+        const profileBlob = String(val('c-text') || skillsForMatchApi() || '').trim();
         const yRaw = val('c-years');
         const payload = {
           candidate_external_id: extId,
           candidate_text_for_match: profileBlob.length >= 10 ? profileBlob : undefined,
           candidate_title: val('c-title') || undefined,
-          candidate_skills: val('c-skills') || undefined,
+          candidate_skills: skillsForMatchApi() || undefined,
           highest_degree: val('c-degree') || undefined,
         };
         if (yRaw !== '') {

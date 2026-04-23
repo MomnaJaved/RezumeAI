@@ -19,6 +19,36 @@
     );
   }
 
+  /** Primary profile column (excludes right-rail / suggestions that also use pvs-list rows). */
+  function profileLayoutMain() {
+    return (
+      document.querySelector('main[role="main"]') ||
+      document.querySelector('main.scaffold-layout__main') ||
+      document.querySelector('.scaffold-layout__main') ||
+      null
+    );
+  }
+
+  /** True if node lives in the member profile main column, not aside / PYMK / browsemap widgets. */
+  function isNodeInProfileMainColumn(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node.closest('.scaffold-layout__aside, aside.scaffold-layout__aside')) return false;
+    const rail = node.closest(
+      [
+        '[data-view-name*="profile-card-pymk"]',
+        '[data-view-name*="browsemap"]',
+        '[data-view-name*="people-you-may-know"]',
+        '[data-view-name*="similar-to"]',
+        '[data-view-name*="discovery"]',
+        '[data-view-name*="edge-creation"]',
+      ].join(', '),
+    );
+    if (rail) return false;
+    const main = profileLayoutMain();
+    if (main) return main.contains(node);
+    return true;
+  }
+
   /** All elements we should scroll so virtualized Experience/Education/Skills rows mount. */
   function getProfileScrollRoots() {
     const roots = [];
@@ -164,7 +194,7 @@
           el.closest('section') ||
           el.closest('[data-view-name*="profile-card"]') ||
           el;
-        if (card) return card;
+        if (card && isNodeInProfileMainColumn(card)) return card;
       }
     }
     return null;
@@ -250,7 +280,7 @@
             p = p.parentElement;
           }
         }
-        if (card) return card;
+        if (card && isNodeInProfileMainColumn(card)) return card;
       }
     }
     return null;
@@ -270,14 +300,15 @@
   function sectionFor(slug) {
     const el = getProfileAnchor(slug);
     if (!el) return null;
-    return (
+    const card =
       cardRootFromAnchorEl(el) ||
       el.closest('section.artdeco-card') ||
       el.closest('div.artdeco-card') ||
       el.closest('section') ||
       el.closest('[data-view-name]') ||
-      el.parentElement
-    );
+      el.parentElement;
+    if (card && !isNodeInProfileMainColumn(card)) return null;
+    return card;
   }
 
   function sectionExperience(root) {
@@ -383,9 +414,11 @@
     const out = [];
     const add = node => {
       if (!node || seen.has(node)) return;
+      if (!isNodeInProfileMainColumn(node)) return;
       seen.add(node);
       out.push(node);
     };
+    /* Avoid bare `ul > li` — it pulls nested lists + “People you may know” style rows into Experience/Skills. */
     sec
       .querySelectorAll(
         [
@@ -398,12 +431,41 @@
           'div[class*="pvs-list__item"]',
           'li[class*="pvs-entity"]',
           'li.artdeco-list__item',
-          'ul > li',
-          'ol > li',
         ].join(', '),
       )
       .forEach(add);
     return out;
+  }
+
+  /** Experience cards sometimes embed “Skill · N endorsements” rows — not jobs. */
+  function rowLooksLikeInlineSkillEndorsement(spans) {
+    if (!spans || !spans.length) return false;
+    const j = spans.join(' ').toLowerCase();
+    if (/\b\d+\s+endorsements?\b/.test(j)) return true;
+    if (
+      spans.length <= 3 &&
+      looksLikeSkillToken(String(spans[0] || '').trim()) &&
+      (!spans[1] || /endorsement|endorsed|mutual connection/i.test(String(spans[1])))
+    )
+      return true;
+    return false;
+  }
+
+  /**
+   * Experience cards embed “skills used here” rows linking to `/details/skills/` without dates / employer.
+   * Those are not positions — skip so they are not emitted as jobs (and not confused with role lines).
+   */
+  function expRowShouldBeSkippedAsSkillChip(item, spans) {
+    if (!item || !spans || !spans.length) return false;
+    if (rowLooksLikeInlineSkillEndorsement(spans)) return true;
+    const hasSkillLink = item.querySelector?.('a[href*="/details/skills/"], a[href*="/overlay/skill"]');
+    if (!hasSkillLink) return false;
+    const blob = spans.join(' ').toLowerCase();
+    if (/\b(20\d{2}\s*[-–]\s*\d{2,4}|20\d{2}\s*[-–]\s*present|[-–]\s*present)\b/i.test(blob)) return false;
+    if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b.*\b20\d{2}\b/i.test(blob)) return false;
+    if (/\b(full|part)[-\s]?time|contract|internship|freelance|self[-\s]?employed\b/i.test(blob)) return false;
+    if (/\s+at\s+[a-z0-9]/i.test(blob)) return false;
+    return true;
   }
 
   /** One text line per list row for Honors, Courses, Publications, etc. */
@@ -441,6 +503,39 @@
     if (/^and\s+\+\d+\s+skills?$/i.test(t)) return true;
     /* Exactly matches an activity/connection line */
     if (/^\d+\+?\s*(connection|follower|contact)s?$/i.test(t)) return true;
+    /* Skills UI chrome / tabs / paywalls */
+    if (/^industry\s+knowledge$/i.test(t)) return true;
+    if (/^tools\s+(&|and)\s+technologies$/i.test(t)) return true;
+    if (/^all$/i.test(t)) return true;
+    if (/^other\s+skills$/i.test(t)) return true;
+    if (/^interpersonal\s+skills$/i.test(t)) return true;
+    if (/^(technical|soft|leadership|communication)\s+skills$/i.test(t)) return true;
+    if (/^ad\s+options?$/i.test(t)) return true;
+    if (/^submit$/i.test(t)) return true;
+    if (
+      /why\s+am\s+i\s+seeing\s+this\s+ad|manage\s+your\s+ad\s+preferences|hide\s+or\s+report|don'?t\s+want\s+to\s+see|your\s+feedback\s+will\s+help|it'?s\s+annoying|same\s+ad\s+too\s+often|please\s+let\s+us\s+know|report\s+this\s+ad|more\s+profiles\s+for\s+you|suggested\s+for\s+you|promoted|sponsored\s+content/i.test(
+        t,
+      )
+    )
+      return true;
+    if (/try\s+premium|get\s+hired|linkedin\s+learning|newsletter|subscribe\b/i.test(t)) return true;
+    if (/\bfor\s+rs\b|^rs[\s.,]|\b(usd|eur|gbp)\b/i.test(t)) return true;
+    /* Marketing / client-list prose that leaks from overlays */
+    if (/^clients?\s+include\b/i.test(t)) return true;
+    if (/\b(and\s+)?many\s+more\b/i.test(t)) return true;
+    if (/\bfeaturing\b/i.test(t) && t.length > 40) return true;
+    if (/\b(click|tap)\s+here\b/i.test(t)) return true;
+    /* Right-rail / discovery copy that sometimes shares list row patterns */
+    if (
+      /\b(people you may know|mutual connections?|suggested for you|similar profiles?|profiles similar|also viewed|who to follow|because you follow|because you view)\b/i.test(
+        t,
+      )
+    )
+      return true;
+    /* LinkedIn “people also viewed” name + degree line, e.g. "Name · 3rd" */
+    if (/·\s*\d+(st|nd|rd|th)\b/i.test(t) && t.length < 72) return true;
+    /* Short role-at-company lines that leak from rails */
+    if (/^.+\s+@\s+[A-Za-z0-9][\w.&\s-]{2,60}$/i.test(t) && !/\b(node|react|next|vue|nest)\.(js|ts)\b/i.test(t)) return true;
     return false;
   }
 
@@ -455,12 +550,22 @@
   function collectSkillsFromSection(skillsSec) {
     const seen = new Set();
     const out  = [];
-    const add  = raw => {
+    /** LinkedIn `/details/skills/` links — trust label after UI-noise strip only. */
+    const addFromSkillLink = raw => {
       const s = String(raw || '').trim();
-      /* Take only the first line (skill name), discard endorsement context */
       const firstLine = String(s.split(/\n/)[0] ?? '').trim();
       if (firstLine.length < 2 || firstLine.length > 100) return;
-      if (isSkillLineNoise(firstLine)) return;
+      if (isSkillLineNoise(firstLine) || !looksLikeSkillToken(firstLine)) return;
+      const k = firstLine.toLowerCase();
+      if (seen.has(k)) return;
+      seen.add(k);
+      out.push(firstLine);
+    };
+    const add = raw => {
+      const s = String(raw || '').trim();
+      const firstLine = String(s.split(/\n/)[0] ?? '').trim();
+      if (firstLine.length < 2 || firstLine.length > 100) return;
+      if (isSkillLineNoise(firstLine) || !looksLikeSkillToken(firstLine)) return;
       const k = firstLine.toLowerCase();
       if (seen.has(k)) return;
       seen.add(k);
@@ -473,36 +578,49 @@
     skillsSec.querySelectorAll(
       'a[href*="/details/skills/"], a[href*="/overlay/skill"], a[data-field="skill_card_skill_topic"]',
     ).forEach(a => {
-      /* Prefer the first bold span inside the link — that is always the skill name */
+      if (!isNodeInProfileMainColumn(a)) return;
+      /* Prefer the first bold span inside the link — LinkedIn skill URLs are authoritative */
       const boldSpan = a.querySelector('.t-bold span[aria-hidden="true"]');
-      if (boldSpan) { add(boldSpan.textContent || ''); return; }
+      if (boldSpan) {
+        addFromSkillLink(boldSpan.textContent || '');
+        return;
+      }
       const anySpan = a.querySelector('span[aria-hidden="true"]');
-      if (anySpan) { add(anySpan.textContent || ''); return; }
-      add((a.innerText || '').split('\n')[0]);
+      if (anySpan) {
+        addFromSkillLink(anySpan.textContent || '');
+        return;
+      }
+      addFromSkillLink((a.innerText || '').split('\n')[0]);
     });
 
     /* ── Method 2: Per list-item, grab ONLY the first .t-bold span (the skill name) ── */
     skillsSec.querySelectorAll(
       'li[class*="pvs-list"], li[class*="pvs-entity"], li[data-view-name="profile-component-entity"]',
     ).forEach(li => {
+      if (!isNodeInProfileMainColumn(li)) return;
       /* Skip items that have a /details/skills/ link already counted above */
       if (li.querySelector('a[href*="/details/skills/"], a[href*="/overlay/skill"]')) return;
       const bold = li.querySelector('.t-bold span[aria-hidden="true"]');
-      if (bold) add(bold.textContent || '');
+      if (bold) {
+        const line = String(bold.textContent || '').trim().split('\n')[0].trim();
+        if (looksLikeSkillToken(line)) add(line);
+      }
     });
 
     /* ── Method 3: skill-assessment links ── */
     skillsSec.querySelectorAll('a[href*="/skill-assessment/"]').forEach(a => {
+      if (!isNodeInProfileMainColumn(a)) return;
       const s = a.querySelector('span[aria-hidden="true"]');
-      add(s ? s.textContent : a.textContent);
+      addFromSkillLink(s ? s.textContent : a.textContent);
     });
 
     /* ── Method 4: buttons with aria-label (rare LinkedIn layout variant) ── */
     if (out.length < 4) {
       skillsSec.querySelectorAll('button[aria-label]').forEach(btn => {
+        if (!isNodeInProfileMainColumn(btn)) return;
         const lab = (btn.getAttribute('aria-label') || '').trim();
-        if (lab && lab.length < 80 && !/endorse|show all|show more/i.test(lab))
-          add(lab.split(/\s*[·•]\s*/)[0]);
+        const chunk = lab.split(/\s*[·•]\s*/)[0];
+        if (chunk && chunk.length < 80 && !/endorse|show all|show more/i.test(lab) && looksLikeSkillToken(chunk)) add(chunk);
       });
     }
 
@@ -522,13 +640,16 @@
         .split('\n')[0]
         .trim();
       if (firstLine.length < 2 || firstLine.length > 100) return;
-      if (isSkillLineNoise(firstLine)) return;
+      if (isSkillLineNoise(firstLine) || !looksLikeSkillToken(firstLine)) return;
       const k = firstLine.toLowerCase();
       if (seen.has(k)) return;
       seen.add(k);
       targetList.push(firstLine);
     };
-    document.querySelectorAll('a[href*="/details/skills/"], a[href*="/overlay/skill"]').forEach(a => {
+    const scope = profileLayoutMain() || rootEl();
+    if (!scope) return;
+    scope.querySelectorAll('a[href*="/details/skills/"], a[href*="/overlay/skill"]').forEach(a => {
+      if (!isNodeInProfileMainColumn(a)) return;
       const boldSpan = a.querySelector('.t-bold span[aria-hidden="true"]');
       if (boldSpan) {
         add(boldSpan.textContent || '');
@@ -580,6 +701,14 @@
         ) {
           return false;
         }
+        if (
+          /why\s+am\s+i\s+seeing|manage\s+your\s+ad\s+preferences|report\s+this\s+ad|hide\s+or\s+report|ad\s+options|don'?t\s+want\s+to\s+see|your\s+feedback\s+will\s+help|it'?s\s+annoying|same\s+ad\s+too\s+often|please\s+let\s+us\s+know|sponsored\s+content|promoted\s+post/i.test(
+            low,
+          ) &&
+          l.length < 160
+        ) {
+          return false;
+        }
         return true;
       })
       .join('\n')
@@ -614,6 +743,14 @@
           /linkedin corporation|privacy & terms|ad choices|help center|select language|visit our help|manage your account|recommendation transparency|community guidelines|marketing solutions|talent solutions|accessibility$/i.test(
             low,
           )
+        ) {
+          return false;
+        }
+        if (
+          /why\s+am\s+i\s+seeing|manage\s+your\s+ad\s+preferences|report\s+this\s+ad|hide\s+or\s+report|ad\s+options|don'?t\s+want\s+to\s+see|your\s+feedback\s+will\s+help|it'?s\s+annoying|same\s+ad\s+too\s+often|please\s+let\s+us\s+know|sponsored\s+content|promoted\s+post/i.test(
+            low,
+          ) &&
+          l.length < 160
         ) {
           return false;
         }
@@ -885,9 +1022,19 @@
       if (!isVisibleElement(m)) continue;
       const raw = (m.innerText || '').trim();
       if (raw.length < 36) continue;
+      const low = raw.toLowerCase();
+      /* Ads / feedback dialogs can be large and mention “endorse” — never treat as skills unless skill links exist */
+      if (
+        /why\s+am\s+i\s+seeing|ad\s+preferences|report\s+this\s+ad|don'?t\s+want\s+to\s+see|sponsored|promoted\s+post/i.test(
+          low,
+        )
+      )
+        continue;
+      const hasSkillAnchors = !!m.querySelector('a[href*="/details/skills/"], a[href*="/overlay/skill"]');
       const looksSkillish =
-        /skill|endorsement|endorse|compétence|habilidad|kenntnis/i.test(raw) ||
-        raw.split('\n').filter(Boolean).length >= 6;
+        hasSkillAnchors ||
+        (/skill|endorsement|compétence|habilidad|kenntnis/i.test(raw) &&
+          /\/details\/skills\/|\/overlay\/skill/i.test(raw));
       if (!looksSkillish) continue;
       const cleaned = sanitizeProfileSectionBody(cleanLines(raw));
       if (cleaned.length > best.length) best = cleaned;
@@ -903,7 +1050,7 @@
     const seen = new Set((skillsList || []).map(s => String(s).toLowerCase()));
     const add = raw => {
       const s = String(raw || '').trim();
-      if (s.length < 2 || s.length > 92 || isSkillLineNoise(s)) return;
+      if (s.length < 2 || s.length > 92 || isSkillLineNoise(s) || !looksLikeSkillToken(s)) return;
       const k = s.toLowerCase();
       if (seen.has(k)) return;
       seen.add(k);
@@ -920,8 +1067,13 @@
         if (isVisibleElement(el)) roots.push(el);
       });
     roots.forEach(root => {
+      const skipMainColumnCheck =
+        root.classList?.contains('artdeco-modal') ||
+        root.getAttribute?.('role') === 'dialog' ||
+        /msg-overlay/i.test(root.className || '');
       root.querySelectorAll('a[href*="/details/skills/"], a[href*="/overlay/skill"]').forEach(a => {
         if (!isVisibleElement(a)) return;
+        if (!skipMainColumnCheck && !isNodeInProfileMainColumn(a)) return;
         const s = String(
           tx('span[aria-hidden="true"]', a) ||
             (a.querySelector('.hoverable-link-text span[aria-hidden="true"]')?.textContent ?? '').trim() ||
@@ -931,9 +1083,13 @@
         add(s);
       });
     });
+    /* Overlay body is noisy if split naïvely; only keep lines that look like real skill tokens. */
     const overlay = skillsOverlaySupplementText();
     if (overlay) {
-      overlay.split('\n').forEach(line => add(String(line ?? '').trim()));
+      overlay.split('\n').forEach(line => {
+        const s = String(line ?? '').trim();
+        if (looksLikeSkillToken(s)) add(s);
+      });
     }
   }
 
@@ -950,7 +1106,13 @@
       for (const d of dialogs) {
         if (!isVisibleElement(d)) continue;
         const txt = (d.innerText || '').toLowerCase();
-        if (/skill|endorse|compétence|habilidad/i.test(txt) && txt.length > 40) return true;
+        if (/why\s+am\s+i\s+seeing|report\s+this\s+ad|manage\s+your\s+ad\s+preferences|don'?t\s+want\s+to\s+see/i.test(txt))
+          continue;
+        if (
+          (/skill|endorse|compétence|habilidad/i.test(txt) && txt.length > 40) ||
+          d.querySelector('a[href*="/details/skills/"], a[href*="/overlay/skill"]')
+        )
+          return true;
       }
       await new Promise(r => setTimeout(r, 160));
     }
@@ -1023,7 +1185,7 @@
   function getCardInnerBySectionKey(sectionKey, maxLen) {
     const main = rootEl();
     const tryCard = card => {
-      if (!card) return '';
+      if (!card || !isNodeInProfileMainColumn(card)) return '';
       const head = (card.querySelector('h2, .pvs-header__title')?.innerText || '')
         .replace(/\s+/g, ' ')
         .trim();
@@ -1075,16 +1237,40 @@
    */
   function looksLikeSkillToken(text) {
     const t = String(text || '').trim();
-    if (!t || t.length < 2 || t.length > 80) return false;
+    if (!t || t.length < 2 || t.length > 72) return false;
     if (isSkillLineNoise(t)) return false;
+    const words = t.split(/\s+/).filter(Boolean);
+    if (words.length > 9) return false;
+    if (/https?:\/\/|www\.\w/i.test(t)) return false;
+    /* Reject first-person / promo blurbs */
+    if (/\b(we've|we\s+have|i\s+specialize|our\s+clients?|book\s+a\s+call)\b/i.test(t)) return false;
     /* Reject obvious job-title patterns: "X Designer/Developer/Manager/Engineer/Lead/Intern/Head" */
-    if (/\b(designer|developer|developer|engineer|manager|researcher|lead|intern|head|coordinator|analyst|architect|consultant|director|officer|specialist|executive|strategist)\s*$/i.test(t)) return false;
+    if (/\b(designer|developer|engineer|manager|researcher|lead|intern|head|coordinator|analyst|architect|consultant|director|officer|specialist|executive|strategist)\s*$/i.test(t)) return false;
+    /* “Python Dev”, “MERN Dev” style role shorthand */
+    if (/\b(dev|devops)\s*$/i.test(t) && t.split(/\s+/).length <= 3) return false;
     /* Reject employment types */
     if (/^(full[-\s]?time|part[-\s]?time|freelance|contract|remote|on[-\s]?site|hybrid)$/i.test(t)) return false;
     /* Reject date ranges */
     if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b.*\d{4}/i.test(t)) return false;
     if (/^\d{4}\s*[-–]\s*(\d{4}|present)/i.test(t)) return false;
+    /* Long comma-heavy lines are usually lists of brands, not one skill */
+    if ((t.match(/,/g) || []).length >= 2 && t.length > 48) return false;
     return true;
+  }
+
+  /** Final pass: keep only plausible skill labels for export / UI. */
+  function refineSkillsListForExport(list) {
+    const seen = new Set();
+    const out = [];
+    for (const raw of list || []) {
+      const s = String(raw || '').trim();
+      if (!s || isSkillLineNoise(s) || !looksLikeSkillToken(s)) continue;
+      const k = s.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(s);
+    }
+    return out;
   }
 
   /** Top "Skills:" line — real skill names only (no "X at Company", "Show all", endorsements). */
@@ -1093,7 +1279,7 @@
     const seen = new Set();
     for (const raw of skillsList || []) {
       const s = String(raw || '').trim();
-      if (!s || isSkillLineNoise(s) || seen.has(s.toLowerCase())) continue;
+      if (!s || isSkillLineNoise(s) || !looksLikeSkillToken(s) || seen.has(s.toLowerCase())) continue;
       seen.add(s.toLowerCase());
       fromList.push(s);
     }
@@ -1160,6 +1346,63 @@
     const end = parseYrMoToMonthIndex(parts[1]);
     if (start == null || end == null || end < start) return null;
     return { start, end };
+  }
+
+  /** Normalize date lines so education vs duplicate rows match despite dash/space variants. */
+  function normalizedDatesKey(dates) {
+    return String(dates || '')
+      .replace(/[–—]/g, '-')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  function buildEducationDateIndex(eduItems) {
+    const norm = new Set();
+    const ranges = new Set();
+    for (const e of eduItems || []) {
+      const nd = normalizedDatesKey(e.dates);
+      if (nd) norm.add(nd);
+      const cal = parseCalendarRangeFromDates(e.dates);
+      if (cal) ranges.add(`${cal.start}:${cal.end}`);
+    }
+    return { norm, ranges };
+  }
+
+  function experienceDatesOverlapEducation(dates, eduIdx) {
+    if (!eduIdx) return false;
+    const nd = normalizedDatesKey(dates);
+    if (nd && eduIdx.norm.has(nd)) return true;
+    const cal = parseCalendarRangeFromDates(dates);
+    if (cal && eduIdx.ranges.has(`${cal.start}:${cal.end}`)) return true;
+    return false;
+  }
+
+  /**
+   * LinkedIn sometimes mounts an education card inside the Experience list, or row order shifts so
+   * school dates are parsed as a job — that inflates years_experience. Drop those rows.
+   */
+  function experienceRowLooksLikeEducation(item, row) {
+    if (!item || !row) return false;
+    const role = String(row.role || '').trim();
+    const company = String(row.company || '').trim();
+    const desc = String(row.desc || '').trim();
+    const blob = `${role}\n${company}\n${desc}`.toLowerCase();
+    try {
+      if (item.querySelector?.('a[href*="/school/"]')) return true;
+    } catch {
+      /* ignore */
+    }
+    if (/\bfield\s+of\s+study\b|\bactivities\s+and\s+societies\b|\bgrade\b/.test(blob)) return true;
+    const degreeRe =
+      /\b(bachelor|bachelors|master|masters|mba|phd|ph\.?\s*d\.?|doctorate|doctoral|m\.?phil|b\.?s\.?\b|m\.?s\.?\b|m\.?sc\.?\b|b\.?e\.?\b|b\.?tech|m\.?tech|b\.?a\.?\b|b\.?sc\.?\b|m\.?eng|associate'?s?\s+degree|undergraduate|graduate\s+degree|diploma\s+in)\b/i;
+    const schoolish =
+      /\b(university|college|polytechnic|école|escuela|uni\s+de\b|institute\s+of\s+technology|academy)\b/i.test(blob) ||
+      /\b(high\s+school|secondary\s+school)\b/i.test(blob);
+    if (degreeRe.test(blob) && schoolish) return true;
+    if (/\b(bachelor|master|doctor|mba|associate)\'?s?\s+degree'?s?\b/i.test(role)) return true;
+    if (/\bstudent\b/i.test(role) && schoolish) return true;
+    return false;
   }
 
   /**
@@ -1380,35 +1623,6 @@
     if (!email && about) email = pickFirstValidEmail(about);
     if (!email) email = pickFirstValidEmail((main.innerText || '').slice(0, 42000));
 
-    const expItems = [];
-    const expSec = sectionExperience(main);
-    listItems(expSec).forEach(item => {
-      const spans = rowTextParts(item);
-      if (!spans.length) return;
-      const subItems = item.querySelectorAll('li.pvs-list__item--with-top-padding');
-      if (subItems.length) {
-        const companyName = spans[0] || '';
-        subItems.forEach(sub => {
-          const ss = rowTextParts(sub);
-          if (ss.length) {
-            expItems.push({
-              role: ss[0],
-              company: companyName,
-              dates: ss[1] || '',
-              desc: ss.slice(2).join(' '),
-            });
-          }
-        });
-      } else {
-        expItems.push({
-          role: spans[0] || '',
-          company: spans[1] || '',
-          dates: spans[2] || '',
-          desc: spans.slice(3).join(' '),
-        });
-      }
-    });
-
     const eduItems = [];
     const eduSec = sectionEducation(main);
     listItems(eduSec).forEach(item => {
@@ -1422,6 +1636,48 @@
         desc: spans.slice(4).join(' '),
       });
     });
+    const eduDateIdx = buildEducationDateIndex(eduItems);
+
+    const expRowsPending = [];
+    const expSec = sectionExperience(main);
+    listItems(expSec).forEach(item => {
+      const spans = rowTextParts(item);
+      if (!spans.length) return;
+      if (rowLooksLikeInlineSkillEndorsement(spans)) return;
+      if (expRowShouldBeSkippedAsSkillChip(item, spans)) return;
+      const subItems = item.querySelectorAll('li.pvs-list__item--with-top-padding');
+      if (subItems.length) {
+        const companyName = spans[0] || '';
+        subItems.forEach(sub => {
+          const ss = rowTextParts(sub);
+          if (!ss.length) return;
+          if (rowLooksLikeInlineSkillEndorsement(ss)) return;
+          if (expRowShouldBeSkippedAsSkillChip(sub, ss)) return;
+          expRowsPending.push({
+            item: sub,
+            role: ss[0],
+            company: companyName,
+            dates: ss[1] || '',
+            desc: ss.slice(2).join(' '),
+          });
+        });
+      } else {
+        expRowsPending.push({
+          item,
+          role: spans[0] || '',
+          company: spans[1] || '',
+          dates: spans[2] || '',
+          desc: spans.slice(3).join(' '),
+        });
+      }
+    });
+    const expItems = expRowsPending
+      .filter(
+        r =>
+          !experienceRowLooksLikeEducation(r.item, r) &&
+          !experienceDatesOverlapEducation(r.dates, eduDateIdx),
+      )
+      .map(r => ({ role: r.role, company: r.company, dates: r.dates, desc: r.desc }));
 
     const skillsSec = sectionSkills(main);
     const skillsList = collectSkillsFromSection(skillsSec);
@@ -1429,6 +1685,11 @@
     /* Full skills list page has no #skills section — harvest anchors from the whole document. */
     if (/\/in\/[^/]+\/details\/skills/i.test(window.location.pathname || '') || skillsList.length === 0)
       mergeSkillAnchorsFromDocument(skillsList);
+    {
+      const refined = refineSkillsListForExport(skillsList);
+      skillsList.length = 0;
+      refined.forEach(s => skillsList.push(s));
+    }
 
     const certsList = [];
     const seenCertKeys = new Set();
@@ -1521,7 +1782,7 @@
       skillsCommaTop ||
       skillsList
         .map(s => String(s).trim())
-        .filter(s => s && !isSkillLineNoise(s))
+        .filter(s => s && !isSkillLineNoise(s) && looksLikeSkillToken(s))
         .slice(0, 120)
         .join(', ');
     const profileSectionsBlock = buildProfileSectionsFromPageBlock(5200);
@@ -1568,7 +1829,9 @@
       }
 
       {
-        const skClean = skillsList.map(s => String(s ?? '').trim()).filter(s => s && !isSkillLineNoise(s));
+        const skClean = skillsList
+          .map(s => String(s ?? '').trim())
+          .filter(s => s && !isSkillLineNoise(s) && looksLikeSkillToken(s));
         if (skClean.length) {
           lines.push('SKILLS');
           lines.push(skClean.slice(0, 120).join(', '));
@@ -1717,6 +1980,20 @@
       test_scores: testScoresLines.slice(0, 15).join('\n'),
       causes: causesLines.slice(0, 15).join('\n'),
       languages: langsList.join(', '),
+      /* Structured rows for the pipeline (avoids mis-parsing "EXPERIENCE (from page)" + classifier swaps). */
+      experience_items: expItems.map(e => ({
+        role: e.role,
+        company: e.company,
+        dates: e.dates,
+        desc: (e.desc || '').slice(0, 2000),
+      })),
+      education_items: eduItems.map(e => ({
+        school: e.school,
+        degree: e.degree,
+        field: e.field,
+        dates: e.dates,
+        desc: (e.desc || '').slice(0, 800),
+      })),
       years_experience: yearsExperience,
       highest_degree: highestDegree,
       experience_summary: expItems
@@ -1727,6 +2004,8 @@
         .slice(0, 2)
         .map(e => `${e.degree} ${e.field} – ${e.school}`)
         .join('; '),
+      /* Full list for profile_pipeline (top `Skills:` may be stricter; pipeline also reads SKILLS (from page)). */
+      skills_list: skillsList.slice(0, 200),
       fullText,
     };
   };
@@ -1794,6 +2073,16 @@
     out.test_scores = pick(early.test_scores, late.test_scores);
     out.causes = pick(early.causes, late.causes);
     out.languages = pick(early.languages, late.languages);
+    const pickLonger = (a, b) => {
+      const al = Array.isArray(a) ? a.length : 0;
+      const bl = Array.isArray(b) ? b.length : 0;
+      if (bl > al) return b;
+      if (al > 0) return a;
+      return b || a;
+    };
+    out.experience_items = pickLonger(early.experience_items, late.experience_items);
+    out.education_items = pickLonger(early.education_items, late.education_items);
+    out.skills_list = pickLonger(early.skills_list, late.skills_list);
     out.extracted_ok = Boolean(out.extracted_ok || early.extracted_ok);
     return out;
   }

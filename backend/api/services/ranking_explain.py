@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 
 
 def build_ranking_explanation(job: "Job", cand: "Candidate", cross_encoder_score: float, *, raw_cross_encoder_score: float | None = None) -> Dict[str, Any]:
-    job_skills = parse_skill_str(job.skills or "")
-    cand_skills = parse_skill_str(cand.skills or "")
+    job_skills = parse_skill_str(str(getattr(job, "skills", None) or ""))
+    cand_skills = parse_skill_str(str(getattr(cand, "skills", None) or ""))
     skills_match_ratio = float(overlap_ratio(job_skills, cand_skills)) if job_skills else 0.0
 
     all_s, critical_s, weights = classify_job_skills(job_skills)
@@ -29,7 +29,12 @@ def build_ranking_explanation(job: "Job", cand: "Candidate", cross_encoder_score
     missing_skills: List[str] = sorted(all_s - cand_skills)[:30]
     missing_critical: List[str] = sorted(critical_s - cand_skills)[:30]
     experience_match = float(exp_score(cand.years_experience, job.min_experience))
-    education_match = float(edu_score(cand.highest_degree or "", job.education_required or "any"))
+    education_match = float(
+        edu_score(
+            str(getattr(cand, "highest_degree", None) or ""),
+            str(getattr(job, "education_required", None) or "any"),
+        )
+    )
     heuristic = float(weak_score(job_skills, cand_skills, experience_match, education_match))
     return {
         "skills_match_ratio": round(skills_match_ratio, 4),

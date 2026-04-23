@@ -53,7 +53,7 @@
 
     <div class="product-banner">
       <p class="product-banner-title">LinkedIn → classify → match</p>
-      <p class="product-banner-sub">The page is scraped automatically, text is sorted into <strong>About</strong>, <strong>Experience</strong>, <strong>Education</strong>, and <strong>Skills</strong>, then you match to a job and save to your RezumeAI pool.</p>
+      <p class="product-banner-sub">The page is scraped automatically, text is sorted into <strong>About</strong>, <strong>Experience &amp; skills</strong> (one block), <strong>Education</strong>, then you match to a job and save to your RezumeAI pool.</p>
     </div>
 
     <div id="step-workbench" class="step-panel active">
@@ -94,22 +94,18 @@
       <div id="classified-panel" class="classified-panel hidden">
         <p class="classified-title">Extracted &amp; classified</p>
         <div id="role-pills" class="role-pills"></div>
-        <div class="role-grid">
+        <div class="role-grid role-grid-classified">
           <div class="role-card">
             <h4 class="role-card-h">About</h4>
             <div id="sec-about" class="role-card-body"></div>
           </div>
           <div class="role-card">
-            <h4 class="role-card-h">Experience</h4>
-            <div id="sec-experience" class="role-card-body"></div>
-          </div>
-          <div class="role-card">
             <h4 class="role-card-h">Education</h4>
             <div id="sec-education" class="role-card-body"></div>
           </div>
-          <div class="role-card">
-            <h4 class="role-card-h">Skills</h4>
-            <div id="sec-skills" class="role-card-body role-skills-chips"></div>
+          <div class="role-card role-card-wide">
+            <h4 class="role-card-h">Experience &amp; skills</h4>
+            <div id="sec-exp-skills" class="role-card-body"></div>
           </div>
         </div>
       </div>
@@ -154,16 +150,13 @@
             </select>
           </div>
         </div>
-        <div class="field">
-          <label>Skills <span class="hint-label">(comma-separated)</span></label>
-          <input id="c-skills" type="text" placeholder="Python, React, Machine Learning, SQL">
-        </div>
+        <input type="hidden" id="c-skills" value="" aria-hidden="true" />
         <div class="field">
           <label>
-            Profile Text
+            Experience, summary &amp; skills
             <span id="char-count" class="hint-label">0 chars</span>
           </label>
-          <textarea id="c-text" rows="5" placeholder="Built automatically from the page; edit if needed."></textarea>
+          <textarea id="c-text" rows="8" placeholder="Built from the page (About, work history, skills). Edit if needed — use a &quot;Skills:&quot; line for comma-separated skills, or rely on the scrape."></textarea>
           <button type="button" id="btn-parse-fields" class="btn btn-secondary btn-sm btn-full parse-fields-btn">
             Re-parse headers from text
           </button>

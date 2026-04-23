@@ -16,7 +16,14 @@ engine = create_engine(
     echo=False,
 )
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# expire_on_commit=False: routes such as match preview call ensure_workspace_for_recruiter(),
+# which commits mid-request; without this, ORM instances loaded earlier can expire and break.
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+    expire_on_commit=False,
+)
 
 Base = declarative_base()
 

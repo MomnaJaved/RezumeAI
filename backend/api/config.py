@@ -74,12 +74,6 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     openai_insight_timeout_seconds: int = 45
 
-    # xAI Grok (OpenAI-compatible Chat Completions) — optional LinkedIn scrape refinement
-    xai_api_key: str = ""
-    xai_api_base: str = "https://api.x.ai/v1"
-    xai_model: str = "grok-2-latest"
-    xai_refine_timeout_seconds: int = 90
-
     @model_validator(mode="after")
     def _anchor_relative_sqlite_paths(self) -> "Settings":
         """

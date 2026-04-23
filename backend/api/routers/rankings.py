@@ -59,7 +59,10 @@ def _snapshot_role(cand: Candidate, r: dict) -> str:
         return (cand.role_label or "").strip()
     text = (cand.raw_text or "").strip()
     if text:
-        return str(classify_role(text)["label"])
+        try:
+            return str(classify_role(text)["label"])
+        except Exception:
+            return ""
     return ""
 
 
@@ -536,25 +539,50 @@ def _persist_match_candidate_inputs(body: dict, cand: Candidate) -> tuple[object
     """
     Use extension/form fields when provided so the cross-encoder sees the same text as
     POST /match/preview (title + skills + profile blob). Otherwise fall back to DB fields.
+
+    Chrome extension sends ``candidate_text_for_match``; optional keys are often omitted when
+    empty. Those must default like preview (empty string / None), **not** to freshly ingested
+    DB title/skills — otherwise the saved match % drifts above preview.
     """
     ext = str(body.get("candidate_text_for_match") or body.get("candidate_text") or "").strip()
     if len(ext) < 10:
         ct = (ml_ranking.build_cand_text_from_db(cand) or "").strip()
         return cand, ct
-    title = str(body.get("candidate_title") or "").strip() or (getattr(cand, "title", None) or "")
-    skills = str(body.get("candidate_skills") or "").strip() or (getattr(cand, "skills", None) or "")
-    cert = str(body.get("certifications") or "").strip() or (getattr(cand, "certifications", None) or "")
-    deg_in = body.get("highest_degree")
-    deg = str(deg_in).strip() if deg_in not in (None, "") else (getattr(cand, "highest_degree", None) or "")
-    y_raw = body.get("years_experience")
-    years: float | None
-    if y_raw is not None and y_raw != "":
-        try:
-            years = float(y_raw)
-        except (TypeError, ValueError):
-            years = getattr(cand, "years_experience", None)
+
+    align_with_preview = "candidate_text_for_match" in body
+
+    if align_with_preview:
+        title = str(body.get("candidate_title") or "").strip() if "candidate_title" in body else ""
+        skills = str(body.get("candidate_skills") or "").strip() if "candidate_skills" in body else ""
+        cert = str(body.get("certifications") or "").strip() if "certifications" in body else ""
+        if "highest_degree" in body:
+            deg_in = body.get("highest_degree")
+            deg = str(deg_in).strip() if deg_in not in (None, "") else ""
+        else:
+            deg = ""
+        years: float | None = None
+        if "years_experience" in body:
+            y_raw = body.get("years_experience")
+            if y_raw is not None and y_raw != "":
+                try:
+                    years = float(y_raw)
+                except (TypeError, ValueError):
+                    years = None
     else:
-        years = getattr(cand, "years_experience", None)
+        title = str(body.get("candidate_title") or "").strip() or (getattr(cand, "title", None) or "")
+        skills = str(body.get("candidate_skills") or "").strip() or (getattr(cand, "skills", None) or "")
+        cert = str(body.get("certifications") or "").strip() or (getattr(cand, "certifications", None) or "")
+        deg_in = body.get("highest_degree")
+        deg = str(deg_in).strip() if deg_in not in (None, "") else (getattr(cand, "highest_degree", None) or "")
+        y_raw = body.get("years_experience")
+        years = None
+        if y_raw is not None and y_raw != "":
+            try:
+                years = float(y_raw)
+            except (TypeError, ValueError):
+                years = getattr(cand, "years_experience", None)
+        else:
+            years = getattr(cand, "years_experience", None)
     snap = SimpleNamespace(
         title=title,
         skills=skills,
@@ -678,9 +706,18 @@ def match_candidate_save(
     _reorder_job_rankings_for_workspace(db, job.id, recruiter_ws)
     db.commit()
 
-    refresh_candidate_best_job_cache(db, [cand.id])
-    db.refresh(job)
-    refresh_job_ranking_top_insight(db, job)
+    try:
+        refresh_candidate_best_job_cache(db, [cand.id])
+    except Exception as e:
+        _log.warning("refresh_candidate_best_job_cache after match-candidate-save: %s", e)
+    try:
+        db.refresh(job)
+    except Exception as e:
+        _log.warning("db.refresh(job) after match-candidate-save: %s", e)
+    try:
+        refresh_job_ranking_top_insight(db, job)
+    except Exception as e:
+        _log.warning("refresh_job_ranking_top_insight after match-candidate-save: %s", e)
 
     rq = db.query(JobCandidateRanking).filter(
         JobCandidateRanking.job_id == job.id,

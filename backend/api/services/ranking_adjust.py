@@ -52,8 +52,8 @@ def _title_discipline_mismatch(job_title: str, cand_title: str) -> float:
     Strong penalty when job and candidate titles are from incompatible families
     (e.g. Data Scientist vs UI/UX Designer). Cross-encoder text can still look vaguely similar.
     """
-    jt = (job_title or "").strip()
-    ct = (cand_title or "").strip()
+    jt = str(job_title or "").strip()
+    ct = str(cand_title or "").strip()
     if len(jt) < 4 or len(ct) < 4:
         return 0.0
     j_ds = bool(_DS_ML_TITLE.search(jt))
@@ -72,8 +72,8 @@ def _title_role_relevance(job_title: str, cand_title: str) -> float:
     Heuristic relevance for role quality. Returns [-0.3..+0.15].
     Penalizes support roles against senior job titles; boosts direct senior alignment.
     """
-    jt = (job_title or "").lower()
-    ct = (cand_title or "").lower()
+    jt = str(job_title or "").lower()
+    ct = str(cand_title or "").lower()
     if not jt or not ct:
         return 0.0
     s = 0.0
@@ -90,7 +90,7 @@ def _cert_boost(job: Any, cand: Any, critical_skills: set[str]) -> float:
     """
     Small boost if candidate certifications mention critical/domain skills.
     """
-    raw = (getattr(cand, "certifications", None) or "").lower()
+    raw = str(getattr(cand, "certifications", None) or "").lower()
     if not raw.strip():
         return 0.0
     hits = 0
@@ -117,8 +117,8 @@ def adjusted_match_score(job: Any, cand: Any, *, raw_cross_encoder_score: float,
     """
     base = _clamp01(raw_cross_encoder_score)
 
-    job_skills = parse_skill_str(getattr(job, "skills", None) or "")
-    cand_skills = parse_skill_str(getattr(cand, "skills", None) or "")
+    job_skills = parse_skill_str(str(getattr(job, "skills", None) or ""))
+    cand_skills = parse_skill_str(str(getattr(cand, "skills", None) or ""))
     all_s, critical_s, weights = classify_job_skills(job_skills)
     total_cov = _clamp01(weighted_overlap_ratio(all_s, cand_skills, weights)) if all_s else 0.0
     critical_cov = _clamp01(len((critical_s & cand_skills)) / len(critical_s)) if critical_s else 0.0
@@ -127,8 +127,8 @@ def adjusted_match_score(job: Any, cand: Any, *, raw_cross_encoder_score: float,
     critical_pen = 0.55 + 0.45 * critical_cov  # 0.55..1.0
 
     exp_fit = _clamp01(exp_score(getattr(cand, "years_experience", None), getattr(job, "min_experience", None)))
-    jt = getattr(job, "title", "") or ""
-    ct = getattr(cand, "title", "") or ""
+    jt = str(getattr(job, "title", None) or "")
+    ct = str(getattr(cand, "title", None) or "")
     title_rel = max(
         -0.58,
         min(0.15, _title_role_relevance(jt, ct) + _title_discipline_mismatch(jt, ct)),
