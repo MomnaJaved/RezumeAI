@@ -245,23 +245,63 @@ def _pick_email_collapsed_lines(norm: str, addr_ok) -> str:
     return ""
 
 
+def _looks_like_email_local_fragment(ln: str) -> bool:
+    """Single-line fragment that could be the mailbox local-part (not a full name sentence)."""
+    s = (ln or "").strip()
+    if not s or len(s) > 72:
+        return False
+    if "@" in s:
+        return True
+    if s.count(" ") > 1:
+        return False
+    if not re.match(r"^[\w.%+-]+$", s):
+        return False
+    return bool(re.search(r"\d", s) or "." in s or len(s) >= 4)
+
+
 def _header_email_blob_for_ocr(norm_head: str) -> str:
     """
     Collapse only the email-looking lines (from the first ``@`` / major host hint),
     so the candidate's name on earlier lines is not glued into the local-part.
+
+    When OCR puts ``user`` on one line and ``gmail.com`` on the next (no ``@`` yet),
+    start one line earlier so ``normalize_text_for_email_scan`` can insert ``@``.
     """
     lines = [ln.strip() for ln in norm_head.splitlines() if ln.strip()][:40]
     start: int | None = None
     for i, ln in enumerate(lines):
-        if "@" in ln or re.search(
-            r"\b(gmail|yahoo|hotmail|outlook|protonmail|icloud|edu\.pk|ac\.uk)\b", ln, re.IGNORECASE
+        if "@" in ln:
+            start = i
+            break
+        if re.search(
+            r"\b(gmail|yahoo|hotmail|outlook|protonmail|icloud|edu\.pk|ac\.uk|com\.pk)\b",
+            ln,
+            re.IGNORECASE,
+        ) or re.search(
+            r"\b[A-Za-z0-9][A-Za-z0-9._-]{0,48}\.(?:com|net|org|io|co|edu|pk|uk|jobs|dev)\b",
+            ln,
+            re.IGNORECASE,
         ):
             start = i
+            if i > 0 and _looks_like_email_local_fragment(lines[i - 1]):
+                start = i - 1
             break
     if start is None:
         return ""
-    chunk = lines[start : start + 5]
-    return "".join(re.sub(r"\s+", "", x) for x in chunk)
+    chunk: list[str] = []
+    for j in range(start, min(len(lines), start + 6)):
+        s = lines[j]
+        if re.match(
+            r"(?i)^(skills|technical\s+skills|experience|work\s+experience|education|projects|summary|objective)\b",
+            s,
+        ):
+            break
+        chunk.append(s)
+    if not chunk:
+        return ""
+    merged = " ".join(chunk)
+    norm_m = normalize_text_for_email_scan(merged)
+    return re.sub(r"\s+", "", norm_m)
 
 
 def _pick_email_from_collapsed_text(flat: str, addr_ok) -> str:

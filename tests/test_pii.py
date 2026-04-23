@@ -43,3 +43,9 @@ def test_extract_primary_email_reach_me_at_not_obfuscation():
 def test_extract_primary_email_ocr_line_break_inside_address():
     t = "Jane Smith\njane.smith@\ngmail.com\nSkills: Python"
     assert extract_primary_email(t) == "jane.smith@gmail.com"
+
+
+def test_extract_primary_email_ocr_local_on_line_before_domain():
+    """OCR: local part and domain on consecutive lines without ``@`` yet."""
+    t = "Ali Khan\nali.khan\nyahoo.com\n\nSkills: Python"
+    assert extract_primary_email(t) == "ali.khan@yahoo.com"
