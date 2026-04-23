@@ -12,6 +12,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from src.parsing.text_extractors import extract_text_any
+from src.parsing.text_cleaning import preprocess_resume_text
 from src.parsing.skill_mining import build_global_vocab, skills_for_resume
 
 IN_DIR = ROOT / "data" / "raw" / "resumes_extracted"
@@ -30,7 +31,7 @@ def file_id(path: Path) -> str:
 
 def main():
     files = []
-    for ext in (".pdf", ".docx", ".txt"):
+    for ext in (".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"):
         files.extend(IN_DIR.rglob(f"*{ext}"))
 
     if not files:
@@ -43,7 +44,7 @@ def main():
 
     for p in tqdm(files):
         txt = extract_text_any(p)
-        txt = (txt or "").strip()
+        txt = preprocess_resume_text((txt or "").strip())
         texts.append(txt)
 
         rows.append({

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import re
+import statistics
 from datetime import datetime
 from typing import Dict, List, Tuple
 
@@ -277,6 +278,95 @@ def _lines_after_heading(lines: list[str], header_re: re.Pattern, allowed_repeat
     return out
 
 
+def _trim_trailing_debris_after_institution(seg: str) -> str:
+    """
+    OCR often glues nonsense after ``… University`` (e.g. spaced tokens) before a ``|``.
+    Keep ``Bahria University`` and drop low-meaning tail when it is mostly very short tokens.
+    """
+    seg = seg.strip()
+    if not seg or len(seg) < 14:
+        return seg
+    m = re.search(r"\b(university|college|institute|school)\b", seg, re.IGNORECASE)
+    if not m or m.start() < 4:
+        return seg
+    head = seg[: m.end()].strip()
+    tail = seg[m.end() :].strip()
+    if not tail or len(tail) < 6:
+        return seg
+    words = tail.split()
+    if len(words) < 4:
+        return seg
+    lens: list[int] = []
+    for w in words[:14]:
+        core = re.sub(r"[^A-Za-z]", "", w)
+        if not core:
+            continue
+        lens.append(len(core))
+    if len(lens) < 4:
+        return seg
+    if statistics.mean(lens) < 3.55:
+        return head
+    return seg
+
+
+def _scrub_education_pipe_segments(joined: str) -> str:
+    """Drop pipe-separated OCR junk segments; strip leading noise before ``College`` / ``University``."""
+    if "|" not in joined and "｜" not in joined:
+        return joined
+    s2 = _normalize_resume_inline_noise(joined)
+    parts = [p.strip() for p in re.split(r"\s*[|｜]\s*", s2) if p.strip()]
+    if len(parts) < 2:
+        return joined
+    cleaned: list[str] = []
+    for p in parts:
+        if _segment_looks_like_skills_block(p):
+            break
+        p2 = p.strip()
+        mc = re.search(r"\b(college|university|institute|school)\b", p2, re.IGNORECASE)
+        if mc:
+            pre = p2[: mc.start()].strip()
+            pre_words = pre.split() if pre else []
+            if pre_words and all(len(re.sub(r"[^A-Za-z]", "", w)) <= 2 for w in pre_words):
+                p2 = p2[mc.start() :].strip()
+        mcol = re.search(r"\bcollege\b", p2, re.IGNORECASE)
+        if mcol and mcol.start() > 6:
+            prefix = p2[: mcol.start()].strip()
+            pw = prefix.split()
+            if pw:
+                shortish = sum(1 for w in pw if len(re.sub(r"[^A-Za-z]", "", w)) <= 3)
+                if shortish >= max(2, int(0.55 * len(pw)) + 0.999):
+                    p2 = p2[mcol.start() :].strip()
+        p2 = _trim_trailing_debris_after_institution(p2)
+        if not p2:
+            continue
+        words = re.findall(r"[A-Za-z]+", p2)
+        if not words:
+            if re.search(r"\b(19|20)\d{2}\b", p2):
+                cleaned.append(p2)
+            continue
+        short = sum(1 for w in words if len(w) <= 2)
+        pl = p2.lower()
+        score = 0.0
+        if re.search(r"university|college|institute|school|campus|bachelor|master|b\.?s\b|cgpa|gpa", pl):
+            score += 20.0
+        if re.search(r"\b(19|20)\d{2}\b", p2):
+            score += 7.0
+        if re.search(
+            r"\b(pakistan|india|usa|uae|canada|china|germany|turkey|saudi|egypt|"
+            r"lahore|karachi|islamabad|dubai|london|toronto)\b",
+            pl,
+        ):
+            score += 12.0
+        score -= min(28.0, short * 2.8)
+        if len(p2) > 220:
+            score -= 6.0
+        if score >= 3.5:
+            cleaned.append(p2)
+    if not cleaned:
+        return joined
+    return " | ".join(cleaned).strip(" |—–-")
+
+
 def _finalize_education_joined(joined: str) -> str:
     """Last pass on the stored education string: cut skills tails and tidy trailing pipes."""
     if not joined:
@@ -294,6 +384,8 @@ def _finalize_education_joined(joined: str) -> str:
             if re.search(r"\b(javascript|typescript|python|react|programming|nestjs|tailwind)\b", tail, re.I):
                 s = s[: m2.start()].strip(" |—–-/")
     s = re.sub(r"(\s*\|)+\s*$", "", s).strip(" |—–-/")
+    s = _scrub_education_pipe_segments(s)
+    s = _trim_trailing_debris_after_institution(s)
     return s
 
 

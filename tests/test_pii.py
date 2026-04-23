@@ -33,3 +33,8 @@ def test_extract_primary_email_mailto():
     # Avoid reserved example.* domains — those are skipped as placeholder addresses.
     t = "See also <mailto:hire_me@acme.jobs> for contact."
     assert extract_primary_email(t) == "hire_me@acme.jobs"
+
+
+def test_extract_primary_email_ocr_line_break_inside_address():
+    t = "Jane Smith\njane.smith@\ngmail.com\nSkills: Python"
+    assert extract_primary_email(t) == "jane.smith@gmail.com"
