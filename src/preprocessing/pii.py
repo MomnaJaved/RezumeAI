@@ -134,7 +134,8 @@ def normalize_text_for_email_scan(text: str) -> str:
         return ""
     t = text.replace("\r\n", "\n").replace("\r", "\n")
     t = t.replace("\u200b", "").replace("\u200c", "").replace("\ufeff", "")
-    t = re.sub(r"\(?\s*\[?\s*at\s*\]?\s*\)?", "@", t, flags=re.IGNORECASE)
+    # Obfuscated "@": [at], (at) — do not replace bare English " at " (e.g. "Reach me at user@…").
+    t = re.sub(r"\[\s*at\s*\]|\(\s*at\s*\)", "@", t, flags=re.IGNORECASE)
     t = re.sub(r"\(?\s*\[?\s*dot\s*\]?\s*\)?", ".", t, flags=re.IGNORECASE)
     t = _RE_SPACED_AT.sub(r"\1@\2", t)
     return t

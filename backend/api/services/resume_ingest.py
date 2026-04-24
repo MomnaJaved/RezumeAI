@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import tempfile
 from pathlib import Path
 
 from api.paths import repo_root
 from src.inference.service import classify_role
-from src.parsing.skill_mining import extract_skill_candidates
+from src.parsing.skill_mining import extract_skill_candidates, is_noise, normalize
 from src.parsing.feature_extractors import extract_certifications, extract_education, estimate_years_experience
 from src.parsing.text_extractors import extract_text_any
 from src.parsing.name_extractor import UNKNOWN_CANDIDATE, resolve_candidate_full_name
@@ -22,6 +23,34 @@ ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".tif", 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 
 MIN_TEXT_CHARS = 80
+
+_RE_SKILLS_HEADER = re.compile(r"^\s*Skills:\s*(.+?)\s*$", re.IGNORECASE)
+
+
+def _skills_from_explicit_skills_headers(text: str) -> list[str]:
+    """
+    Chrome extension and paste flows prepend `Skills: a, b, c` above the profile blob.
+    Skill mining may return few or no tokens on noisy LinkedIn text — preserve the explicit list.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in (text or "").splitlines():
+        m = _RE_SKILLS_HEADER.match(line.strip())
+        if not m:
+            continue
+        chunk = (m.group(1) or "").strip()
+        if not chunk:
+            continue
+        for part in re.split(r"[,;|]\s*|\s{2,}", chunk):
+            p = normalize(part)
+            if not p or is_noise(p) or len(p) > 160:
+                continue
+            k = p.lower()
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(p)
+    return out[:80]
 
 
 def external_id_from_content(content: bytes) -> str:
@@ -117,6 +146,17 @@ def parse_upload(filename: str, content: bytes) -> dict:
     stripped = strip_pii(raw_clean)
     pii_safe_structural = strip_pii_keep_newlines(raw_clean)
     skills_list = extract_skill_candidates(stripped)[:80]
+    header_skills = _skills_from_explicit_skills_headers(raw_clean)
+    if header_skills:
+        merged: list[str] = []
+        seen_m: set[str] = set()
+        for x in header_skills + skills_list:
+            k = (x or "").strip().lower()
+            if not k or k in seen_m:
+                continue
+            seen_m.add(k)
+            merged.append(x.strip())
+        skills_list = merged[:80]
     skills = ", ".join(skills_list)
 
     # Years first: drives Fresher vs inferred title and seniority polish.

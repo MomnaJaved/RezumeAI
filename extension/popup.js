@@ -52,8 +52,16 @@ function clipStr(s, maxLen) {
 function skillsForMatchApi() {
   const h = clipStr(val('c-skills'), 32000).trim();
   if (h) return h;
-  const m = val('c-text').match(/^Skills:\s*(.+)$/im);
-  if (m && m[1]) return clipStr(m[1].trim(), 32000);
+  const text = val('c-text') || '';
+  /* First non-empty `Skills:` line (extension / paste often puts this above the profile blob). */
+  const lines = text.split(/\r?\n/);
+  for (const line of lines) {
+    const m = line.match(/^\s*Skills:\s*(.+)\s*$/i);
+    if (m && m[1] != null) {
+      const t = clipStr(String(m[1]).trim(), 32000);
+      if (t) return t;
+    }
+  }
   return '';
 }
 
