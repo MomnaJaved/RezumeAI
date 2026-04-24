@@ -28,6 +28,38 @@ from src.parsing.name_extractor import UNKNOWN_CANDIDATE
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
+# PATCH body: only these ORM columns may be updated (avoid stray keys / typos).
+_CANDIDATE_PATCHABLE_KEYS = frozenset(
+    {
+        "full_name",
+        "title",
+        "role_label",
+        "role_fine",
+        "skills",
+        "years_experience",
+        "highest_degree",
+        "certifications",
+        "education_lines",
+        "status",
+        "contact_email",
+    }
+)
+# DB columns are non-null strings; clients sometimes send JSON null — coerce before setattr.
+_CANDIDATE_PATCH_STRING_KEYS = frozenset(
+    {
+        "full_name",
+        "title",
+        "role_label",
+        "role_fine",
+        "skills",
+        "highest_degree",
+        "certifications",
+        "education_lines",
+        "status",
+        "contact_email",
+    }
+)
+
 
 def _ensure_candidate_self_or_recruiter(c: Candidate, user: Optional[User]) -> None:
     if user is None:
@@ -569,7 +601,12 @@ def patch_candidate(
         upd["role_fine"] = str(upd["role_fine"]).strip()[:64] or "unknown"
     if "contact_email" in upd and upd["contact_email"] is not None:
         upd["contact_email"] = str(upd["contact_email"]).strip()[:320]
+    for k in _CANDIDATE_PATCH_STRING_KEYS:
+        if k in upd and upd[k] is None:
+            upd[k] = ""
     for key, val in upd.items():
+        if key not in _CANDIDATE_PATCHABLE_KEYS:
+            continue
         setattr(c, key, val)
 
     # Profile status drives the same pipeline as job_applicants; keep rows in sync so the dashboard
@@ -704,13 +741,14 @@ def create_candidate(
         title=body.title,
         role_label=body.role_label,
         role_fine=(body.role_fine or "unknown")[:64],
-        skills=body.skills,
-        raw_text=body.raw_text,
-        filename=body.filename,
+        skills=body.skills or "",
+        raw_text=body.raw_text or "",
+        filename=body.filename or "",
+        storage_path=(body.storage_path or "").strip()[:2048],
         years_experience=body.years_experience,
-        highest_degree=body.highest_degree,
-        certifications=body.certifications,
-        education_lines=body.education_lines,
+        highest_degree=body.highest_degree or "",
+        certifications=body.certifications or "",
+        education_lines=body.education_lines or "",
         status=(body.status or "new")[:64],
         contact_email=(body.contact_email or "").strip()[:320],
         workspace_id=ws_id,

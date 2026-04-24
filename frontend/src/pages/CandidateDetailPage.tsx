@@ -110,6 +110,23 @@ function buildDraft(row: CandidateDto): CandidateUpdatePayload {
   };
 }
 
+/** Full PATCH body so JSON never omits `skills` / `certifications` (undefined keys are stripped by stringify). */
+function buildSavePayload(d: CandidateUpdatePayload): CandidateUpdatePayload {
+  return {
+    full_name: d.full_name ?? "",
+    title: d.title ?? "",
+    role_label: d.role_label ?? "",
+    role_fine: (d.role_fine ?? "unknown").trim() || "unknown",
+    skills: d.skills ?? "",
+    years_experience: d.years_experience ?? null,
+    highest_degree: d.highest_degree ?? "",
+    certifications: d.certifications ?? "",
+    education_lines: d.education_lines ?? "",
+    status: d.status ?? "new",
+    contact_email: d.contact_email ?? "",
+  };
+}
+
 function safeDownloadName(filename: string | undefined, externalId: string): string {
   const base = (filename || `${externalId}.bin`).trim() || "resume";
   return base.replace(/[/\\?%*:|"<>]/g, "_");
@@ -373,7 +390,7 @@ export default function CandidateDetailPage() {
     if (!c) return;
     setSaving(true);
     try {
-      const next = await updateCandidate(c.id, draft);
+      const next = await updateCandidate(c.id, buildSavePayload(draft));
       setC({
         ...next,
         competition_score: c.competition_score,
