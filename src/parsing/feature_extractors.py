@@ -362,6 +362,30 @@ RE_YEARS_HAS_EXPERIENCE = re.compile(
     r"\bhas\s+(\d{1,2}(?:\.\d)?)\s*\+?\s*years?\s+(?:of\s+)?(?:professional\s+|work\s+|relevant\s+)?experience\b",
     re.IGNORECASE,
 )
+# LinkedIn / ads: "13 years related to your experience with ads" — not résumé tenure.
+RE_BAD_TENURE_AFTER_YEARS_WORD = re.compile(
+    r"^\s*(?:related|relevant)\b",
+    re.IGNORECASE,
+)
+# After a loose "N years" match, require tenure-like prose (or a leading cue like "with 12 years …").
+RE_TENURE_OK_AFTER_LOOSE_YEARS = re.compile(
+    r"^\s*(?:of\s+)?(?:professional\s+|work\s+|relevant\s+)?experience\b"
+    r"|^\s+experience\b"
+    r"|^\s+of\s+experience\b"
+    r"|^\s+in\s+(?:the\s+)?(?:industry|field|role|sector|domain|area)\b"
+    r"|^\s+in\s+(?:software|fintech|saas|consulting|finance|marketing|product|operations|delivery|banking|tech)\b"
+    r"|^\s+as\s+(?:a|an)\b"
+    r"|^\s+(?:building|shipping|leading|delivering|working|developing|designing|specializing|creating)\b"
+    r"|^\s+spent\b"
+    r"|^\s+spanning\b"
+    r"|^\s+across\b",
+    re.IGNORECASE,
+)
+RE_TENURE_LEX_BEFORE_LOOSE_YEARS = re.compile(
+    r"\b(with|has|having|over|more\s+than|at\s+least|approximately|around|about|after|spanning|totaling|totalling|combined)\s+"
+    r"\d{1,2}(?:\.\d)?\s*\+?\s*$",
+    re.IGNORECASE,
+)
 # Explicit tenure phrases: do not apply education-window skip (otherwise EDUCATION below pulls in "University"
 # and we drop valid "2.5 years of experience …" lines that lack engineer/developer tokens).
 _PHRASE_PATTERNS_SKIP_EDU_GUARD: tuple[re.Pattern[str], ...] = (
@@ -693,9 +717,22 @@ def _collect_explicit_year_phrases(text: str, *, radius: int = 120) -> list[floa
                 lo = max(0, m.start() - 70)
                 hi = min(len(low), m.end() + 35)
                 win = low[lo:hi]
-                tail = low[m.end() : min(len(low), m.end() + 28)]
+                tail_edu = low[m.end() : min(len(low), m.end() + 28)]
                 if RE_EDU_STRONG_NEAR_PHRASE.search(win) and not RE_WORK_HINT.search(win):
-                    if "experience" not in tail:
+                    if "experience" not in tail_edu:
+                        continue
+            # Bare "\d+ years" (RE_YEARS_PHRASE) matches ad copy ("13 years related to…"). Require tenure context.
+            if pat is RE_YEARS_PHRASE_LEADING:
+                tail_loose = low[m.end() : min(len(low), m.end() + 64)]
+                if RE_BAD_TENURE_AFTER_YEARS_WORD.match(tail_loose):
+                    continue
+            elif pat is RE_YEARS_PHRASE:
+                tail_loose = low[m.end() : min(len(low), m.end() + 64)]
+                if RE_BAD_TENURE_AFTER_YEARS_WORD.match(tail_loose):
+                    continue
+                if not RE_TENURE_OK_AFTER_LOOSE_YEARS.match(tail_loose):
+                    head_ctx = low[max(0, m.start() - 56) : m.start()]
+                    if not RE_TENURE_LEX_BEFORE_LOOSE_YEARS.search(head_ctx):
                         continue
             try:
                 y = float(m.group(1))

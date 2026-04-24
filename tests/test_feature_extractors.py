@@ -88,6 +88,22 @@ Artificial Intelligence (AI), Computer Vision and +9 skills
     assert len(lines) <= 6
 
 
+def test_estimate_years_ignores_years_related_ad_copy():
+    """LinkedIn-style ads use 'N years related…' — must not become tenure."""
+    text = """
+Don't want to see this
+13 years related to your experience with ads
+Your feedback will help us improve your experience
+"""
+    assert estimate_years_experience(text, current_year=2026) == 0.0
+
+
+def test_estimate_years_loose_phrase_still_counts_with_clear_tenure_tail():
+    text = "Senior engineer with 13 years of experience shipping backend systems."
+    y = estimate_years_experience(text, current_year=2026)
+    assert y >= 13.0
+
+
 def test_estimate_years_narrative_operations_cv_not_vetoed_by_education_below():
     """Phrase 'has 2.5 years of experience' must not be dropped when EDUCATION appears later."""
     text = """

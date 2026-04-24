@@ -468,6 +468,22 @@
     return true;
   }
 
+  /** Sponsored / feedback / LinkedIn ad lines sometimes land in Experience list items and inflate tenure. */
+  function experienceRowLooksLikeAdOrChromeNoise(row) {
+    const blob = [row.role, row.company, row.dates, row.desc].join('\n').toLowerCase();
+    if (!/\S/.test(blob)) return false;
+    if (/\byears?\s+related\b/i.test(blob)) return true;
+    if (
+      /don't want to see|your feedback will help|same ad too often|it'?s annoying|please let us know|report this ad/i.test(
+        blob,
+      )
+    )
+      return true;
+    if (/help us improve your experience\s+with\s+ads/i.test(blob)) return true;
+    if (/^promoted\s*$|sponsored\s+content|^ad\s+choices/i.test(blob.trim())) return true;
+    return false;
+  }
+
   /** One text line per list row for Honors, Courses, Publications, etc. */
   function genericSectionLines(sec) {
     if (!sec) return [];
@@ -1324,6 +1340,9 @@
   function parseMonthsFromDates(dates) {
     if (!dates) return 0;
     const raw = String(dates);
+    const rawLow = raw.toLowerCase();
+    if (/\d+\s*years?\s+related\b/i.test(rawLow)) return 0;
+    if (/don't want to see|your feedback will help|same ad too often/i.test(rawLow)) return 0;
     const parts = raw.split(/[–—-]/).map(s => String(s ?? '').trim());
     if (parts.length >= 2) {
       const s = parseYrMoToMonthIndex(parts[0]);
@@ -1653,27 +1672,31 @@
           if (!ss.length) return;
           if (rowLooksLikeInlineSkillEndorsement(ss)) return;
           if (expRowShouldBeSkippedAsSkillChip(sub, ss)) return;
-          expRowsPending.push({
+          const subRow = {
             item: sub,
             role: ss[0],
             company: companyName,
             dates: ss[1] || '',
             desc: ss.slice(2).join(' '),
-          });
+          };
+          if (experienceRowLooksLikeAdOrChromeNoise(subRow)) return;
+          expRowsPending.push(subRow);
         });
       } else {
-        expRowsPending.push({
+        const topRow = {
           item,
           role: spans[0] || '',
           company: spans[1] || '',
           dates: spans[2] || '',
           desc: spans.slice(3).join(' '),
-        });
+        };
+        if (!experienceRowLooksLikeAdOrChromeNoise(topRow)) expRowsPending.push(topRow);
       }
     });
     const expItems = expRowsPending
       .filter(
         r =>
+          !experienceRowLooksLikeAdOrChromeNoise(r) &&
           !experienceRowLooksLikeEducation(r.item, r) &&
           !experienceDatesOverlapEducation(r.dates, eduDateIdx),
       )
