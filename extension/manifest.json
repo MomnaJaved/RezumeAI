@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "RezumeAI Recruiter",
   "short_name": "RezumeAI",
-  "version": "1.6.5",
+  "version": "1.6.10",
   "description": "LinkedIn: auto page scrape, section classification (about, experience, education, skills), job match & save to RezumeAI. Comply with LinkedIn and applicable law.",
   "permissions": [
     "activeTab",

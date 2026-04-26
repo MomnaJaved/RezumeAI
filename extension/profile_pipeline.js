@@ -6,7 +6,7 @@
 (function initRezumeProfilePipeline() {
   if (typeof globalThis.__rezumeRunProfilePipeline === 'function') return;
 
-  const PIPELINE_VERSION = '2.2.3';
+  const PIPELINE_VERSION = '2.2.13';
 
   /** ── XPath (fallback when CSS misses) ─────────────────────────────── */
   function xpathFirst(expression, contextNode) {
@@ -130,6 +130,105 @@
       .trim();
   }
 
+  /**
+   * Experience / education cards sometimes concatenate sidebar + footer + language picker.
+   * Truncate at first strong anchor and trim comma-separated junk (names, “skills (from page)”, etc.).
+   */
+  function stripLinkedInNoiseFromBlob(text) {
+    let s = String(text || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\s+/g, ' ')
+      .replace(/â€™|â€˜/g, "'")
+      .replace(/â€œ|â€\s*"/g, '"')
+      .trim();
+    if (!s) return '';
+    const cutRes = [
+      /\bdon['\u2019\u2018]?\s*t\s+want\s+to\s+see\b/i,
+      /\bon['\u2019\u2018]?\s*t\s+want\s+to\s+see\b/i,
+      /\bn['\u2019\u2018]\s*t\s+want\s+to\s+see\b/i,
+      /\b['\u2019]t\s+want\s+to\s+see\b/i,
+      /\bit['\u2019]s\s+annoying\s+or\s+not\s+interesting\b/i,
+      /\byour\s+feedback\s+will\s+help\b/i,
+      /\bsame\s+ad\s+too\s+often\b/i,
+      /\bplease\s+let\s+us\s+know\b/i,
+      /\bad\s+choices\b/i,
+      /\bselect\s+language\b/i,
+      /\bvisit\s+our\s+help\s+center\b/i,
+      /\bmanage\s+your\s+account\s+and\s+privacy\b/i,
+      /\bgo\s+to\s+your\s+settings\b/i,
+      /\brecommendation\s+transparency\b/i,
+      /\blearn\s+more\s+about\s+recommended\s+content\b/i,
+      /\bcommunity\s+guidelines\b/i,
+      /\bmarketing\s+solutions\b/i,
+      /\bsales\s+solutions\b/i,
+      /\bsmall\s+business\b/i,
+      /\bsafety\s+center\b/i,
+      /\bquestions\?\b/i,
+      /\bclients\s+include\b/i,
+      /\b\(arabic\)|\(bangla\)|\(czech\)|\(danish\)|\(deutsch|\(german\)|\(greek\)|\(english\)\s*\(english\)|\(spanish\)|\(hindi\)|\(japanese\)|\(korean\)|\(polish\)|\(portuguese\)|\(russian\)|\(thai\)|\(turkish\)|\(ukrainian\)|\(vietnamese\)|chinese\s*\(simplified\)|chinese\s*\(traditional\)/i,
+      /\bskills\s*\(from\s*page\)\b/i,
+      /\btalent\s+solutions\b/i,
+      /\babout\s*,\s*accessibility\b/i,
+      /\bespa[ñn]?ol\s*\(\s*spanish\b/i,
+      /\bsuomi\s*\(\s*finnish\b/i,
+      /\bfran[cç]ais\s*\(\s*french\b/i,
+      /\bmagyar\s*\(\s*hungarian\b/i,
+      /\bbahasa\s+indonesia\s*\(\s*indonesian\b/i,
+      /\bitaliano\s*\(\s*italian\b/i,
+      /\bportugu[eê]s\s*\(\s*portuguese\b/i,
+      /\brom[aâ]n[aă]\s*\(\s*romanian\b/i,
+      /\bsvenska\s*\(\s*swedish\b/i,
+      /\bnederlands\s*\(\s*dutch\b/i,
+      /\bnorsk\s*\(\s*norwegian\b/i,
+      /\btagalog\s*\(\s*tagalog\b/i,
+      /\(\s*persian\s*\)/i,
+      /\(\s*hebrew\s*\)/i,
+      /\(\s*marathi\s*\)/i,
+      /\(\s*malay\s*\)/i,
+      /\(\s*punjabi\s*\)/i,
+      /\(\s*telugu\s*\)/i,
+    ];
+    let cut = s.length;
+    for (const re of cutRes) {
+      const m = re.exec(s);
+      if (m && m.index >= 24 && m.index < cut) cut = m.index;
+    }
+    s = s.slice(0, cut).trim();
+    s = s.replace(/\s*,\s*(about|accessibility|careers|mobile)\s*,/gi, ', ').replace(/^[,;\s·]+|[,;\s·]+$/g, '');
+    if (s.length > 320 && (s.match(/,/g) || []).length >= 6) {
+      const parts = s.split(',').map(p => p.trim()).filter(Boolean);
+      const kept = [];
+      for (const p of parts) {
+        const low = p.toLowerCase();
+        if (/^(about|accessibility|careers|mobile|advertising)$/.test(low)) continue;
+        if (
+          /talent solutions|ad choices|select language|visit our help|community guidelines|marketing solutions|sales solutions|safety center|recommendation transparency/.test(
+            low,
+          )
+        )
+          break;
+        if (/^\(?[a-zà-ÿ%]{2,35}\)?\s*\(\s*arabic\s*\)/i.test(p)) continue;
+        if (/^skills\s*\(from page\)$/i.test(low)) continue;
+        if (/^don['\u2019]?\s*t want to see/i.test(p)) break;
+        kept.push(p);
+      }
+      if (kept.length) s = kept.join(', ');
+    }
+    return s.replace(/\s*,\s*,+/g, ', ').replace(/^[,;\s·]+|[,;\s·]+$/g, '').trim();
+  }
+
+  function chunkLooksLikeLinkedInFooterOrAdBlob(s) {
+    const t = String(s || '').toLowerCase();
+    if (t.length < 120) return false;
+    return (
+      /\bselect\s+language\b/.test(t) ||
+      /\bad\s+choices\b/.test(t) ||
+      /\bdon['\u2019]?\s*t\s+want\s+to\s+see\b/.test(t) ||
+      /\bvisit\s+our\s+help\s+center\b/.test(t) ||
+      (/\bclients\s+include\b/.test(t) && /\bportland\b|\bgfuel\b|\bcro\b/i.test(t))
+    );
+  }
+
   function experienceItemsFromLegacy(legacy) {
     const items = legacy?.experience_items;
     if (!Array.isArray(items) || !items.length) return [];
@@ -143,11 +242,13 @@
         .replace(/\s+/g, ' ')
         .trim();
       const raw = [title, org && `@ ${org}`, dates && `| ${dates}`].filter(Boolean).join(' ').trim();
+      const blob = stripLinkedInNoiseFromBlob((raw + (desc ? ` — ${desc.slice(0, 500)}` : '')).trim()).slice(0, 700);
+      if (!blob || blob.length < 4) continue;
       out.push({
         title: title.slice(0, 220),
         organization: org.slice(0, 300),
         dates_or_location: dates.slice(0, 160),
-        raw: (raw + (desc ? ` — ${desc.slice(0, 500)}` : '')).slice(0, 700),
+        raw: blob,
       });
     }
     return out.slice(0, 45);
@@ -159,11 +260,12 @@
     return items
       .map(e => {
         const school = String(e?.school ?? '').replace(/\s+/g, ' ').trim();
-        if (!school) return null;
         const deg = [e?.degree, e?.field].map(x => String(x ?? '').trim()).filter(Boolean).join(', ');
         const d = String(e?.dates ?? '').replace(/\s+/g, ' ').trim();
-        const raw = [school, deg, d].filter(Boolean).join(' | ').trim();
-        return { raw: raw.slice(0, 520) };
+        if (!school && !deg && !d) return null;
+        const raw = stripLinkedInNoiseFromBlob([school, deg, d].filter(Boolean).join(' | ').trim()).slice(0, 520);
+        if (!raw || raw.length < 3) return null;
+        return { raw };
       })
       .filter(Boolean)
       .slice(0, 25);
@@ -179,15 +281,17 @@
       if (/^(WORK EXPERIENCE|EDUCATION|SKILLS|CERTIFICATION|LICENSES|--- PROFILE)/i.test(line)) break;
       if (line.startsWith('  ') && line.length > 4) {
         const raw = line.replace(/^\s+/, '');
-        const m = raw.match(/^(.+?)(?:\s+@\s+(.+?))?(?:\s*\|\s*(.+))?$/);
+        const cleaned = stripLinkedInNoiseFromBlob(raw).slice(0, 600);
+        if (cleaned.length < 4) continue;
+        const m = cleaned.match(/^(.+?)(?:\s+@\s+(.+?))?(?:\s*\|\s*(.+))?$/);
         if (m) {
           items.push({
             title: String(m[1] ?? '').trim(),
             organization: String(m[2] ?? '').trim(),
             dates_or_location: String(m[3] ?? '').trim(),
-            raw: raw.slice(0, 600),
+            raw: cleaned,
           });
-        } else items.push({ title: raw, organization: '', dates_or_location: '', raw: raw.slice(0, 600) });
+        } else items.push({ title: cleaned, organization: '', dates_or_location: '', raw: cleaned });
       }
     }
     return items.slice(0, 40);
@@ -200,9 +304,13 @@
       .filter(Boolean);
     const items = [];
     for (const line of lines) {
-      if (/^(EDUCATION|SKILLS|WORK|CERTIFICATION|--- PROFILE)/i.test(line)) break;
-      if (line.startsWith('  ') && line.length > 4)
-        items.push({ raw: line.replace(/^\s+/, '').slice(0, 520) });
+      if (/^(WORK\s+EXPERIENCE|SKILLS|CERTIFICATION|LICENSES|--- PROFILE)/i.test(line)) break;
+      if (/^education\s*\(from page\)$/i.test(line)) continue;
+      if (/^education$/i.test(line) && line.length < 16) continue;
+      const raw = line.replace(/^\s+/, '').trim();
+      if (!raw || raw.length < 4) continue;
+      const cleaned = stripLinkedInNoiseFromBlob(raw).slice(0, 520);
+      if (cleaned.length >= 4) items.push({ raw: cleaned });
     }
     return items.slice(0, 24);
   }
@@ -219,9 +327,127 @@
       const hasEmploymentCues = /\b(20\d{2}|present|full[-\s]?time|part[-\s]?time|intern|@\s*[\w.]+| at [\w&]|january|february|march|april|may|june|july|august|september|october|november|december)\b/i.test(
         t,
       );
+      const hasDateRange = /\b20\d{2}\s*[-–]\s*(20\d{2}|present)\b/i.test(t);
+      const designUiHits = (
+        t.match(
+          /\b(figma|adobe\s+(photoshop|illustrator|xd)|sketch|invision|interface\s+design|user\s+experience|web\s+design|mobile\s+interface|ued)\b/gi,
+        ) || []
+      ).length;
       if (!hasEmploymentCues) return true;
+      if (com >= 5 && designUiHits >= 4 && t.length > 180 && !hasDateRange) return true;
     }
     if (/\b\d+\s+endorsements?\b/i.test(t) && !/\b20\d{2}\s*[-–]\s*(20\d{2}|present)\b/i.test(t) && t.length < 2000) return true;
+    return false;
+  }
+
+  /** LinkedIn soft / generic “keywords” (not concrete tools or domains). */
+  function isSoftSkillKeywordNoiseToken(text) {
+    const t = String(text || '').trim();
+    if (!t) return true;
+    const low = t.toLowerCase();
+    const words = t.split(/\s+/).filter(Boolean);
+    const singles = new Set([
+      'communication',
+      'communications',
+      'teamwork',
+      'leadership',
+      'collaboration',
+      'adaptability',
+      'flexibility',
+      'creativity',
+      'innovation',
+      'empathy',
+      'accountability',
+      'initiative',
+      'mentoring',
+      'coaching',
+      'negotiation',
+      'negotiations',
+      'multitasking',
+      'presentation',
+      'presentations',
+      'networking',
+      'storytelling',
+      'brainstorming',
+      'facilitation',
+      'resilience',
+      'positivity',
+      'enthusiasm',
+      'dedication',
+      'motivation',
+      'reliability',
+      'professionalism',
+      'patience',
+      'resourcefulness',
+      'curiosity',
+      'listening',
+      'writing',
+      'reading',
+      'scheduling',
+      'budgeting',
+      'forecasting',
+      'recruiting',
+      'hiring',
+      'training',
+      'onboarding',
+      'consulting',
+      'advisory',
+      'organization',
+      'moderation',
+      'inclusion',
+      'equity',
+      'diversity',
+      'culture',
+      'ethics',
+      'integrity',
+      'honesty',
+    ]);
+    if (words.length === 1 && singles.has(low)) return true;
+    if (words.length >= 2) {
+      const phrases = new Set([
+        'problem solving',
+        'problem-solving',
+        'time management',
+        'critical thinking',
+        'customer service',
+        'public speaking',
+        'conflict resolution',
+        'stakeholder management',
+        'strategic planning',
+        'business development',
+        'team building',
+        'organizational skills',
+        'presentation skills',
+        'listening skills',
+        'writing skills',
+        'analytical skills',
+        'interpersonal skills',
+        'leadership skills',
+        'communication skills',
+        'management skills',
+        'team management',
+        'people management',
+        'emotional intelligence',
+        'cross functional collaboration',
+        'cross-functional collaboration',
+        'attention to detail',
+        'detail orientation',
+        'positive attitude',
+        'self motivation',
+        'self-motivation',
+        'work ethic',
+        'client relations',
+        'relationship building',
+        'decision making',
+        'decision-making',
+        'strategic thinking',
+        'creative thinking',
+        'cultural awareness',
+        'open mindedness',
+        'open-mindedness',
+      ]);
+      if (phrases.has(words.map(w => w.toLowerCase()).join(' '))) return true;
+    }
     return false;
   }
 
@@ -231,6 +457,7 @@
       .replace(/\s+/g, ' ')
       .trim();
     if (t.length < 2 || t.length > 92) return false;
+    if (isSoftSkillKeywordNoiseToken(t)) return false;
     if (isSkillSplitNoise(t)) return false;
     const words = t.split(/\s+/);
     if (words.length > 8) return false;
@@ -244,7 +471,7 @@
 
   function skillsTextBodyToTokens(body) {
     if (!body || String(body).length < 2) return [];
-    const t = String(body)
+    const t = String(stripLinkedInNoiseFromBlob(String(body).slice(0, 14000)))
       .replace(/\r\n/g, '\n')
       .replace(/\s*,\s*/g, ',');
     const parts = t.split(/[,\n·•|;]+/g);
@@ -253,7 +480,7 @@
       const s = part.replace(/\s+/g, ' ').trim();
       if (s.length < 2) continue;
       if (s.length > 100) continue;
-      if (isSkillSplitNoise(s)) continue;
+      if (isSkillSplitNoise(s) || isSoftSkillKeywordNoiseToken(s)) continue;
       if (/^skills?$/i.test(s)) continue;
       out.push(s);
     }
@@ -262,9 +489,74 @@
 
   function isSkillSplitNoise(x) {
     const t = String(x || '')
+      .replace(/â€™|â€˜/g, "'")
       .replace(/\s+/g, ' ')
       .trim();
     if (!t || t.length > 100) return true;
+    const low = t.toLowerCase();
+    const footerExact = new Set([
+      'about',
+      'accessibility',
+      'talent solutions',
+      'community guidelines',
+      'careers',
+      'marketing solutions',
+      'ad choices',
+      'advertising',
+      'sales solutions',
+      'mobile',
+      'small business',
+      'safety center',
+      'questions?',
+      'visit our help center',
+      'manage your account and privacy',
+      'go to your settings',
+      'recommendation transparency',
+      'learn more about recommended content',
+      'select language',
+      'skills (from page)',
+      'other',
+    ]);
+    if (footerExact.has(low)) return true;
+    if (
+      /\(arabic\)|\(bangla\)|\(czech\)|\(danish\)|\(german\)|\(greek\)|\(hindi\)|\(japanese\)|\(korean\)|\(polish\)|\(russian\)|\(thai\)|\(turkish\)|\(ukrainian\)|\(vietnamese\)|chinese\s*\(simplified\)|chinese\s*\(traditional\)|english\s*\(\s*english/i.test(
+        t,
+      )
+    )
+      return true;
+    if (/\bclients\s+include\b/i.test(t)) return true;
+    if (/\d+\s*years?\s+.*\b(turning|clicks|customers|cro)\b/i.test(t)) return true;
+    if (/\bturning\s+clicks\s+into\s+customers\b/i.test(low) && /\bcro\b/.test(low)) return true;
+    if (/\bportland\s+leather\b|\bgfuel\b|\bboom!\s*by\s+cindy\b/i.test(t)) return true;
+    if (
+      low === 'web design' ||
+      low === 'mobile interface design' ||
+      low === 'user interface design' ||
+      low === 'user experience design' ||
+      /^user experience design\s*\(ued\)?$/i.test(low)
+    )
+      return true;
+    if (
+      /^don'?t\s+want\s+to\s+see|on'?t\s+want\s+to\s+see|n['\u2019]?\s*t\s+want\s+to\s+see|['\u2019]t\s+want\s+to\s+see|it'?s\s+annoying|your\s+feedback\s+will\s+help|same\s+ad\s+too\s+often|please\s+let\s+us\s+know/i.test(
+        low,
+      )
+    )
+      return true;
+    if (
+      /\bespa[ñn]?ol\s*\(\s*spanish\b|\bsuomi\s*\(\s*finnish\b|\bfran[cç]ais\s*\(\s*french\b|\bmagyar\s*\(\s*hungarian\b|\bbahasa\s+indonesia\s*\(\s*indonesian\b|\bitaliano\s*\(\s*italian\b|\bportugu[eê]s\s*\(\s*portuguese\b|\brom[aâ]n[aă]\s*\(\s*romanian\b|\bsvenska\s*\(\s*swedish\b|\bnederlands\s*\(\s*dutch\b|\bnorsk\s*\(\s*norwegian\b|\btagalog\s*\(\s*tagalog\b|\(\s*persian\s*\)|\(\s*hebrew\s*\)|\(\s*marathi\s*\)|\(\s*malay\s*\)|\(\s*punjabi\s*\)|\(\s*telugu\s*\)/i.test(
+        t,
+      )
+    )
+      return true;
+    if (/\b\d+\s*\+?\s*yrs?\b/i.test(low) && /\b(design|designing|dashboard|websites|conversion|high[-\s]?conversion|cro|figma)\b/i.test(low))
+      return true;
+    if (/\bhappyv\b|\band\s+many\s+more\b|^many\s+more\b/i.test(low)) return true;
+    if (
+      ['oliver kenyon', 'haseeb ali', 'saad farooq', 'sibtain shah', 'ruhma tariq'].includes(
+        low.replace(/[.!?…]+$/g, '').trim(),
+      )
+    )
+      return true;
     if (/^skills?$/i.test(t)) return true;
     if (/^(all|submit|endorse)$/i.test(t)) return true;
     if (/^industry\s+knowledge$/i.test(t)) return true;
@@ -289,6 +581,20 @@
     if (/^\d+\s+endorsements?$/i.test(t)) return true;
     if (/^(follow|message|connect)$/i.test(t)) return true;
     if (/\s+at\s+/i.test(t)) return true;
+    {
+      const open = t.lastIndexOf('(');
+      if (open >= 0 && t.indexOf(')', open) < 0) {
+        const inner = t.slice(open + 1).trim().toLowerCase();
+        if (
+          /^(software|tool|application|app|ued)\w{0,8}$/.test(inner) ||
+          /^softwar\w{0,6}$/.test(inner) ||
+          /^(arabic|bangla|czech|danish|german|greek|spanish|french|hindi|japanese|korean|polish|portuguese|russian|thai|turkish|ukrainian|vietnamese|hebrew|hungarian|indonesian|italian|norwegian|dutch|swedish|finnish|romanian|tagalog|telugu|marathi|malay|punjabi|persian|filipino|simplified|traditional)\w{0,10}$/.test(
+            inner,
+          )
+        )
+          return true;
+      }
+    }
     return false;
   }
 
@@ -296,7 +602,9 @@
     return String(s || '')
       .split(/[,|;\n]+/)
       .map(x => String(x ?? '').replace(/\s+/g, ' ').trim())
-      .filter(x => x.length > 1 && x.length < 120 && !isSkillSplitNoise(x))
+      .filter(
+        x => x.length > 1 && x.length < 120 && !isSkillSplitNoise(x) && !isSoftSkillKeywordNoiseToken(x),
+      )
       .slice(0, 200);
   }
 
@@ -511,35 +819,49 @@
 
     if (!experienceFromDom) {
       if ((!out.experience || !out.experience.length) && roles.experience.length) {
-        out.experience = roles.experience.map(raw => {
-          const r = String(raw ?? '');
-          return {
-            title: r.split('\n')[0].slice(0, 220),
-            organization: '',
-            dates_or_location: '',
-            raw: r.slice(0, 700),
-          };
-        });
+        out.experience = roles.experience
+          .filter(r => !chunkLooksLikeLinkedInFooterOrAdBlob(r))
+          .map(raw => {
+            const r = String(raw ?? '');
+            const cleaned = stripLinkedInNoiseFromBlob(r).slice(0, 700);
+            if (cleaned.length < 8) return null;
+            return {
+              title: r.split('\n')[0].slice(0, 220),
+              organization: '',
+              dates_or_location: '',
+              raw: cleaned,
+            };
+          })
+          .filter(Boolean);
       } else if (roles.experience.length && (out.experience || []).length < 2) {
         const extra = roles.experience
+          .filter(r => !chunkLooksLikeLinkedInFooterOrAdBlob(r))
           .filter(r =>
             !(out.experience || []).some(x => (x.raw || '').includes(String(r ?? '').slice(0, 40))),
           )
           .map(raw => {
             const r = String(raw ?? '');
+            const cleaned = stripLinkedInNoiseFromBlob(r).slice(0, 700);
+            if (cleaned.length < 8) return null;
             return {
               title: r.split('\n')[0].slice(0, 220),
               organization: '',
               dates_or_location: '',
-              raw: r.slice(0, 700),
+              raw: cleaned,
             };
-          });
+          })
+          .filter(Boolean);
         out.experience = [...(out.experience || []), ...extra].slice(0, 45);
       }
     }
 
     if ((!out.education || !out.education.length) && roles.education.length) {
-      out.education = roles.education.map(raw => ({ raw: String(raw ?? '').slice(0, 520) }));
+      out.education = roles.education
+        .map(raw => {
+          const cleaned = stripLinkedInNoiseFromBlob(String(raw ?? '')).slice(0, 520);
+          return cleaned.length >= 4 ? { raw: cleaned } : null;
+        })
+        .filter(Boolean);
     }
 
     for (const block of roles.skills) {
@@ -572,33 +894,41 @@
     const expSectionLines = (out.experience || [])
       .map(
         x =>
-          String(
-            (x.raw && String(x.raw).length > 8
-              ? x.raw
-              : [x.title, x.organization, x.dates_or_location]
-                  .map(t => (t == null ? '' : String(t).trim()))
-                  .filter(Boolean)
-                  .join(' | ')) || '',
-          )
-            .replace(/\s+/g, ' ')
-            .trim(),
+          stripLinkedInNoiseFromBlob(
+            String(
+              (x.raw && String(x.raw).length > 8
+                ? x.raw
+                : [x.title, x.organization, x.dates_or_location]
+                    .map(t => (t == null ? '' : String(t).trim()))
+                    .filter(Boolean)
+                    .join(' | ')) || '',
+            )
+              .replace(/\s+/g, ' ')
+              .trim(),
+          ),
       )
-      .filter(s => s.length > 0)
+      .filter(s => s.length > 4)
       .slice(0, 50);
     const eduSectionLines = (out.education || [])
-      .map(e => String(e.raw || '').trim())
-      .filter(s => s.length > 0)
+      .map(e => stripLinkedInNoiseFromBlob(String(e.raw || '').trim()))
+      .filter(s => s.length > 4)
       .slice(0, 25);
     const expForDisplay =
       experienceFromDom || expSectionLines.length
         ? expSectionLines
         : (roles.experience || [])
-            .filter(c => !chunkLooksLikeSkillListOrEndorsementBlob(c))
+            .filter(c => !chunkLooksLikeSkillListOrEndorsementBlob(c) && !chunkLooksLikeLinkedInFooterOrAdBlob(c))
+            .map(c => stripLinkedInNoiseFromBlob(String(c)))
+            .filter(s => s.length > 8)
             .slice(0, 50);
     out.role_sections = {
       about: (roles.about || []).slice(0, 35),
       experience: expForDisplay,
-      education: (out.education && out.education.length ? eduSectionLines : (roles.education || [])).slice(0, 25),
+      education: (
+        out.education && out.education.length
+          ? eduSectionLines
+          : (roles.education || []).map(e => stripLinkedInNoiseFromBlob(String(e))).filter(s => s.length > 4)
+      ).slice(0, 25),
       skills: (out.skills && out.skills.length
         ? (out.skills || []).map(s => String(s).trim()).filter(s => s.length)
         : (roles.skills || [])).slice(0, 40),
@@ -636,14 +966,14 @@
       .filter(Boolean)
       .join('\n');
 
-    const skillsFromField = splitSkills(legacy?.skills);
+    const skillsFromField = splitSkills(stripLinkedInNoiseFromBlob(String(legacy?.skills || '')));
     const skillsLine = (fullText.match(/^Skills:\s*(.+)$/im) || [])[1] || '';
-    const skillsFromText = splitSkills(skillsLine);
+    const skillsFromText = splitSkills(stripLinkedInNoiseFromBlob(skillsLine));
     const seenSk = new Set();
     const skills = [];
     const pushSk = raw => {
-      const t = String(raw ?? '').trim();
-      if (!t || t.length > 120) return;
+      const t = stripLinkedInNoiseFromBlob(String(raw ?? '').trim());
+      if (!t || t.length > 120 || isSkillSplitNoise(t) || isSoftSkillKeywordNoiseToken(t)) return;
       const k = t.toLowerCase();
       if (seenSk.has(k)) return;
       seenSk.add(k);

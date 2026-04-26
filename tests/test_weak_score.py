@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from src.matching.weak_score import (
+    clean_skill_fragment,
     exp_score,
     overlap_ratio,
     parse_skill_str,
@@ -13,6 +14,17 @@ from src.matching.weak_score import (
 def test_parse_skill_str():
     s = parse_skill_str("Python, SQL, AWS")
     assert "python" in s and "sql" in s
+
+
+def test_clean_skill_fragment_drops_truncated_linkedin_qualifier():
+    assert clean_skill_fragment("figma(software") is None
+    assert clean_skill_fragment("Figma (software)") == "figma"
+
+
+def test_parse_skill_str_truncated_figma_software_no_bare_figma():
+    s = parse_skill_str("Python, figma(software, SQL")
+    assert "python" in s and "sql" in s
+    assert "figma" not in s
 
 
 def test_overlap_ratio():

@@ -468,17 +468,270 @@
     return true;
   }
 
+  /** Truncate experience/education inline text when LinkedIn footer, language rail, or PYMK leaks in. */
+  function trimLinkedInChromeFromInlineBlob(text) {
+    let s = String(text || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\s+/g, ' ')
+      .replace(/â€™|â€˜/g, "'")
+      .trim();
+    if (!s) return '';
+    const cutRes = [
+      /\bdon['\u2019\u2018]?\s*t\s+want\s+to\s+see\b/i,
+      /\bon['\u2019\u2018]?\s*t\s+want\s+to\s+see\b/i,
+      /\bn['\u2019\u2018]\s*t\s+want\s+to\s+see\b/i,
+      /\b['\u2019]t\s+want\s+to\s+see\b/i,
+      /\bit['\u2019]s\s+annoying\s+or\s+not\s+interesting\b/i,
+      /\byour\s+feedback\s+will\s+help\b/i,
+      /\bsame\s+ad\s+too\s+often\b/i,
+      /\bplease\s+let\s+us\s+know\b/i,
+      /\bad\s+choices\b/i,
+      /\bselect\s+language\b/i,
+      /\bvisit\s+our\s+help\s+center\b/i,
+      /\bmanage\s+your\s+account\s+and\s+privacy\b/i,
+      /\bgo\s+to\s+your\s+settings\b/i,
+      /\brecommendation\s+transparency\b/i,
+      /\blearn\s+more\s+about\s+recommended\s+content\b/i,
+      /\bcommunity\s+guidelines\b/i,
+      /\bmarketing\s+solutions\b/i,
+      /\bsales\s+solutions\b/i,
+      /\bsafety\s+center\b/i,
+      /\bquestions\?\b/i,
+      /\bclients\s+include\b/i,
+      /\bskills\s*\(from\s*page\)\b/i,
+      /\btalent\s+solutions\b/i,
+      /\b\(arabic\)|\(bangla\)|\(czech\)|\(danish\)|\(deutsch|\(german\)|\(greek\)|\(english\)\s*\(english\)|chinese\s*\(simplified\)|chinese\s*\(traditional\)/i,
+    ];
+    let cut = s.length;
+    for (const re of cutRes) {
+      const m = re.exec(s);
+      if (m && m.index >= 20 && m.index < cut) cut = m.index;
+    }
+    return s.slice(0, cut).replace(/\s*,\s*,+/g, ', ').replace(/^[,;\s·]+|[,;\s·]+$/g, '').trim();
+  }
+
+  /**
+   * Skills card / Skills: line sometimes concatenates rail + footer + language picker as one comma blob.
+   * Same anchors as inline trim but allow cuts earlier (position 4+) so “about, accessibility, …” is removed.
+   */
+  function trimLinkedInChromeFromSkillBlob(text) {
+    let s = String(text || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\s+/g, ' ')
+      .replace(/â€™|â€˜/g, "'")
+      .replace(/â€œ|â€\s*"/g, '"')
+      .trim();
+    if (!s) return '';
+    const cutRes = [
+      /\babout\s*,\s*accessibility\b/i,
+      /\bdon['\u2019\u2018]?\s*t\s+want\s+to\s+see\b/i,
+      /\bon['\u2019\u2018]?\s*t\s+want\s+to\s+see\b/i,
+      /\bn['\u2019\u2018]\s*t\s+want\s+to\s+see\b/i,
+      /\b['\u2019]t\s+want\s+to\s+see\b/i,
+      /\bit['\u2019]s\s+annoying\s+or\s+not\s+interesting\b/i,
+      /\byour\s+feedback\s+will\s+help\b/i,
+      /\bsame\s+ad\s+too\s+often\b/i,
+      /\bplease\s+let\s+us\s+know\b/i,
+      /\bad\s+choices\b/i,
+      /\bselect\s+language\b/i,
+      /\bvisit\s+our\s+help\s+center\b/i,
+      /\bmanage\s+your\s+account\s+and\s+privacy\b/i,
+      /\bgo\s+to\s+your\s+settings\b/i,
+      /\brecommendation\s+transparency\b/i,
+      /\blearn\s+more\s+about\s+recommended\s+content\b/i,
+      /\bcommunity\s+guidelines\b/i,
+      /\bmarketing\s+solutions\b/i,
+      /\bsales\s+solutions\b/i,
+      /\bsafety\s+center\b/i,
+      /\bquestions\?\b/i,
+      /\bclients\s+include\b/i,
+      /\bskills\s*\(from\s*page\)\b/i,
+      /\btalent\s+solutions\b/i,
+      /\bcareers\b.*\bmarketing\s+solutions\b/i,
+      /\b\(arabic\)|\(bangla\)|\(czech\)|\(danish\)|\(deutsch|\(german\)|\(greek\)|\(english\)\s*\(english\)|chinese\s*\(simplified\)|chinese\s*\(traditional\)/i,
+      /\bespa[ñn]?ol\s*\(\s*spanish\b/i,
+      /\bsuomi\s*\(\s*finnish\b/i,
+      /\bfran[cç]ais\s*\(\s*french\b/i,
+      /\bmagyar\s*\(\s*hungarian\b/i,
+      /\bbahasa\s+indonesia\s*\(\s*indonesian\b/i,
+      /\bitaliano\s*\(\s*italian\b/i,
+      /\bportugu[eê]s\s*\(\s*portuguese\b/i,
+      /\brom[aâ]n[aă]\s*\(\s*romanian\b/i,
+      /\bsvenska\s*\(\s*swedish\b/i,
+      /\bnederlands\s*\(\s*dutch\b/i,
+      /\bnorsk\s*\(\s*norwegian\b/i,
+      /\btagalog\s*\(\s*tagalog\b/i,
+      /\(\s*persian\s*\)/i,
+      /\(\s*hebrew\s*\)/i,
+      /\(\s*marathi\s*\)/i,
+      /\(\s*malay\s*\)/i,
+      /\(\s*punjabi\s*\)/i,
+      /\(\s*telugu\s*\)/i,
+    ];
+    let cut = s.length;
+    for (const re of cutRes) {
+      const m = re.exec(s);
+      if (m && m.index >= 4 && m.index < cut) cut = m.index;
+    }
+    return s.slice(0, cut).replace(/\s*,\s*,+/g, ', ').replace(/^[,;\s·]+|[,;\s·]+$/g, '').trim();
+  }
+
+  /** LinkedIn footer / nav / language menu tokens that must never be exported as skills. */
+  const LINKEDIN_FOOTER_SKILL_TOKENS = new Set(
+    [
+      'about',
+      'accessibility',
+      'talent solutions',
+      'community guidelines',
+      'careers',
+      'marketing solutions',
+      'ad choices',
+      'advertising',
+      'sales solutions',
+      'mobile',
+      'small business',
+      'safety center',
+      'questions?',
+      'visit our help center',
+      'manage your account and privacy',
+      'go to your settings',
+      'recommendation transparency',
+      'learn more about recommended content',
+      'select language',
+      'skills (from page)',
+      'privacy & terms',
+      'cookie policy',
+      'other',
+    ].map(s => s.toLowerCase()),
+  );
+
+  const LANG_NAME_IN_PARENS = new Set(
+    (
+      'arabic bangla czech danish german greek hindi japanese korean polish russian thai turkish ukrainian vietnamese ' +
+      'hebrew punjabi telugu marathi malay dutch norwegian swedish finnish hungarian indonesian italian portuguese romanian ' +
+      'persian spanish tagalog english filipino simplified traditional'
+    )
+      .trim()
+      .split(/\s+/),
+  );
+
+  /** LinkedIn language picker rows: “Español (Spanish)”, RTL + “(Persian)”, or truncated “(Tagalog”. */
+  function skillTokenHasLanguageMenuMarkers(t) {
+    const s = String(t || '').trim();
+    const low = s.toLowerCase();
+    const mEnd = s.match(/\(\s*([a-z][a-z\s]{1,26})\s*\)\s*[!?.…]*\s*$/i);
+    if (mEnd) {
+      const inner = mEnd[1].replace(/\s+/g, ' ').trim().toLowerCase();
+      if (LANG_NAME_IN_PARENS.has(inner)) return true;
+      if (inner === 'chinese simplified' || inner === 'chinese traditional') return true;
+    }
+    const open = s.lastIndexOf('(');
+    if (open >= 0 && s.indexOf(')', open) < 0) {
+      const frag = s.slice(open + 1).trim().toLowerCase();
+      if (LANG_NAME_IN_PARENS.has(frag) || /^tagalog$/i.test(frag)) return true;
+    }
+    if (/\(arabic\)|\(bangla\)|\(czech\)|\(danish\)|\(german\)|\(greek\)|\(hindi\)|\(japanese\)|\(korean\)/.test(low))
+      return true;
+    if (/\(polish\)|\(russian\)|\(thai\)|\(turkish\)|\(ukrainian\)|\(vietnamese\)|\(hebrew\)|\(punjabi\)|\(telugu\)/.test(low))
+      return true;
+    if (/\(portuguese\)|\(romanian\)|\(swedish\)|\(norwegian\)|\(dutch\)|\(finnish\)|\(hungarian\)|\(indonesian\)|\(italian\)/.test(low))
+      return true;
+    if (/\(malay\)|\(persian\)|\(marathi\)|\(tagalog\)|chinese\s*\(simplified\)|chinese\s*\(traditional\)/.test(low))
+      return true;
+    if (/\benglish\s*\(\s*english\b|\bdeutsch\s*\(\s*german\b|\bespa[ñn]?ol\s*\(\s*spanish\b|\bsuomi\s*\(\s*finnish\b|\bfran[cç]ais\s*\(\s*french\b|\bmagyar\s*\(\s*hungarian\b|\bbahasa\s+indonesia\s*\(\s*indonesian\b|\bitaliano\s*\(\s*italian\b|\bportugu[eê]s\s*\(\s*portuguese\b|\brom[aâ]n[aă]\s*\(\s*romanian\b|\bsvenska\s*\(\s*swedish\b/i.test(
+      low,
+    ))
+      return true;
+    if (/[\u0600-\u06FF][^\n(]{0,48}\(\s*persian\s*\)/i.test(s)) return true;
+    if (/[\u0590-\u05FF][^\n(]{0,40}\(\s*hebrew\s*\)/i.test(s)) return true;
+    if (/[\u0900-\u097F][^\n(]{0,48}\(\s*(hindi|marathi)\s*\)/i.test(s)) return true;
+    if (/[\u0A00-\u0A7F][^\n(]{0,48}\(\s*punjabi\s*\)/i.test(s)) return true;
+    if (/[\u0C00-\u0C7F][^\n(]{0,48}\(\s*telugu\s*\)/i.test(s)) return true;
+    return false;
+  }
+
+  function skillTokenIsAdOrMarketingJunk(t) {
+    const low = String(t || '')
+      .replace(/â€™|â€˜/g, "'")
+      .toLowerCase();
+    if (/\bclients\s+include\b/.test(low)) return true;
+    if (/\bturning\s+clicks\s+into\s+customers\b/.test(low) && /\bcro\b/.test(low)) return true;
+    if (/\d+\s*years?\s+.*\b(turning|clicks|customers|cro)\b/i.test(low)) return true;
+    if (/\bportland\s+leather\b|\bgfuel\b|\bboom!\s*by\s+cindy\b/i.test(low)) return true;
+    if (/\b\d+\s*\+?\s*yrs?\b/i.test(low) && /\b(design|designing|dashboard|websites|conversion|high[-\s]?conversion|cro|figma)\b/i.test(low))
+      return true;
+    if (/\band\s+many\s+more\b/i.test(low) || /^many\s+more\b/i.test(low.trim())) return true;
+    if (/\bhappyv\b/i.test(low)) return true;
+    return false;
+  }
+
+  const KNOWN_PYMK_NAME_LINES = new Set(
+    ['oliver kenyon', 'haseeb ali', 'saad farooq', 'sibtain shah', 'ruhma tariq'].map(s => s.toLowerCase()),
+  );
+
+  function skillTokenIsKnownPyMkNameLine(t) {
+    return KNOWN_PYMK_NAME_LINES.has(
+      String(t || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[.!?…]+$/g, '')
+        .trim(),
+    );
+  }
+
+  /** LinkedIn “skills” rail chips that are generic UI rows, not résumé-worthy when scraped as noise. */
+  function skillTokenIsLinkedInGenericDesignRail(t) {
+    const low = String(t || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+    return (
+      low === 'web design' ||
+      low === 'mobile interface design' ||
+      low === 'user interface design' ||
+      low === 'user experience design' ||
+      /^user experience design\s*\(ued\)?$/i.test(low)
+    );
+  }
+
+  function looksLikeTwoWordPersonalName(t) {
+    const s = String(t || '').trim();
+    if (!/^[A-Z][a-z]{1,18} [A-Z][a-z]{1,18}$/.test(s)) return false;
+    if (/[0-9+#.\\/:&]/.test(s)) return false;
+    if (/\b(AI|ML|UI|UX|QA|AWS|GCP|API|SQL|JS|TS|HR|IT|PR|VP|CEO|CTO|CFO|CAD|GIS|ERP|CRM)\b/.test(s)) return false;
+    const w0 = s.split(' ')[0] || '';
+    if (
+      /^(Site|Data|Cloud|User|Web|Mobile|Full|Test|Open|Ruby|Node|Next|React|Deep|Machine|Azure|Basic|Linear|System|Native|Public|Private|Human|Key|High|Low|Big|Smart|Digital|Remote|Cross|Multi|Single|Double|Primary|Secondary|Main|Sub|Mid|Pre|Post|Meta|Auto|Semi|Near|Far|Long|Short|Inner|Outer|Upper|Lower|North|South|East|West|Object|Visual|Graphic|Product|Quality|Release|Build|Scale|Global|World|National|International|Applied|Theoretical|Experimental|Creative|Professional|Technical|Operational|Functional|Behavioral|Environmental|Computational|Statistical|Mathematical|Physical|Chemical|Biological|Financial|Medical|Legal|Social|Political|Historical|Geographical|Structural|Architectural|Electrical|Mechanical|Industrial|Agricultural|Educational|Organizational|Administrative|Commercial|Residential)$/i.test(
+        w0,
+      )
+    )
+      return false;
+    return true;
+  }
+
   /** Sponsored / feedback / LinkedIn ad lines sometimes land in Experience list items and inflate tenure. */
   function experienceRowLooksLikeAdOrChromeNoise(row) {
-    const blob = [row.role, row.company, row.dates, row.desc].join('\n').toLowerCase();
+    const blobNorm = [row.role, row.company, row.dates, row.desc]
+      .join('\n')
+      .replace(/â€™|â€˜/g, "'")
+      .replace(/\s+/g, ' ');
+    const blob = blobNorm.toLowerCase();
     if (!/\S/.test(blob)) return false;
     if (/\byears?\s+related\b/i.test(blob)) return true;
     if (
-      /don't want to see|your feedback will help|same ad too often|it'?s annoying|please let us know|report this ad/i.test(
+      /don't want to see|on'?t want to see|n['\u2019]?\s*t want to see|['\u2019]t want to see|your feedback will help|same ad too often|it'?s annoying|please let us know|report this ad/i.test(
         blob,
       )
     )
       return true;
+    if (/\bselect\s+language\b|\bad\s+choices\b|\bvisit\s+our\s+help\s+center\b|\blearn\s+more\s+about\s+recommended\s+content\b|\bgo\s+to\s+your\s+settings\b/.test(blob))
+      return true;
+    if (
+      /\bclients\s+include\b/.test(blob) &&
+      /\b(gfuel|portland\s+leather|boom!\s*by|turning\s+clicks\s+into|years\s+turning)\b/.test(blob)
+    )
+      return true;
+    if (/\bturning\s+clicks\s+into\s+customers\b/.test(blob) && /\bcro\b/.test(blob)) return true;
     if (/help us improve your experience\s+with\s+ads/i.test(blob)) return true;
     if (/^promoted\s*$|sponsored\s+content|^ad\s+choices/i.test(blob.trim())) return true;
     return false;
@@ -501,8 +754,18 @@
 
   /** Lines LinkedIn shows under skills (endorsement context, CTAs) — not skill names. */
   function isSkillLineNoise(text) {
-    const t = String(text || '').trim();
-    if (!t || t.length > 100) return true;
+    const raw = String(text || '').trim();
+    if (!raw || raw.length > 100) return true;
+    const t = raw.replace(/â€™|â€˜/g, "'").replace(/â€œ|â€\s*"/g, '"');
+    const low = t.toLowerCase();
+    const lowUnpunct = low.replace(/[.!?…]+$/g, '').trim();
+    if (LINKEDIN_FOOTER_SKILL_TOKENS.has(low) || LINKEDIN_FOOTER_SKILL_TOKENS.has(lowUnpunct)) return true;
+    if (skillTokenHasLanguageMenuMarkers(t)) return true;
+    if (skillTokenIsAdOrMarketingJunk(t)) return true;
+    if (skillTokenIsLinkedInGenericDesignRail(t)) return true;
+    if (skillTokenIsKnownPyMkNameLine(t)) return true;
+    if (looksLikeTwoWordPersonalName(raw)) return true;
+    if (/^skills\s*\(from\s*page\)$/i.test(low)) return true;
     if (/^show all\b|^show more\b|^see more\b|^show less\b/i.test(t)) return true;
     if (/^skills$/i.test(t)) return true;
     if (/^\d+\s+endorsements?$/i.test(t)) return true;
@@ -529,7 +792,7 @@
     if (/^ad\s+options?$/i.test(t)) return true;
     if (/^submit$/i.test(t)) return true;
     if (
-      /why\s+am\s+i\s+seeing\s+this\s+ad|manage\s+your\s+ad\s+preferences|hide\s+or\s+report|don'?t\s+want\s+to\s+see|your\s+feedback\s+will\s+help|it'?s\s+annoying|same\s+ad\s+too\s+often|please\s+let\s+us\s+know|report\s+this\s+ad|more\s+profiles\s+for\s+you|suggested\s+for\s+you|promoted|sponsored\s+content/i.test(
+      /why\s+am\s+i\s+seeing\s+this\s+ad|manage\s+your\s+ad\s+preferences|hide\s+or\s+report|don'?t\s+want\s+to\s+see|on'?t\s+want\s+to\s+see|n['\u2019]?\s*t\s+want\s+to\s+see|['\u2019]t\s+want\s+to\s+see|your\s+feedback\s+will\s+help|it'?s\s+annoying|same\s+ad\s+too\s+often|please\s+let\s+us\s+know|report\s+this\s+ad|more\s+profiles\s+for\s+you|suggested\s+for\s+you|promoted|sponsored\s+content/i.test(
         t,
       )
     )
@@ -538,6 +801,11 @@
     if (/\bfor\s+rs\b|^rs[\s.,]|\b(usd|eur|gbp)\b/i.test(t)) return true;
     /* Marketing / client-list prose that leaks from overlays */
     if (/^clients?\s+include\b/i.test(t)) return true;
+    if (/\bvisit\s+our\s+help\s+center\b/i.test(low)) return true;
+    if (/\bgo\s+to\s+your\s+settings\b/i.test(low)) return true;
+    if (/\blearn\s+more\s+about\s+recommended\s+content\b/i.test(low)) return true;
+    if (/\bselect\s+language\b/i.test(low)) return true;
+    if (/\bad\s+choices\b/i.test(low)) return true;
     if (/\b(and\s+)?many\s+more\b/i.test(t)) return true;
     if (/\bfeaturing\b/i.test(t) && t.length > 40) return true;
     if (/\b(click|tap)\s+here\b/i.test(t)) return true;
@@ -1102,10 +1370,12 @@
     /* Overlay body is noisy if split naïvely; only keep lines that look like real skill tokens. */
     const overlay = skillsOverlaySupplementText();
     if (overlay) {
-      overlay.split('\n').forEach(line => {
-        const s = String(line ?? '').trim();
-        if (looksLikeSkillToken(s)) add(s);
-      });
+      trimLinkedInChromeFromSkillBlob(overlay)
+        .split(/[\n,·•]+/)
+        .forEach(chunk => {
+          const s = String(chunk ?? '').trim();
+          if (!isSkillLineNoise(s) && looksLikeSkillToken(s)) add(s);
+        });
     }
   }
 
@@ -1246,6 +1516,154 @@
     return parts.join('\n\n');
   }
 
+  /** LinkedIn chips like ``Figma (software)``; scrapes may truncate to ``figma(software`` — drop, do not treat as Figma. */
+  function linkedInSkillTruncatedQualifierGarbage(s) {
+    const t = String(s || '').trim();
+    const open = t.lastIndexOf('(');
+    if (open < 0) return false;
+    if (t.indexOf(')', open) >= 0) return false;
+    const inner = t
+      .slice(open + 1)
+      .trim()
+      .toLowerCase();
+    return (
+      /^(software|tool|application|app|ued)\w{0,8}$/.test(inner) ||
+      /^softwar\w{0,6}$/.test(inner) ||
+      /^(arabic|bangla|czech|danish|german|greek|spanish|french|hindi|japanese|korean|polish|portuguese|russian|thai|turkish|ukrainian|vietnamese|hebrew|hungarian|indonesian|italian|norwegian|dutch|swedish|finnish|romanian|tagalog|telugu|marathi|malay|punjabi|persian|filipino|simplified|traditional)\w{0,10}$/.test(
+        inner,
+      )
+    );
+  }
+
+  /** Strip a complete LinkedIn ``(software)`` / ``(ued)`` disambiguation suffix for export. */
+  function stripLinkedInSkillQualifierSuffix(s) {
+    return String(s || '')
+      .replace(/\s*\((?:software|tool|application|app|ued)\)\s*$/i, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  /**
+   * LinkedIn endorsement / profile “keywords” that are not concrete tools or domains.
+   * Keeps exports aligned with recruiter “hard skills” expectations.
+   */
+  const SOFT_SKILL_SINGLE_WORD = new Set(
+    [
+      'communication',
+      'communications',
+      'teamwork',
+      'leadership',
+      'collaboration',
+      'adaptability',
+      'flexibility',
+      'creativity',
+      'innovation',
+      'empathy',
+      'accountability',
+      'initiative',
+      'mentoring',
+      'coaching',
+      'negotiation',
+      'negotiations',
+      'multitasking',
+      'presentation',
+      'presentations',
+      'networking',
+      'storytelling',
+      'brainstorming',
+      'facilitation',
+      'resilience',
+      'positivity',
+      'enthusiasm',
+      'dedication',
+      'motivation',
+      'reliability',
+      'professionalism',
+      'patience',
+      'resourcefulness',
+      'curiosity',
+      'listening',
+      'writing',
+      'reading',
+      'scheduling',
+      'budgeting',
+      'forecasting',
+      'recruiting',
+      'hiring',
+      'training',
+      'onboarding',
+      'consulting',
+      'advisory',
+      'organization',
+      'moderation',
+      'inclusion',
+      'equity',
+      'diversity',
+      'culture',
+      'ethics',
+      'integrity',
+      'honesty',
+    ].map(s => s.toLowerCase()),
+  );
+
+  const SOFT_SKILL_PHRASES = new Set(
+    [
+      'problem solving',
+      'problem-solving',
+      'time management',
+      'critical thinking',
+      'customer service',
+      'public speaking',
+      'conflict resolution',
+      'stakeholder management',
+      'strategic planning',
+      'business development',
+      'team building',
+      'organizational skills',
+      'presentation skills',
+      'listening skills',
+      'writing skills',
+      'analytical skills',
+      'interpersonal skills',
+      'leadership skills',
+      'communication skills',
+      'management skills',
+      'team management',
+      'people management',
+      'emotional intelligence',
+      'cross functional collaboration',
+      'cross-functional collaboration',
+      'attention to detail',
+      'detail orientation',
+      'positive attitude',
+      'self motivation',
+      'self-motivation',
+      'work ethic',
+      'client relations',
+      'relationship building',
+      'decision making',
+      'decision-making',
+      'strategic thinking',
+      'creative thinking',
+      'cultural awareness',
+      'open mindedness',
+      'open-mindedness',
+    ].map(s => s.toLowerCase()),
+  );
+
+  function isSoftSkillOrGenericKeywordToken(text) {
+    const t = String(text || '').trim();
+    if (!t) return true;
+    const low = t.toLowerCase();
+    const words = t.split(/\s+/).filter(Boolean);
+    if (words.length === 1 && SOFT_SKILL_SINGLE_WORD.has(low)) return true;
+    if (words.length >= 2) {
+      const joined = words.map(w => w.toLowerCase()).join(' ');
+      if (SOFT_SKILL_PHRASES.has(joined)) return true;
+    }
+    return false;
+  }
+
   /**
    * Returns true if `text` looks like a genuine skill token (used to guard the raw-card fallback).
    * Accepts: "Web Design", "Adobe XD", "React.js", "C++", "Node.js", etc.
@@ -1254,7 +1672,9 @@
   function looksLikeSkillToken(text) {
     const t = String(text || '').trim();
     if (!t || t.length < 2 || t.length > 72) return false;
+    if (linkedInSkillTruncatedQualifierGarbage(t)) return false;
     if (isSkillLineNoise(t)) return false;
+    if (isSoftSkillOrGenericKeywordToken(t)) return false;
     const words = t.split(/\s+/).filter(Boolean);
     if (words.length > 9) return false;
     if (/https?:\/\/|www\.\w/i.test(t)) return false;
@@ -1279,7 +1699,9 @@
     const seen = new Set();
     const out = [];
     for (const raw of list || []) {
-      const s = String(raw || '').trim();
+      let s = String(raw || '').trim();
+      if (!s || linkedInSkillTruncatedQualifierGarbage(s)) continue;
+      s = stripLinkedInSkillQualifierSuffix(s);
       if (!s || isSkillLineNoise(s) || !looksLikeSkillToken(s)) continue;
       const k = s.toLowerCase();
       if (seen.has(k)) continue;
@@ -1300,7 +1722,7 @@
       fromList.push(s);
     }
     if (fromList.length) {
-      const j = fromList.slice(0, 120).join(', ');
+      const j = trimLinkedInChromeFromSkillBlob(fromList.slice(0, 120).join(', '));
       return j.length > 2600 ? `${j.slice(0, 2597)}…` : j;
     }
     /* Fallback: parse card body text, but apply stricter skill-token guard */
@@ -1309,10 +1731,14 @@
       body = sanitizeProfileSectionBody(cleanLines((skillsSec.innerText || '').trim()));
     }
     if (body && body.length > 12) {
-      const lines = body.split('\n').map(l => String(l ?? '').trim()).filter(Boolean);
-      const filtered = lines.filter((l, idx) => {
+      body = trimLinkedInChromeFromSkillBlob(body);
+      const chunks = body
+        .split(/[\n,·•]+/)
+        .map(l => String(l ?? '').trim())
+        .filter(Boolean);
+      const filtered = chunks.filter((l, idx) => {
         if (idx === 0 && /^skills$/i.test(l)) return false;
-        return looksLikeSkillToken(l);
+        return !isSkillLineNoise(l) && looksLikeSkillToken(l);
       });
       const joined = filtered.join(', ').replace(/\s+,/g, ',').trim();
       if (joined.length > 8) return joined.length > 2600 ? `${joined.slice(0, 2597)}…` : joined;
@@ -1700,7 +2126,12 @@
           !experienceRowLooksLikeEducation(r.item, r) &&
           !experienceDatesOverlapEducation(r.dates, eduDateIdx),
       )
-      .map(r => ({ role: r.role, company: r.company, dates: r.dates, desc: r.desc }));
+      .map(r => ({
+        role: r.role,
+        company: r.company,
+        dates: r.dates,
+        desc: trimLinkedInChromeFromInlineBlob(r.desc).slice(0, 2000),
+      }));
 
     const skillsSec = sectionSkills(main);
     const skillsList = collectSkillsFromSection(skillsSec);
@@ -1801,13 +2232,14 @@
     }
 
     const skillsCommaTop = skillsCommaPreviewLine(skillsSec, skillsList);
-    const skillsExportLine =
+    const skillsExportLine = trimLinkedInChromeFromSkillBlob(
       skillsCommaTop ||
-      skillsList
-        .map(s => String(s).trim())
-        .filter(s => s && !isSkillLineNoise(s) && looksLikeSkillToken(s))
-        .slice(0, 120)
-        .join(', ');
+        skillsList
+          .map(s => String(s).trim())
+          .filter(s => s && !isSkillLineNoise(s) && looksLikeSkillToken(s))
+          .slice(0, 120)
+          .join(', '),
+    );
     const profileSectionsBlock = buildProfileSectionsFromPageBlock(5200);
 
     const lines = [];
@@ -2008,14 +2440,14 @@
         role: e.role,
         company: e.company,
         dates: e.dates,
-        desc: (e.desc || '').slice(0, 2000),
+        desc: trimLinkedInChromeFromInlineBlob(e.desc || '').slice(0, 2000),
       })),
       education_items: eduItems.map(e => ({
         school: e.school,
         degree: e.degree,
         field: e.field,
         dates: e.dates,
-        desc: (e.desc || '').slice(0, 800),
+        desc: trimLinkedInChromeFromInlineBlob(e.desc || '').slice(0, 800),
       })),
       years_experience: yearsExperience,
       highest_degree: highestDegree,

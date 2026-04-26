@@ -6,14 +6,48 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Iterable, Set
+from typing import Iterable, Optional, Set
+
+_LINKEDIN_QUAL_SUFFIX = re.compile(
+    r"\s*\((?:software|tool|application|app|ued)\)\s*$",
+    re.IGNORECASE,
+)
+
+
+def clean_skill_fragment(fragment: str) -> Optional[str]:
+    """
+    Normalize one comma-separated skill token.
+
+    LinkedIn often labels chips as ``Figma (software)``; scrapes sometimes truncate to ``figma(software``.
+    The truncated form must not be reduced to ``figma`` (false overlap with job requirements): drop it.
+    A complete ``(software)`` suffix is stripped so ``Figma (software)`` overlaps ``figma``.
+    """
+    t = re.sub(r"\s+", " ", (fragment or "").strip().lower())
+    if not t:
+        return None
+    last_open = t.rfind("(")
+    if last_open != -1 and ")" not in t[last_open:]:
+        inner = t[last_open + 1 :].strip().lower()
+        if inner in {"software", "tool", "application", "app", "ued"} or (
+            len(inner) <= 12 and inner.startswith("softwar")
+        ):
+            return None
+    t = _LINKEDIN_QUAL_SUFFIX.sub("", t).strip()
+    if not t:
+        return None
+    return t
 
 
 def parse_skill_str(s: str) -> Set[str]:
     if not isinstance(s, str) or not s.strip():
         return set()
     parts = re.split(r"[,|\n;/]+", s)
-    return {x.strip().lower() for x in parts if x.strip()}
+    out: set[str] = set()
+    for part in parts:
+        tok = clean_skill_fragment(part)
+        if tok:
+            out.add(tok)
+    return out
 
 
 GENERIC_SKILLS = frozenset(

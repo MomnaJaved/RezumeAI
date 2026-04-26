@@ -449,6 +449,8 @@ def sanitize_text_for_skill_extraction(text: str) -> str:
         if n in _SOCIAL_CHROME_EXACT_LINES:
             continue
         low = _ascii_quotes(raw).lower()
+        if re.search(r"·\s*on-?site\b|on-?site\b", low):
+            continue
         if any(s in low for s in _SOCIAL_CHROME_LINE_CONTAINS):
             continue
         # Do not drop whole skill section lines; comma-split + is_noise removes embedded ad fragments.

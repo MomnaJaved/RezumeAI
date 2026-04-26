@@ -26,6 +26,53 @@ MIN_TEXT_CHARS = 80
 
 _RE_SKILLS_HEADER = re.compile(r"^\s*Skills:\s*(.+?)\s*$", re.IGNORECASE)
 
+# LinkedIn / profile paste: experience prose, locations, and UI fragments merged into `Skills:` lines.
+_RE_RESUME_PROSE_IN_SKILL = re.compile(
+    r"on-?site|self-?employed|zero\s+limit|achieving\s+up|cross-?functional|data-?driven|"
+    r"hospital\s+data|integrating\s+ai|supporting\s+data|modules,\s*power|"
+    r"and\s+\+\d+\s+skills|with\s+python\s*\(|,\s*accuracy\b|business\s+operations\s*$|"
+    r"â·|·\s*on-?site",
+    re.IGNORECASE,
+)
+_RE_LOCATIONISH_SKILL = re.compile(
+    r"^(?:[\s,·]*)(?:riyadh|jeddah|dubai|doha|kuwait|manama|muscat|"
+    r"pk\b|pakistan|india|saudi\s+arabia|uae|usa|uk\b|united\s+states|united\s+kingdom)\b",
+    re.IGNORECASE,
+)
+
+
+def _mojibake_fix_skills_line(s: str) -> str:
+    return (s or "").replace("â·", "·").replace("â€™", "'").replace("â€œ", '"')
+
+
+def _sanitize_skills_list_tokens(parts: list[str], *, max_items: int = 80) -> list[str]:
+    """
+    Dedupe + drop resume prose / locations / LinkedIn UI that leaked into comma-separated skills.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in parts:
+        p = _mojibake_fix_skills_line((raw or "").strip())
+        if not p or len(p) > 160:
+            continue
+        if p.lower().startswith("skills ") and len(p) > 8:
+            p = p[7:].strip()
+        if _RE_RESUME_PROSE_IN_SKILL.search(p):
+            continue
+        if len(p) < 60 and _RE_LOCATIONISH_SKILL.match(p):
+            continue
+        n = normalize(p)
+        if not n or is_noise(n):
+            continue
+        k = n.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(n)
+        if len(out) >= max_items:
+            break
+    return out
+
 
 def _skills_from_explicit_skills_headers(text: str) -> list[str]:
     """
@@ -38,18 +85,25 @@ def _skills_from_explicit_skills_headers(text: str) -> list[str]:
         m = _RE_SKILLS_HEADER.match(line.strip())
         if not m:
             continue
-        chunk = (m.group(1) or "").strip()
+        chunk = _mojibake_fix_skills_line((m.group(1) or "").strip())
         if not chunk:
             continue
         for part in re.split(r"[,;|]\s*|\s{2,}", chunk):
-            p = normalize(part)
-            if not p or is_noise(p) or len(p) > 160:
+            p = part.strip()
+            if not p:
                 continue
-            k = p.lower()
+            if _RE_RESUME_PROSE_IN_SKILL.search(p):
+                continue
+            if len(p) < 60 and _RE_LOCATIONISH_SKILL.match(p):
+                continue
+            pn = normalize(p)
+            if not pn or is_noise(pn) or len(pn) > 160:
+                continue
+            k = pn.lower()
             if k in seen:
                 continue
             seen.add(k)
-            out.append(p)
+            out.append(pn)
     return out[:80]
 
 
@@ -145,18 +199,10 @@ def parse_upload(filename: str, content: bytes) -> dict:
     contact_email = extract_primary_email(raw_clean)
     stripped = strip_pii(raw_clean)
     pii_safe_structural = strip_pii_keep_newlines(raw_clean)
-    skills_list = extract_skill_candidates(stripped)[:80]
+    skills_list = extract_skill_candidates(stripped)[:120]
     header_skills = _skills_from_explicit_skills_headers(raw_clean)
-    if header_skills:
-        merged: list[str] = []
-        seen_m: set[str] = set()
-        for x in header_skills + skills_list:
-            k = (x or "").strip().lower()
-            if not k or k in seen_m:
-                continue
-            seen_m.add(k)
-            merged.append(x.strip())
-        skills_list = merged[:80]
+    merged_in_order = header_skills + skills_list
+    skills_list = _sanitize_skills_list_tokens(merged_in_order, max_items=80)
     skills = ", ".join(skills_list)
 
     # Years first: drives Fresher vs inferred title and seniority polish.

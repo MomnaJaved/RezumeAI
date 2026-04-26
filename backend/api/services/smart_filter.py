@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from src.matching.weak_score import clean_skill_fragment
+
 
 _SPLIT = re.compile(r"[,\n;/|]+")
 _WORD = re.compile(r"[a-z0-9][a-z0-9+\-#.]*")
@@ -19,15 +21,16 @@ def skills_set(raw: str) -> set[str]:
     out: set[str] = set()
     stop = {"and", "or", "with", "to", "in", "of", "the", "a", "an", "for", "on", "api", "apis"}
     for chunk in _SPLIT.split(raw or ""):
-        t = _norm(chunk)
-        if not t:
+        cleaned = clean_skill_fragment(chunk)
+        if not cleaned:
             continue
-        if t in {"none", "n/a", "na", "null", "-", "—"}:
+        if cleaned in {"none", "n/a", "na", "null", "-", "—"}:
             continue
         # keep short phrases too (e.g. "rest apis") but normalize whitespace
-        t = " ".join(t.split())
+        t = " ".join(cleaned.split())
         out.add(t)
-        # also add token-level entries to make overlap robust
+        # also add token-level entries to make overlap robust (use cleaned chunk so
+        # "figma(software" does not emit a bare "figma" token)
         for w in _WORD.findall(t):
             if w in stop:
                 continue
