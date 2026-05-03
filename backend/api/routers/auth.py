@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from api.config import get_settings
 from api.database import get_db
-from api.models import LoginOtpChallenge, User, UserSession
+from api.models import ActivityEvent, Candidate, LoginOtpChallenge, User, UserSession
 from api.schemas import (
     ChangePasswordIn,
     DeleteAccountIn,
@@ -376,8 +376,10 @@ def login(request: Request, body: LoginCredentialsIn, db: Session = Depends(get_
     settings = get_settings()
     email = body.email.strip().lower()
     user = db.query(User).filter(User.email == email).first()
-    if not user or not verify_password(body.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not user:
+        raise HTTPException(status_code=401, detail="No account found for this email")
+    if not verify_password(body.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid password")
     if not getattr(user, "is_verified", True):
         raise HTTPException(status_code=403, detail="Email not verified")
     if getattr(user, "two_factor_enabled", False):
@@ -503,17 +505,30 @@ def update_me(request: Request, body: UserProfileUpdate, db: Session = Depends(g
 @router.post("/delete-account")
 def delete_account(request: Request, body: DeleteAccountIn, db: Session = Depends(get_db)):
     """
-    Permanently delete the authenticated user and their auth-related rows (sessions, OTP, inbox read state, DMs).
-    Jobs keep existing data but ``created_by_user_id`` is cleared; linked candidate pool rows are unlinked (``user_id`` cleared).
+    Permanently delete the authenticated user.
+
+    **Candidate accounts:** the linked pool ``Candidate`` row (if any) is **hard-deleted**
+    first so rankings, applications, and profile data disappear for all recruiters globally.
+    Per-user ``ActivityEvent`` rows for that account are removed. Then the ``User`` row is
+    deleted (sessions, inbox messages, etc. cascade as configured).
+
+    **Recruiter accounts:** jobs keep ``created_by_user_id`` cleared via FK; uploaded
+    ``Candidate`` rows are only unlinked where ``user_id`` pointed at this user (SET NULL).
     """
     u = _get_auth_user(request, db)
     if not verify_password(body.password, u.password_hash):
         raise HTTPException(status_code=400, detail="Password is incorrect")
     email = u.email
     uid = u.id
+    role = _norm_account_role(getattr(u, "account_role", None))
+    if role == "candidate":
+        pool = db.query(Candidate).filter(Candidate.user_id == uid).first()
+        if pool is not None:
+            db.delete(pool)
+        db.query(ActivityEvent).filter(ActivityEvent.user_id == uid).delete(synchronize_session=False)
     db.delete(u)
     db.commit()
-    _log.info("User deleted account email=%s id=%s", email, uid)
+    _log.info("User deleted account email=%s id=%s role=%s", email, uid, role)
     return {"status": "deleted"}
 
 

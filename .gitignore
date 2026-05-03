@@ -39,7 +39,7 @@ rezume_dev.db
 
 # Runtime logs
 logs/
-
+.env
 # -------------------------
 # Runtime storage (uploads, ingestions, attachments)
 # -------------------------

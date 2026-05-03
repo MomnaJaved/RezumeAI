@@ -21,6 +21,7 @@ from api.services.applicant_status_effective import (
     recruiter_applicant_status_created_pairs,
     stage_bucket_for_dashboard,
 )
+from api.services.candidate_best_job_cache import workspace_best_scores
 from api.services.candidate_competition_score import compute_profile_scores_0_100
 from api.services.candidate_display import display_full_name_from_db
 from api.services.candidate_title_display import polish_candidate_title, polish_role_fine_display
@@ -218,6 +219,11 @@ def build_dashboard_widgets(db: Session, recruiter_workspace_id: Optional[UUID] 
     created_by_id = _bulk_candidate_created_at(db, set(preview_cand_ids))
     cand_by_id = _candidates_pipeline_columns_bulk(db, preview_cand_ids)
 
+    # Track which candidate has already been added to each stage bucket to avoid
+    # duplicates when the same candidate has multiple JobApplicant rows (e.g.
+    # applied to two jobs in the same workspace).
+    seen_in_stage: dict[str, set] = {k: set() for k, _ in _PIPELINE_STAGES}
+
     for a in apps_preview:
         cid = getattr(a, "candidate_id", None)
         c0 = cand_by_id.get(cid) if cid else None
@@ -226,7 +232,8 @@ def build_dashboard_widgets(db: Session, recruiter_workspace_id: Optional[UUID] 
         c = c0
         if c and sk in stage_order and sk not in first_by_stage:
             first_by_stage[sk] = c
-        if c and len(by_stage[sk]) < 8:
+        if c and len(by_stage[sk]) < 8 and c.id not in seen_in_stage[sk]:
+            seen_in_stage[sk].add(c.id)
             by_stage[sk].append(
                 {
                     "id": str(c.id),
@@ -264,7 +271,8 @@ def build_dashboard_widgets(db: Session, recruiter_workspace_id: Optional[UUID] 
             continue
         if sk not in first_by_stage:
             first_by_stage[sk] = c
-        if len(by_stage[sk]) < 8:
+        if len(by_stage[sk]) < 8 and c.id not in seen_in_stage[sk]:
+            seen_in_stage[sk].add(c.id)
             by_stage[sk].append(
                 {
                     "id": str(c.id),
@@ -385,8 +393,14 @@ def build_dashboard_widgets(db: Session, recruiter_workspace_id: Optional[UUID] 
             if len(preview) >= _PREVIEW_ROWS:
                 break
 
-    # Dashboard should be fast: use cached best match score stored on Candidate rows.
-    job_fit_by_id = {c.id: float(getattr(c, "best_job_match_score", 0.0) or 0.0) for c in preview}
+    # Use workspace-specific scores so recruiters see scores from their own matching
+    # runs only — the global best_job_match_score on the Candidate row can be
+    # overwritten by any recruiter and must not leak across workspaces.
+    if recruiter_workspace_id is not None:
+        ws_score_map = workspace_best_scores(db, recruiter_workspace_id, [c.id for c in preview])
+        job_fit_by_id = {c.id: ws_score_map[c.id][0] if c.id in ws_score_map else 0.0 for c in preview}
+    else:
+        job_fit_by_id = {c.id: float(getattr(c, "best_job_match_score", 0.0) or 0.0) for c in preview}
 
     candidate_rows = _preview_rows_for_cohort(preview, profile_by_id, job_fit_by_id)
 
@@ -422,9 +436,12 @@ def build_dashboard_preview_job_breadth_scores(db: Session, recruiter_workspace_
     except Exception as e:
         _log.warning("dashboard_preview_job_breadth profile scores: %s", e)
 
-    # Even when skipping job-breadth scoring, the preview table expects a job-fit value.
-    # Use cached best-match score from Candidate rows as a fast fallback.
-    job_fit_by_id = {c.id: float(getattr(c, "best_job_match_score", 0.0) or 0.0) for c in cohort}
+    # Use workspace-specific scores — never expose scores from another recruiter's runs.
+    if recruiter_workspace_id is not None:
+        ws_score_map = workspace_best_scores(db, recruiter_workspace_id, [c.id for c in cohort])
+        job_fit_by_id = {c.id: ws_score_map[c.id][0] if c.id in ws_score_map else 0.0 for c in cohort}
+    else:
+        job_fit_by_id = {c.id: float(getattr(c, "best_job_match_score", 0.0) or 0.0) for c in cohort}
 
     return {
         "candidate_preview": _preview_rows_for_cohort(cohort, profile_by_id, job_fit_by_id),

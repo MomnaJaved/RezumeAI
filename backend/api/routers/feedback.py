@@ -8,14 +8,17 @@ These rows are **not** applied online to model weights. They are stored for:
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from api.database import get_db
-from api.models import Candidate, HumanRankingFeedback, Job
+from api.dependencies import get_current_user_optional, require_user_if_auth_enabled
+from api.models import Candidate, HumanRankingFeedback, Job, User
 from api.schemas import HumanFeedbackCreate, HumanFeedbackRead
 from api.services.feedback_actions import feedback_action_to_candidate_status
+from api.services.workspace_scope import ensure_workspace_for_recruiter
 
 router = APIRouter(prefix="/feedback", tags=["feedback"])
 _log = logging.getLogger("rezume.api")
@@ -25,6 +28,8 @@ _log = logging.getLogger("rezume.api")
 def record_ranking_selection(
     body: HumanFeedbackCreate,
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
 ):
     """
     Call when a human **selects**, **shortlists**, or **rejects** a candidate
@@ -36,6 +41,14 @@ def record_ranking_selection(
     job = db.query(Job).filter(Job.external_id == body.job_external_id.strip()).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+
+    # Workspace ownership check: recruiters can only submit feedback for their own jobs.
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        w = ensure_workspace_for_recruiter(db, user)
+        if w is not None:
+            job_ws = getattr(job, "workspace_id", None)
+            if job_ws is not None and job_ws != w:
+                raise HTTPException(status_code=404, detail="Job not found")
 
     cand = (
         db.query(Candidate)
@@ -78,7 +91,10 @@ def record_ranking_selection(
 
 
 @router.get("/ranking-selection/summary")
-def feedback_summary(db: Session = Depends(get_db)):
+def feedback_summary(
+    db: Session = Depends(get_db),
+    _: object = Depends(require_user_if_auth_enabled),
+):
     """Light stats for demos / admin."""
     n = db.query(HumanRankingFeedback).count()
     return {"human_feedback_events_total": n}

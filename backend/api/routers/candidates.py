@@ -16,10 +16,10 @@ from sqlalchemy.orm import Session
 
 from api.database import get_db
 from api.dependencies import get_current_user_optional, require_user_if_auth_enabled
-from api.models import Candidate, Client, Job, JobApplicant, JobCandidateRanking, JobCandidateSbertScore, User
+from api.models import Candidate, Client, Job, JobApplicant, JobCandidateRanking, JobCandidateSbertScore, RecruiterCandidateHidden, User
 from api.schemas import CandidateCreate, CandidateRead, CandidateReadWithScores, CandidateUpdate
 from api.services.activity_log import log_activity
-from api.services.candidate_best_job_cache import refresh_candidate_best_job_cache
+from api.services.candidate_best_job_cache import refresh_candidate_best_job_cache, workspace_best_scores
 from api.services.candidate_competition_score import compute_competition_payloads_for_list
 from api.services.candidate_serialization import candidate_read_dict, resolve_candidate_headline
 from api.services.applicant_status_effective import STORAGE_APPLICANT_STATUSES, effective_applicant_status, sync_candidate_status_from_applicants
@@ -109,8 +109,26 @@ def _best_job_enrichment_map(db: Session, job_external_ids: set[str]) -> dict[st
     return out
 
 
-def _serialize_candidate_read(db: Session, c: Candidate, *, enrich: dict[str, str | None] | None = None) -> CandidateRead:
+def _serialize_candidate_read(
+    db: Session,
+    c: Candidate,
+    *,
+    enrich: dict[str, str | None] | None = None,
+    ws_score: "tuple[float, str] | None" = None,
+    recruiter_scoped: bool = False,
+) -> CandidateRead:
     d = candidate_read_dict(c)
+    if ws_score is not None:
+        # Recruiter has a workspace-specific score for this candidate.
+        d["best_job_match_score"] = ws_score[0] if ws_score[0] >= 0 else None
+        d["best_job_external_id"] = ws_score[1]
+    elif recruiter_scoped:
+        # Recruiter context but no workspace score yet — clear the globally-cached
+        # value so this recruiter cannot see a score produced by a different
+        # recruiter's matching run.
+        d["best_job_match_score"] = None
+        d["best_job_external_id"] = ""
+    # else: non-recruiter view (candidate portal, no auth) — keep the global cache.
     jid = (d.get("best_job_external_id") or "").strip()
     if jid and enrich:
         d.update({k: v for k, v in enrich.items() if v is not None})
@@ -124,13 +142,16 @@ def list_candidates(
     db: Session = Depends(get_db),
     user: Optional[User] = Depends(get_current_user_optional),
 ):
+    w = None
     q = db.query(Candidate).filter(or_(Candidate.status.is_(None), func.lower(Candidate.status) != "hired"))
     if user is not None and getattr(user, "account_role", "") != "candidate":
         w = ensure_workspace_for_recruiter(db, user)
         if w is not None:
             q = candidate_query_filtered_for_workspace(q, w)
-    q = q.order_by(Candidate.created_at.desc()).offset(skip).limit(limit)
-    return [_serialize_candidate_read(db, c) for c in q.all()]
+    rows = q.order_by(Candidate.created_at.desc()).offset(skip).limit(limit).all()
+    ws_scores = workspace_best_scores(db, w, [c.id for c in rows]) if w is not None else {}
+    is_recruiter = w is not None
+    return [_serialize_candidate_read(db, c, ws_score=ws_scores.get(c.id), recruiter_scoped=is_recruiter) for c in rows]
 
 
 @router.get("/page")
@@ -153,6 +174,7 @@ def list_candidates_page(
     rl = (role or "").strip().lower()
     srt = (sort or "created_desc").strip().lower()
 
+    w = None
     base = db.query(Candidate).filter(or_(Candidate.status.is_(None), func.lower(Candidate.status) != "hired"))
     if user is not None and getattr(user, "account_role", "") != "candidate":
         w = ensure_workspace_for_recruiter(db, user)
@@ -186,6 +208,10 @@ def list_candidates_page(
 
     rows = base.offset(max(0, int(skip or 0))).limit(int(limit)).all()
 
+    # Workspace-specific scores: each recruiter sees only scores from their own
+    # matching runs, regardless of what other recruiters scored for the same candidate.
+    ws_scores = workspace_best_scores(db, w, [r.id for r in rows]) if w is not None else {}
+
     # If rankings exist but best_job_match_score was never refreshed (e.g. older saves), recompute cache.
     need_heal = [r.id for r in rows if getattr(r, "best_job_match_score", None) is None]
     if need_heal:
@@ -204,11 +230,20 @@ def list_candidates_page(
                 if r.id in fix_set:
                     db.refresh(r)
 
-    job_ids = {(getattr(r, "best_job_external_id", "") or "").strip() for r in rows if getattr(r, "best_job_external_id", None)}
+    # Enrich with job metadata using the workspace-specific best job (may differ
+    # from the globally-cached best_job_external_id on the Candidate row).
+    job_ids: set[str] = set()
+    for r in rows:
+        ws = ws_scores.get(r.id)
+        jid = ws[1] if ws else (getattr(r, "best_job_external_id", "") or "").strip()
+        if jid:
+            job_ids.add(jid)
     enrich_by_job = _best_job_enrichment_map(db, job_ids)
+
     items: list[CandidateRead] = []
     for r in rows:
-        jid = (getattr(r, "best_job_external_id", "") or "").strip()
+        ws = ws_scores.get(r.id)
+        jid = ws[1] if ws else (getattr(r, "best_job_external_id", "") or "").strip()
         extra = enrich_by_job.get(jid, {}) if jid else {}
         mapped = {
             "best_job_title": extra.get("title") or None,
@@ -218,7 +253,7 @@ def list_candidates_page(
             "best_job_client_contact": extra.get("client_contact") or None,
             "best_job_client_email": extra.get("client_email") or None,
         }
-        items.append(_serialize_candidate_read(db, r, enrich=mapped if jid else None))
+        items.append(_serialize_candidate_read(db, r, enrich=mapped if jid else None, ws_score=ws, recruiter_scoped=w is not None))
     return {"total": total, "items": items}
 
 
@@ -237,6 +272,7 @@ def list_candidates_scoreboard(
     # Hard cap to prevent pathological slow requests; frontend should paginate.
     limit = max(1, min(int(limit or 50), 100))
     skip = max(0, int(skip or 0))
+    w = None
     cq = db.query(Candidate)
     if user is not None and getattr(user, "account_role", "") != "candidate":
         w = ensure_workspace_for_recruiter(db, user)
@@ -244,34 +280,39 @@ def list_candidates_scoreboard(
             cq = candidate_query_filtered_for_workspace(cq, w)
     page = cq.order_by(Candidate.created_at.desc()).offset(skip).limit(limit).all()
 
-    # Best match across jobs is cached on Candidate to keep this endpoint fast.
-    best_by_id = {c.id: float(getattr(c, "best_job_match_score", 0.0) or 0.0) for c in page}
-    best_job_by_id = {c.id: (getattr(c, "best_job_external_id", "") or "").strip() or None for c in page}
+    # Workspace-specific best scores: each recruiter sees scores from their own
+    # matching runs only, not scores generated by other recruiters.
+    ws_scores = workspace_best_scores(db, w, [c.id for c in page]) if w is not None else {}
 
     out: list[CandidateReadWithScores] = []
     for c in page:
         base = candidate_read_dict(c)
-        # Keep legacy fields but avoid expensive cohort-wide computations here.
         p = 0.0
         j = 0.0
-        b = float(best_by_id.get(c.id, 0.0) or 0.0)
-        bj = best_job_by_id.get(c.id)
-        # Keep competition_score aligned with profile strength in list views (single "Score" removed in UI).
-        extra = {
-            "profile_percentile_score": p,
-            "avg_job_match_score": j,
-            "competition_score": p,
-            "best_job_match_score": b,
-            "best_job_external_id": bj,
-        }
+        ws = ws_scores.get(c.id)
+        if ws is not None:
+            # Workspace-specific score found.
+            b = ws[0]
+            bj = ws[1] or None
+        elif w is not None:
+            # Recruiter context but no workspace score yet — do not show the global
+            # cached value which may belong to a different recruiter's run.
+            b = 0.0
+            bj = None
+        else:
+            # Non-recruiter view (candidate portal, no auth) — use global cache.
+            b = float(getattr(c, "best_job_match_score", 0.0) or 0.0)
+            bj = (getattr(c, "best_job_external_id", "") or "").strip() or None
+        # Write the workspace-scoped (or cleared) score into base before construction
+        # so there are no duplicate keyword arguments when unpacking **base.
+        base["best_job_match_score"] = b if b else None
+        base["best_job_external_id"] = bj or ""
         out.append(
             CandidateReadWithScores(
                 **base,
-                profile_percentile_score=extra["profile_percentile_score"],
-                avg_job_match_score=extra["avg_job_match_score"],
-                competition_score=extra["competition_score"],
-                best_job_match_score=extra["best_job_match_score"],
-                best_job_external_id=extra["best_job_external_id"],
+                profile_percentile_score=p,
+                avg_job_match_score=j,
+                competition_score=p,
             )
         )
     return out
@@ -287,7 +328,11 @@ def get_candidate_by_external_id(
     if not c:
         raise HTTPException(status_code=404, detail="Candidate not found")
     _ensure_recruiter_sees_candidate(db, c, user)
-    jid = (getattr(c, "best_job_external_id", "") or "").strip()
+    w = None
+    if user is not None and getattr(user, "account_role", "") != "candidate":
+        w = ensure_workspace_for_recruiter(db, user)
+    ws = workspace_best_scores(db, w, [c.id]).get(c.id) if w is not None else None
+    jid = ws[1] if ws else (getattr(c, "best_job_external_id", "") or "").strip()
     extra = _best_job_enrichment_map(db, {jid}).get(jid, {}) if jid else {}
     mapped = {
         "best_job_title": extra.get("title") or None,
@@ -297,7 +342,7 @@ def get_candidate_by_external_id(
         "best_job_client_contact": extra.get("client_contact") or None,
         "best_job_client_email": extra.get("client_email") or None,
     }
-    return _serialize_candidate_read(db, c, enrich=mapped if jid else None)
+    return _serialize_candidate_read(db, c, enrich=mapped if jid else None, ws_score=ws, recruiter_scoped=w is not None)
 
 
 @router.get("/by-external/{external_id}/file")
@@ -338,7 +383,13 @@ def get_candidate_with_scores(
         raise HTTPException(status_code=404, detail="Candidate not found")
     _ensure_candidate_self_or_recruiter(c, user)
     _ensure_recruiter_sees_candidate(db, c, user)
-    cohort = db.query(Candidate).order_by(Candidate.created_at.desc()).all()
+    w = None
+    cohort_q = db.query(Candidate)
+    if user is not None and getattr(user, "account_role", "") != "candidate":
+        w = ensure_workspace_for_recruiter(db, user)
+        if w is not None:
+            cohort_q = candidate_query_filtered_for_workspace(cohort_q, w)
+    cohort = cohort_q.order_by(Candidate.created_at.desc()).all()
     scores_by_id = compute_competition_payloads_for_list(db, cohort)
     base = candidate_read_dict(c)
     extra = scores_by_id.get(c.id)
@@ -348,15 +399,23 @@ def get_candidate_with_scores(
             "avg_job_match_score": 0.0,
             "competition_score": 50.0,
         }
-    best_score = float(getattr(c, "best_job_match_score", 0.0) or 0.0)
-    best_job_external_id = (getattr(c, "best_job_external_id", "") or "").strip() or None
+    ws = workspace_best_scores(db, w, [c.id]).get(c.id) if w is not None else None
+    if ws is not None:
+        # Recruiter has a workspace-specific score — use it.
+        base["best_job_match_score"] = ws[0]
+        base["best_job_external_id"] = ws[1] or ""
+    elif w is not None:
+        # Recruiter context but no workspace score yet — hide the globally-cached
+        # value so this recruiter cannot see a score produced by a different
+        # recruiter's matching run.
+        base["best_job_match_score"] = None
+        base["best_job_external_id"] = ""
+    # else: non-recruiter view (candidate portal) — keep global cache already in base.
     return CandidateReadWithScores(
         **base,
         profile_percentile_score=extra["profile_percentile_score"],
         avg_job_match_score=extra["avg_job_match_score"],
         competition_score=extra["competition_score"],
-        best_job_match_score=best_score,
-        best_job_external_id=best_job_external_id,
     )
 
 
@@ -385,7 +444,17 @@ def candidate_top_matches(
     if user is not None and getattr(user, "account_role", "") != "candidate":
         w = ensure_workspace_for_recruiter(db, user)
         if w is not None:
-            rq = rq.filter(Job.workspace_id == w)
+            # Filter by both the job's workspace AND the ranking's workspace so that
+            # scores generated by a different recruiter's run never appear here.
+            # NULL workspace_id rows (legacy pre-isolation data) are accepted only
+            # when the job itself belongs to this recruiter's workspace.
+            rq = rq.filter(
+                Job.workspace_id == w,
+                or_(
+                    JobCandidateRanking.workspace_id == w,
+                    JobCandidateRanking.workspace_id.is_(None),
+                ),
+            )
     rows = rq.order_by(JobCandidateRanking.cross_encoder_score.desc()).limit(lim).all()
     items = []
     for r, j in rows:
@@ -429,7 +498,13 @@ def candidate_matches(
     if user is not None and getattr(user, "account_role", "") != "candidate":
         w = ensure_workspace_for_recruiter(db, user)
         if w is not None:
-            mq = mq.filter(Job.workspace_id == w)
+            mq = mq.filter(
+                Job.workspace_id == w,
+                or_(
+                    JobCandidateRanking.workspace_id == w,
+                    JobCandidateRanking.workspace_id.is_(None),
+                ),
+            )
     rows = mq.order_by(JobCandidateRanking.cross_encoder_score.desc()).limit(lim).all()
     items = []
     for r, j in rows:
@@ -529,7 +604,13 @@ def candidate_job_evaluations(
         .filter(JobCandidateRanking.candidate_id == c.id)
     )
     if w is not None:
-        rnk_q = rnk_q.filter(Job.workspace_id == w)
+        rnk_q = rnk_q.filter(
+            Job.workspace_id == w,
+            or_(
+                JobCandidateRanking.workspace_id == w,
+                JobCandidateRanking.workspace_id.is_(None),
+            ),
+        )
     for rnk, job in rnk_q.all():
         row = ensure_row(job)
         row["cross_encoder_score"] = float(rnk.cross_encoder_score or 0.0)
@@ -556,6 +637,7 @@ def set_candidate_status(
     external_id: str,
     body: dict,
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
     _: object = Depends(require_user_if_auth_enabled),
 ):
     """
@@ -572,6 +654,7 @@ def set_candidate_status(
     c = db.query(Candidate).filter(Candidate.external_id == external_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Candidate not found")
+    _ensure_recruiter_sees_candidate(db, c, user)
     c.status = st
     # Mirror to all job_applicants rows so per-job views stay consistent.
     now = datetime.utcnow()
@@ -621,7 +704,13 @@ def patch_candidate(
 
     db.commit()
     db.refresh(c)
-    jid = (getattr(c, "best_job_external_id", "") or "").strip()
+    w = None
+    if user is not None and getattr(user, "account_role", "") != "candidate":
+        w = ensure_workspace_for_recruiter(db, user)
+    ws = workspace_best_scores(db, w, [c.id]).get(c.id) if w is not None else None
+    # Use workspace-specific job ID for enrichment so job metadata is never leaked
+    # across workspaces (recruiter 2 must not see recruiter 1's best-job metadata).
+    jid = ws[1] if ws else ("" if w is not None else (getattr(c, "best_job_external_id", "") or "").strip())
     extra = _best_job_enrichment_map(db, {jid}).get(jid, {}) if jid else {}
     mapped = {
         "best_job_title": extra.get("title") or None,
@@ -631,11 +720,15 @@ def patch_candidate(
         "best_job_client_contact": extra.get("client_contact") or None,
         "best_job_client_email": extra.get("client_email") or None,
     }
-    return _serialize_candidate_read(db, c, enrich=mapped if jid else None)
+    return _serialize_candidate_read(db, c, enrich=mapped if jid else None, ws_score=ws, recruiter_scoped=w is not None)
 
 
 @router.post("/compare")
-def compare_candidates(body: dict = Body(...), db: Session = Depends(get_db)):
+def compare_candidates(
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     """
     Compare 2–6 candidates side-by-side (fast fields + best match snapshot).
     """
@@ -652,19 +745,36 @@ def compare_candidates(body: dict = Body(...), db: Session = Depends(get_db)):
     if len(ids) < 2 or len(ids) > 6:
         raise HTTPException(status_code=422, detail="Select between 2 and 6 candidates to compare")
 
-    cands = db.query(Candidate).filter(Candidate.id.in_(ids)).all()
+    w = None
+    cand_q = db.query(Candidate).filter(Candidate.id.in_(ids))
+    if user is not None and getattr(user, "account_role", "") != "candidate":
+        w = ensure_workspace_for_recruiter(db, user)
+        if w is not None:
+            cand_q = candidate_query_filtered_for_workspace(cand_q, w)
+    cands = cand_q.all()
     by_id = {c.id: c for c in cands}
     missing = [str(i) for i in ids if i not in by_id]
     if missing:
         raise HTTPException(status_code=404, detail=f"Candidates not found: {', '.join(missing)}")
 
-    job_ids = {(getattr(c, "best_job_external_id", "") or "").strip() for c in cands if getattr(c, "best_job_external_id", None)}
+    # Workspace-scoped best scores — never expose scores from another recruiter's run.
+    ws_score_map = workspace_best_scores(db, w, list(by_id.keys())) if w is not None else {}
+
+    # Derive enrichment job IDs from workspace-specific best job, not the global cache.
+    job_ids: set[str] = set()
+    for cid, c in by_id.items():
+        ws = ws_score_map.get(cid)
+        jid = ws[1] if ws else ("" if w is not None else (getattr(c, "best_job_external_id", "") or "").strip())
+        if jid:
+            job_ids.add(jid)
     enrich_by_job = _best_job_enrichment_map(db, job_ids)
 
     cols = []
     for cid in ids:
         c = by_id[cid]
-        jid = (getattr(c, "best_job_external_id", "") or "").strip()
+        ws = ws_score_map.get(cid)
+        jid = ws[1] if ws else ("" if w is not None else (getattr(c, "best_job_external_id", "") or "").strip())
+        score = (ws[0] if ws[0] >= 0 else None) if ws is not None else (None if w is not None else getattr(c, "best_job_match_score", None))
         ej = enrich_by_job.get(jid, {}) if jid else {}
         cols.append(
             {
@@ -680,7 +790,7 @@ def compare_candidates(body: dict = Body(...), db: Session = Depends(get_db)):
                 "certifications": c.certifications,
                 "status": c.status,
                 "contact_email": c.contact_email,
-                "best_job_match_score": getattr(c, "best_job_match_score", None),
+                "best_job_match_score": score,
                 "best_job_external_id": jid or None,
                 "best_job_title": (ej.get("title") or None) if jid else None,
                 "best_job_department": (ej.get("department") or None) if jid else None,
@@ -705,7 +815,11 @@ def get_candidate(
         raise HTTPException(status_code=404, detail="Candidate not found")
     _ensure_candidate_self_or_recruiter(c, user)
     _ensure_recruiter_sees_candidate(db, c, user)
-    jid = (getattr(c, "best_job_external_id", "") or "").strip()
+    w = None
+    if user is not None and getattr(user, "account_role", "") != "candidate":
+        w = ensure_workspace_for_recruiter(db, user)
+    ws = workspace_best_scores(db, w, [c.id]).get(c.id) if w is not None else None
+    jid = ws[1] if ws else (getattr(c, "best_job_external_id", "") or "").strip()
     extra = _best_job_enrichment_map(db, {jid}).get(jid, {}) if jid else {}
     mapped = {
         "best_job_title": extra.get("title") or None,
@@ -715,7 +829,7 @@ def get_candidate(
         "best_job_client_contact": extra.get("client_contact") or None,
         "best_job_client_email": extra.get("client_email") or None,
     }
-    return _serialize_candidate_read(db, c, enrich=mapped if jid else None)
+    return _serialize_candidate_read(db, c, enrich=mapped if jid else None, ws_score=ws, recruiter_scoped=w is not None)
 
 
 @router.post("", response_model=CandidateRead, status_code=201)
@@ -753,22 +867,101 @@ def create_candidate(
         contact_email=(body.contact_email or "").strip()[:320],
         workspace_id=ws_id,
         created_by_user_id=uid,
+        is_public=False,
     )
     db.add(cand)
     db.commit()
     db.refresh(cand)
     name = (cand.full_name or "").strip() or UNKNOWN_CANDIDATE
-    log_activity(db, kind="candidate_added", message=f"{name} added to the pool", href="/candidates")
+    log_activity(db, kind="candidate_added", message=f"{name} added to the pool", href="/candidates", workspace_id=ws_id, user_id=uid)
     return cand
 
 
 @router.delete("/by-external/{external_id}", status_code=204)
-def delete_candidate_by_external_id(external_id: str, db: Session = Depends(get_db)):
+def delete_candidate_by_external_id(
+    external_id: str,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+    _: object = Depends(require_user_if_auth_enabled),
+):
     c = db.query(Candidate).filter(Candidate.external_id == external_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Candidate not found")
+
     name = (c.full_name or "").strip() or UNKNOWN_CANDIDATE
-    db.delete(c)
-    db.commit()
-    log_activity(db, kind="info", message=f"{name} has been deleted", href="/candidates")
+    caller_role = (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() if user else "recruiter"
+
+    # --- Candidate self-deletion ---
+    # Only the candidate who owns this profile may delete it (hard delete).
+    # Recruiters MUST NEVER hard-delete a public/portal-linked candidate.
+    if caller_role == "candidate":
+        linked_cand_id = getattr(c, "user_id", None)
+        if user is None or linked_cand_id != user.id:
+            raise HTTPException(status_code=403, detail="You can only delete your own candidate profile")
+        # Hard delete own profile — removes all rankings/applications via CASCADE.
+        db.delete(c)
+        db.commit()
+        return Response(status_code=204)
+
+    # --- Recruiter deletion ---
+    _ensure_recruiter_sees_candidate(db, c, user)
+    caller_ws = None
+    if user is not None:
+        caller_ws = ensure_workspace_for_recruiter(db, user)
+
+    is_public = getattr(c, "is_public", False)
+    cand_ws = getattr(c, "workspace_id", None)
+    has_portal_account = getattr(c, "user_id", None) is not None
+
+    # Extra safeguard: even if user_id was never linked on this row, check
+    # whether a candidate-role account exists with the same contact email.
+    # This covers the case where a recruiter uploaded the resume before the
+    # candidate registered (so user_id is still NULL on the row).
+    contact_email = (getattr(c, "contact_email", "") or "").strip().lower()
+    if not has_portal_account and contact_email:
+        email_match = db.query(User).filter(
+            func.lower(User.email) == contact_email,
+            User.account_role == "candidate",
+        ).first()
+        if email_match:
+            has_portal_account = True
+
+    # Also protect candidates who have applied to any job — they are
+    # actively participating in the platform and must never be hard-deleted
+    # by a recruiter (only soft-hidden per workspace).
+    has_applied = db.query(JobApplicant).filter(
+        JobApplicant.candidate_id == c.id
+    ).first() is not None
+
+    # Recruiters can ONLY hard-delete a private candidate that their workspace
+    # exclusively owns, has no linked portal account (by user_id or email),
+    # and has never applied to any job.
+    # Public candidates (portal applicants) are NEVER globally deleted by recruiters.
+    sole_private_owner = (
+        (not is_public)
+        and (not has_portal_account)
+        and (not has_applied)
+        and (cand_ws is not None)
+        and (caller_ws is not None)
+        and (cand_ws == caller_ws)
+    )
+
+    if sole_private_owner:
+        db.delete(c)
+        db.commit()
+    else:
+        # Public or portal-linked candidate: soft-hide per recruiter workspace only.
+        # The global candidate row is preserved so the candidate and other
+        # recruiters are never affected.
+        if caller_ws is not None:
+            already = db.query(RecruiterCandidateHidden).filter_by(
+                workspace_id=caller_ws, candidate_id=c.id
+            ).first()
+            if not already:
+                db.add(RecruiterCandidateHidden(workspace_id=caller_ws, candidate_id=c.id))
+                db.commit()
+
+    # Scope the notification to the calling recruiter's workspace and user only.
+    caller_uid = user.id if user is not None else None
+    log_activity(db, kind="info", message=f"{name} has been deleted", href="/candidates", workspace_id=caller_ws, user_id=caller_uid)
     return Response(status_code=204)

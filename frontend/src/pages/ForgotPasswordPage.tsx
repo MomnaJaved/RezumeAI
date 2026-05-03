@@ -99,13 +99,13 @@ export default function ForgotPasswordPage() {
               placeholder="you@example.com"
             />
           </div>
-          <div className="landing-auth-actions">
-            <button type="button" className="btn btn-primary" disabled={busy || !email.trim()} onClick={() => void sendCode()}>
-              {busy ? "Sending…" : "Send reset code"}
-            </button>
-            <Link to="/login" className="btn btn-ghost landing-auth-back">
+          <div className="landing-auth-role-actions" style={{ marginTop: "1.35rem" }}>
+            <Link to="/login" className="landing-auth-role-action-btn ghost">
               Back to sign in
             </Link>
+            <button type="button" className="landing-auth-role-action-btn primary" disabled={busy || !email.trim()} onClick={() => void sendCode()}>
+              {busy ? "Sending…" : "Send reset code →"}
+            </button>
           </div>
         </>
       ) : (
@@ -149,18 +149,10 @@ export default function ForgotPasswordPage() {
               placeholder="Repeat new password"
             />
           </div>
-          <div className="landing-auth-actions">
+          <div className="landing-auth-role-actions" style={{ marginTop: "1.35rem" }}>
             <button
               type="button"
-              className="btn btn-primary"
-              disabled={busy || code.trim().length < 4 || newPwd.length < 8}
-              onClick={() => void submitReset()}
-            >
-              {busy ? "Updating…" : "Update password"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost landing-auth-back"
+              className="landing-auth-role-action-btn ghost"
               disabled={busy}
               onClick={() => {
                 setStep(1);
@@ -168,6 +160,14 @@ export default function ForgotPasswordPage() {
               }}
             >
               Different email
+            </button>
+            <button
+              type="button"
+              className="landing-auth-role-action-btn primary"
+              disabled={busy || code.trim().length < 4 || newPwd.length < 8}
+              onClick={() => void submitReset()}
+            >
+              {busy ? "Updating…" : "Update password →"}
             </button>
           </div>
         </>

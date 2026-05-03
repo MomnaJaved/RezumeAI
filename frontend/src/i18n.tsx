@@ -325,7 +325,7 @@ const ENGLISH: Translations = {
   "matching.selectJobPrompt": "Select a job to view matches.",
   "matching.jobDescription": "Job Description",
   "matching.candidates": "Candidates",
-  "matching.noPool": "No candidates in pool yet (SBERT stage-1 cache empty).",
+  "matching.noPool": "No matching candidates for this job in pool.",
   "matching.viewResume": "View resume",
   "matching.viewProfile": "View profile »",
   "matching.compareTop": "Compare top",

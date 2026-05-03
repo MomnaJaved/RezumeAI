@@ -34,8 +34,14 @@ def client(monkeypatch, tmp_path):
             db.close()
 
     app.dependency_overrides[get_db] = override_db
+    # Lets tests insert a User row and mint a JWT against the same DB session factory.
+    app.state.test_SessionLocal = SessionLocal
     from fastapi.testclient import TestClient
 
-    with TestClient(app) as c:
-        yield c
-    app.dependency_overrides.clear()
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        app.dependency_overrides.clear()
+        if hasattr(app.state, "test_SessionLocal"):
+            delattr(app.state, "test_SessionLocal")

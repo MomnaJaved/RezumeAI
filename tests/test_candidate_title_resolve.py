@@ -1,6 +1,17 @@
 from __future__ import annotations
 
 from src.parsing.candidate_title_resolve import display_title_for_candidate_row, resolve_title_from_resume_text
+from src.parsing.title_extractor import extract_title_from_raw
+
+
+def test_extract_title_software_engineering_trainee():
+    text = """Jane Doe
+Software Engineering Trainee
+Bahria University — Computer Science
+"""
+    t = extract_title_from_raw(text)
+    assert "trainee" in t.lower()
+    assert "software" in t.lower() or "engineering" in t.lower()
 
 
 def test_fresher_override():

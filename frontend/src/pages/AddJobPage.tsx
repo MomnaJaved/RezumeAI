@@ -181,10 +181,10 @@ export default function AddJobPage() {
         </div>
 
         <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end", marginTop: "0.9rem" }}>
-          <Link to="/jobs" className="small-btn" style={{ textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
+          <Link to="/jobs" className="clients-float-btn clients-float-btn--ghost" style={{ textDecoration: "none" }}>
             Cancel
           </Link>
-          <button type="button" className="primary" disabled={!canSubmit || busy} onClick={() => void submit()}>
+          <button type="button" className="clients-float-btn clients-float-btn--primary" disabled={!canSubmit || busy} onClick={() => void submit()}>
             {busy ? "Creating…" : "Create job"}
           </button>
         </div>

@@ -29,6 +29,10 @@ class Settings(BaseSettings):
 
     # Override in .env: PostgreSQL e.g. postgresql+psycopg2://rezume:rezume@localhost:5432/rezumeai
     database_url: str = Field(default_factory=_default_sqlite_url)
+    # Optional SQLAlchemy pool (PostgreSQL). If unset, api/database.py picks defaults from the URL
+    # (Supabase session pooler needs a tiny pool; transaction pooler :6543 uses a normal pool).
+    database_pool_size: Optional[int] = None
+    database_max_overflow: Optional[int] = None
 
     # API
     api_prefix: str = "/api/v1"

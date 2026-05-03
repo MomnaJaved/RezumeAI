@@ -16,6 +16,7 @@ import {
 } from "../api";
 import { formatDmPreview, formatInboxRelative, inboxAllTabLine, parseInboxDate } from "../inboxTime";
 import { useNotifications } from "../notifications";
+import { useAuth } from "../auth";
 
 const TABS: { key: InboxTab; label: string }[] = [
   { key: "all", label: "All" },
@@ -112,7 +113,9 @@ function MarkRowButtons({ busy, read, onRead, onUnread }: { busy: boolean; read:
 }
 
 export default function InboxPage() {
-  const { inboxUnreadCandidates } = useNotifications();
+  const { accountRole } = useAuth();
+  const isCandidate = accountRole === "candidate";
+  const { inboxUnreadCandidates, inboxUnreadAlerts } = useNotifications();
   const [tab, setTab] = useState<InboxTab>("all");
   const [items, setItems] = useState<InboxItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -131,6 +134,7 @@ export default function InboxPage() {
   const [activeThread, setActiveThread] = useState<ActiveThread | null>(null);
   const [listNotice, setListNotice] = useState<string | null>(null);
   const [msgDeleteMenu, setMsgDeleteMenu] = useState<{ id: string; outgoing: boolean } | null>(null);
+  const [recruiterEmailInput, setRecruiterEmailInput] = useState("");
 
   const load = useCallback(async () => {
     setError(null);
@@ -177,7 +181,7 @@ export default function InboxPage() {
   }, [items, activeThread?.peerEmail, activeThread?.scope, activeThread?.profilePath]);
 
   useEffect(() => {
-    if (!dirOpen || tab !== "candidates") return;
+    if (!dirOpen || tab !== "candidates" || isCandidate) return;
     const q = dirQuery.trim();
     if (q.length < 1) {
       setDirHits([]);
@@ -207,7 +211,7 @@ export default function InboxPage() {
       cancelled = true;
       window.clearTimeout(t);
     };
-  }, [dirQuery, dirOpen, tab]);
+  }, [dirQuery, dirOpen, tab, isCandidate]);
 
   useEffect(() => {
     if (!dirOpen) return;
@@ -408,17 +412,33 @@ export default function InboxPage() {
     }
   };
 
-  const showDirectorySearch = tab === "candidates";
-  const isChatTab = showDirectorySearch;
+  const showDirectorySearch = tab === "candidates" && !isCandidate;
+  const isChatTab = tab === "candidates";
 
-  return (
-    <DashFrame>
-      <h1 className="dash-title dash-inbox-page-title">All system notifications and alerts</h1>
+  const openRecruiterByEmail = () => {
+    const em = recruiterEmailInput.trim().toLowerCase();
+    if (!em || !em.includes("@")) {
+      setListNotice("Enter the recruiter's email address.");
+      return;
+    }
+    setListNotice(null);
+    openThread(em, em, null);
+    setRecruiterEmailInput("");
+  };
+
+  const pageBody = (
+    <>
+      <h1 className="dash-title dash-inbox-page-title">{isCandidate ? "Inbox" : "All system notifications and alerts"}</h1>
 
       <div className="dash-inbox-shell">
         <nav className="dash-inbox-side" aria-label="Inbox categories">
           {TABS.map((t) => {
-            const n = t.key === "candidates" ? inboxUnreadCandidates : 0;
+            const n =
+              t.key === "candidates"
+                ? inboxUnreadCandidates
+                : t.key === "alerts" && isCandidate
+                  ? inboxUnreadAlerts
+                  : 0;
             return (
               <button
                 key={t.key}
@@ -426,7 +446,7 @@ export default function InboxPage() {
                 className={`dash-inbox-tab ${tab === t.key ? "dash-inbox-tab-active" : ""}`}
                 onClick={() => setTab(t.key)}
               >
-                <span className="dash-inbox-tab-label">{t.label}</span>
+                <span className="dash-inbox-tab-label">{isCandidate && t.key === "candidates" ? "Recruiters" : t.label}</span>
                 {n > 0 ? (
                   <span className="dash-inbox-tab-badge" aria-label={`${n} unread`}>
                     {n > 99 ? "99+" : n}
@@ -618,12 +638,32 @@ export default function InboxPage() {
             </div>
           ) : isChatTab && !activeThread ? (
             <ul className="dash-inbox-list dash-inbox-thread-list" aria-busy={loading}>
+              {isCandidate ? (
+                <li className="dash-inbox-row" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", width: "100%" }}>
+                    <input
+                      className="dash-inbox-dir-input"
+                      type="email"
+                      autoComplete="email"
+                      placeholder="Recruiter email…"
+                      value={recruiterEmailInput}
+                      onChange={(e) => setRecruiterEmailInput(e.target.value)}
+                      style={{ flex: "1 1 200px" }}
+                    />
+                    <button type="button" className="dash-btn dash-btn-xs" disabled={busy} onClick={() => openRecruiterByEmail()}>
+                      New chat
+                    </button>
+                  </div>
+                </li>
+              ) : null}
               {loading && items.length === 0 ? (
                 <li className="dash-inbox-row dash-inbox-row-muted">Loading…</li>
               ) : null}
               {!loading && threadSummaries.length === 0 ? (
                 <li className="dash-inbox-row dash-inbox-row-muted">
-                  No chats yet. Tap the search icon to find someone by name or email and start a conversation.
+                  {isCandidate
+                    ? "No conversations yet. Add a recruiter's email above (they need a Rezume account), or open a thread when they message you."
+                    : "No chats yet. Tap the search icon to find someone by name or email and start a conversation."}
                 </li>
               ) : null}
               {threadSummaries.map((s) => (
@@ -737,6 +777,8 @@ export default function InboxPage() {
           </div>
         </div>
       ) : null}
-    </DashFrame>
+    </>
   );
+
+  return isCandidate ? pageBody : <DashFrame>{pageBody}</DashFrame>;
 }

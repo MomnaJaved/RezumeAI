@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import exists, or_
+from sqlalchemy import and_, exists, or_
 from sqlalchemy.orm import Session
 
 from api.models import (
@@ -12,6 +12,7 @@ from api.models import (
     JobApplicant,
     JobCandidateRanking,
     JobShortlistedCandidate,
+    RecruiterCandidateHidden,
     User,
     Workspace,
 )
@@ -55,15 +56,17 @@ def candidate_visibility_predicate(workspace_id: UUID):
 
     A candidate is visible if *any* of the following hold:
       1. They were uploaded into this workspace (``candidates.workspace_id`` match).
-         This covers fresh uploads that haven't been attached to a job yet —
-         without it, a brand-new recruiter who just uploaded resumes would see
-         an empty Candidates page even though the upload succeeded.
       2. They appear as an applicant / ranking / shortlist row on any job in
-         this workspace. This preserves the old behaviour for candidates who
-         arrived via a job but have no direct ownership stamp (e.g. legacy
-         data, candidates re-shared across workspaces by linking them to a job).
+         this workspace (legacy data, portal applicants, cross-linked candidates).
+
+    Self-serve portal profiles (``workspace_id`` NULL, ``is_public``) do **not**
+    appear on the recruiter pool list until (2) applies — e.g. they applied to
+    one of your jobs or you ran matching that created a ranking/shortlist row.
+
+    AND the candidate has NOT been soft-deleted by this workspace (no row in
+    ``recruiter_candidate_hidden`` for this workspace + candidate pair).
     """
-    return or_(
+    in_workspace = or_(
         Candidate.workspace_id == workspace_id,
         exists()
         .where(
@@ -84,6 +87,11 @@ def candidate_visibility_predicate(workspace_id: UUID):
             Job.workspace_id == workspace_id,
         ),
     )
+    not_hidden = ~exists().where(
+        RecruiterCandidateHidden.workspace_id == workspace_id,
+        RecruiterCandidateHidden.candidate_id == Candidate.id,
+    )
+    return and_(in_workspace, not_hidden)
 
 
 def candidate_query_filtered_for_workspace(base_query, workspace_id: UUID):

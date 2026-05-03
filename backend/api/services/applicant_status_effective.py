@@ -9,6 +9,8 @@ from uuid import UUID
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
+    from api.models import Candidate
+
 # Literal "new" is shown as the next pipeline stage after this many days since candidate creation.
 NEW_APPLICANT_TTL_DAYS = 7
 NEW_CANDIDATE_TTL_DAYS = 7
@@ -127,7 +129,7 @@ _STATUS_PRIORITY: dict[str, int] = {
 }
 
 
-def sync_candidate_status_from_applicants(db: "Session", candidate: "object") -> None:
+def sync_candidate_status_from_applicants(db: "Session", candidate: "Candidate") -> None:
     """
     Update candidates.status to the highest-priority status across all job_applicants rows.
     Call this immediately after updating any job_applicants.status so the candidates page,
@@ -193,36 +195,44 @@ def applicant_pairs_for_job_ids(db: "Session", job_ids: list[UUID]) -> list[tupl
 
 def recruiter_applicant_status_created_pairs(db: "Session", workspace_id: UUID) -> list[tuple[str | None, datetime | None]]:
     """
-    Applicant pipeline rows for **one recruiter workspace**:
+    Applicant pipeline rows for **one recruiter workspace** — one entry per
+    unique candidate (not per job application) so pipeline counts reflect
+    the number of people, not the number of job links.
 
-    - Every ``job_applicants`` row for jobs in this workspace (joined to the
-      candidate's ``created_at`` for the literal-``new`` TTL rule).
-    - Plus every candidate this workspace *owns* (``Candidate.workspace_id ==
-      workspace_id``) that has **no** ``job_applicants`` row yet, using
-      ``candidates.status`` so freshly uploaded resumes count toward the
-      applicant tracker before they've been attached to a job. Without this
-      second set a new recruiter would see initials avatars in the tracker
-      (those come from the dashboard widgets' orphan preview) but a count of 0,
-      and the "expand" panel would short-circuit to "No applicants in this
-      stage" even though people exist.
+    - For candidates with ``job_applicants`` rows in this workspace: pick the
+      highest-priority status across all their applications.
+    - Plus workspace-owned candidates with no ``job_applicants`` row yet, using
+      ``candidates.status`` so freshly uploaded resumes appear in the tracker.
     """
     from sqlalchemy import exists
 
     from api.models import Candidate, Job, JobApplicant
 
-    job_rows = (
-        db.query(JobApplicant.status, Candidate.created_at)
+    all_app_rows = (
+        db.query(JobApplicant.candidate_id, JobApplicant.status, Candidate.created_at)
         .join(Candidate, Candidate.id == JobApplicant.candidate_id)
         .join(Job, Job.id == JobApplicant.job_id)
         .filter(Job.workspace_id == workspace_id)
         .all()
     )
+
+    # Collapse multiple applications for the same candidate into one entry
+    # using the highest-priority status (e.g. "shortlisted" wins over "new").
+    best: dict[UUID, tuple[str, "datetime | None"]] = {}
+    for cid, st, cat in all_app_rows:
+        s = (st or "new").strip().lower()
+        if cid not in best or _STATUS_PRIORITY.get(s, 0) > _STATUS_PRIORITY.get(best[cid][0], 0):
+            best[cid] = (s, cat)
+
     has_app = exists().where(JobApplicant.candidate_id == Candidate.id)
     orphan_rows = (
-        db.query(Candidate.status, Candidate.created_at)
+        db.query(Candidate.id, Candidate.status, Candidate.created_at)
         .filter(Candidate.workspace_id == workspace_id, ~has_app)
         .all()
     )
-    pairs: list[tuple[str | None, datetime | None]] = [(str(st or "new"), cat) for st, cat in job_rows]
-    pairs.extend([(str(st or "new"), cat) for st, cat in orphan_rows])
+
+    pairs: list[tuple[str | None, datetime | None]] = [(s, cat) for s, cat in best.values()]
+    for cid, st, cat in orphan_rows:
+        if cid not in best:  # already counted above
+            pairs.append((str(st or "new"), cat))
     return pairs

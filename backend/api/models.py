@@ -147,6 +147,9 @@ class Candidate(Base):
     # Shape typically (384,) for all-MiniLM-L6-v2.
     embedding_sbert: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # Public = entered via candidate portal (workspace_id NULL, self-registered).
+    # Private = uploaded directly by a recruiter (workspace_id set).
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     rankings: Mapped[list["JobCandidateRanking"]] = relationship(
         back_populates="candidate", cascade="all, delete-orphan"
@@ -155,8 +158,9 @@ class Candidate(Base):
 
 class JobCandidateRanking(Base):
     """
-    One row per (job, candidate) after a rank run.
-    Re-run ranking replaces rows for that job (delete old then insert).
+    One row per (job, candidate, recruiter-workspace) after a rank run.
+    Re-run ranking replaces rows for that job+workspace (delete old then insert).
+    workspace_id == recruiter_id for score isolation per the multi-tenant spec.
     """
     __tablename__ = "job_candidate_rankings"
 
@@ -169,6 +173,8 @@ class JobCandidateRanking(Base):
     candidate_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"), index=True
     )
+    # Recruiter workspace that ran this ranking (= recruiter_id in spec terms).
+    # Ensures each recruiter has independent scores; other workspaces never read these rows.
     workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -193,8 +199,10 @@ class JobCandidateRanking(Base):
 
 class JobCandidateSbertScore(Base):
     """
-    Stage-1 retrieval cache (SBERT cosine similarity) for (job, candidate).
+    Stage-1 retrieval cache (SBERT cosine similarity) for (job, candidate, workspace).
     This table is used ONLY for shortlisting; never shown in UI.
+    workspace_id scopes the SBERT cache to the recruiter who triggered it,
+    ensuring score isolation across tenants.
     """
 
     __tablename__ = "job_candidate_sbert_scores"
@@ -205,6 +213,10 @@ class JobCandidateSbertScore(Base):
     )
     candidate_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    # Recruiter workspace that owns this SBERT cache entry (= recruiter_id in spec terms).
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True
     )
     cosine_similarity: Mapped[float] = mapped_column(Float, default=0.0)
     rank_position: Mapped[int] = mapped_column(Integer, default=0)
@@ -371,6 +383,8 @@ class ResumeIngestion(Base):
 class ActivityEvent(Base):
     """
     Append-only activity log for user-facing notifications (survives deletes).
+    workspace_id scopes events to a recruiter tenant; NULL = legacy/global event.
+    user_id provides per-user isolation so a user only sees their own notifications.
     """
 
     __tablename__ = "activity_events"
@@ -380,6 +394,14 @@ class ActivityEvent(Base):
     message: Mapped[str] = mapped_column(String(512), default="")
     href: Mapped[str] = mapped_column(String(256), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # Per-user notification isolation: only the owning user receives this event.
+    # NULL = workspace-scoped (all users in the workspace see it) or legacy row.
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
 
 class InboxReadState(Base):
@@ -392,6 +414,29 @@ class InboxReadState(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
     item_key: Mapped[str] = mapped_column(String(192), index=True)
     read_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class RecruiterCandidateHidden(Base):
+    """
+    Per-recruiter soft-delete for candidates.
+
+    When a recruiter "deletes" a public or shared candidate, a row is inserted
+    here instead of removing the Candidate globally. The visibility predicate
+    excludes any candidate that has a matching row for the current workspace.
+    Private candidates solely owned by the recruiter are still hard-deleted.
+    """
+
+    __tablename__ = "recruiter_candidate_hidden"
+    __table_args__ = (UniqueConstraint("workspace_id", "candidate_id", name="uq_hidden_workspace_candidate"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    hidden_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class InboxMessage(Base):

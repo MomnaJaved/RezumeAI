@@ -20,7 +20,12 @@ async function authedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
   const token = getStoredToken();
   const headers = new Headers(init.headers || {});
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  return fetch(input, { ...init, headers });
+  const res = await fetch(input, { ...init, headers });
+  if (res.status === 401 && token) {
+    // Token expired or invalidated — signal the auth layer to clear the session.
+    window.dispatchEvent(new CustomEvent("auth:expired"));
+  }
+  return res;
 }
 
 function formatFastApiDetail(detail: unknown): string {
@@ -142,6 +147,8 @@ export type CandidateDto = {
   best_job_client_company?: string | null;
   best_job_client_contact?: string | null;
   best_job_client_email?: string | null;
+  /** Pool type: true = public (portal applicant), false = private (recruiter upload). */
+  is_public?: boolean;
 };
 
 /** Best stored cross-encoder match as 0–100 (handles legacy 0–1 scale in older rows). */
@@ -571,6 +578,8 @@ export type Stage1PoolRow = {
   sbert_score: number;
   is_shortlisted: boolean;
   candidate_status?: string;
+  /** Pool type: true = public (portal applicant), false = private (recruiter upload). */
+  is_public?: boolean;
 };
 
 export async function fetchStage1Pool(jobExternalId: string, limit = 50) {
@@ -977,6 +986,11 @@ export async function fetchActivityNotifications(): Promise<ActivityNotification
   return j.notifications;
 }
 
+/** Clear all activity notifications for the current recruiter's workspace. */
+export async function clearActivityNotifications(): Promise<void> {
+  await authedFetch(`${base}/api/v1/meta/activity`, { method: "DELETE" });
+}
+
 /** Log a custom activity event visible in the inbox and notification feed. */
 export async function logActivity(kind: string, message: string, href?: string): Promise<void> {
   await authedFetch(`${base}/api/v1/meta/log`, {
@@ -1309,6 +1323,7 @@ export type CandidateJobListItem = {
   salary_range: string;
   client_display: string;
   created_at: string;
+  applied?: boolean;
 };
 
 export async function fetchCandidateJobs(params: {
@@ -1343,10 +1358,28 @@ export type CandidateApplicationRow = {
   company: string;
   status: string;
   updated_at: string;
+  rank_position: number | null;
+  match_score: number | null;
 };
 
 export async function fetchCandidateApplications(): Promise<{ items: CandidateApplicationRow[] }> {
   const res = await authedFetch(`${base}/api/v1/candidate/applications`);
+  return parseJson(res);
+}
+
+export type CandidateProfilePatch = {
+  full_name?: string;
+  title?: string;
+  skills?: string;
+  years_experience?: number | null;
+};
+
+export async function updateCandidateProfile(patch: CandidateProfilePatch): Promise<{ status: string }> {
+  const res = await authedFetch(`${base}/api/v1/candidate/profile`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
   return parseJson(res);
 }
 

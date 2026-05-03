@@ -84,8 +84,13 @@ export default function ClientsPage() {
                 }}
               />
             </div>
-            <Link to="/clients/add" className="cand-add-btn" title="Add client" aria-label="Add client">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+            <Link
+              to="/clients/add"
+              className="clients-float-btn clients-float-btn--primary clients-float-btn--icon-only"
+              title="Add client"
+              aria-label="Add client"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" aria-hidden>
                 <path d="M12 5v14M5 12h14" strokeLinecap="round" />
               </svg>
             </Link>
@@ -131,7 +136,7 @@ export default function ClientsPage() {
         </div>
       }
     >
-      <div className="jobs-table-wrap">
+      <div className="jobs-table-wrap clients-page-scroll-pad">
         <table className="jobs-table">
           <thead>
             <tr>

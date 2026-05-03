@@ -76,9 +76,13 @@ export default function LoginPage() {
       const to = from && from !== "/login" ? from : ar === "candidate" ? "/candidate" : "/dashboard";
       nav(to);
     } catch (e) {
-      const raw = (e as Error).message || "Sign-in failed.";
+      const raw = ((e as Error).message || "").trim() || "Sign-in failed.";
       let msg = raw;
-      if (raw.includes("Invalid email or password")) {
+      if (raw.includes("No account found")) {
+        msg = "No account found.";
+      } else if (raw.includes("Invalid password") || raw.toLowerCase().includes("invalid password")) {
+        msg = "Wrong email or password. Check both and try again, or use “Forgot password?” below.";
+      } else if (raw.includes("Invalid email or password")) {
         msg = "Wrong email or password. Check both and try again, or use “Forgot password?” below.";
       } else if (raw.toLowerCase().includes("not verified") || raw.toLowerCase().includes("email not verified")) {
         msg = "This email is not verified yet. Complete registration from the link in your inbox, or register again.";
@@ -244,13 +248,10 @@ export default function LoginPage() {
               placeholder="you@example.com"
             />
           </div>
-          <div className="landing-auth-actions">
-            <button type="button" className="btn btn-primary" disabled={busy || !resetEmail.trim()} onClick={() => void sendPasswordResetCode()}>
-              {busy ? "Sending…" : "Send reset code"}
-            </button>
+          <div className="landing-auth-role-actions" style={{ marginTop: "1.35rem" }}>
             <button
               type="button"
-              className="btn btn-ghost landing-auth-back"
+              className="landing-auth-role-action-btn ghost"
               disabled={busy}
               onClick={() => {
                 setLoginPane("signin");
@@ -259,10 +260,10 @@ export default function LoginPage() {
             >
               Back to sign in
             </button>
+            <button type="button" className="landing-auth-role-action-btn primary" disabled={busy || !resetEmail.trim()} onClick={() => void sendPasswordResetCode()}>
+              {busy ? "Sending…" : "Send reset code →"}
+            </button>
           </div>
-          <p className="landing-auth-forgot">
-            <Link to="/forgot-password">Open full-page reset</Link>
-          </p>
         </>
       ) : loginPane === "reset-code" ? (
         <>
@@ -315,18 +316,10 @@ export default function LoginPage() {
               placeholder="Repeat new password"
             />
           </div>
-          <div className="landing-auth-actions">
+          <div className="landing-auth-role-actions" style={{ marginTop: "1.35rem" }}>
             <button
               type="button"
-              className="btn btn-primary"
-              disabled={busy || resetCode.trim().length < 4 || resetNewPwd.length < 8}
-              onClick={() => void submitPasswordReset()}
-            >
-              {busy ? "Updating…" : "Update password & return to sign in"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost landing-auth-back"
+              className="landing-auth-role-action-btn ghost"
               disabled={busy}
               onClick={() => {
                 setLoginPane("reset-email");
@@ -334,6 +327,14 @@ export default function LoginPage() {
               }}
             >
               Resend / change email
+            </button>
+            <button
+              type="button"
+              className="landing-auth-role-action-btn primary"
+              disabled={busy || resetCode.trim().length < 4 || resetNewPwd.length < 8}
+              onClick={() => void submitPasswordReset()}
+            >
+              {busy ? "Updating…" : "Update password →"}
             </button>
           </div>
         </>
