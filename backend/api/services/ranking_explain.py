@@ -9,6 +9,7 @@ from src.matching.weak_score import (
     exp_score,
     overlap_ratio,
     parse_skill_str,
+    compute_skill_overlap,
     weak_score,
     weighted_overlap_ratio,
 )
@@ -21,6 +22,7 @@ def build_ranking_explanation(job: "Job", cand: "Candidate", cross_encoder_score
     job_skills = parse_skill_str(str(getattr(job, "skills", None) or ""))
     cand_skills = parse_skill_str(str(getattr(cand, "skills", None) or ""))
     skills_match_ratio = float(overlap_ratio(job_skills, cand_skills)) if job_skills else 0.0
+    normalized_skill_overlap = float(compute_skill_overlap(job_skills, cand_skills)) if job_skills else 0.0
 
     all_s, critical_s, weights = classify_job_skills(job_skills)
     total_cov = float(weighted_overlap_ratio(all_s, cand_skills, weights)) if all_s else 0.0
@@ -38,6 +40,7 @@ def build_ranking_explanation(job: "Job", cand: "Candidate", cross_encoder_score
     heuristic = float(weak_score(job_skills, cand_skills, experience_match, education_match))
     return {
         "skills_match_ratio": round(skills_match_ratio, 4),
+        "normalized_skill_overlap": round(normalized_skill_overlap, 4),
         "total_skill_coverage": round(total_cov, 4),
         "critical_skill_coverage": round(critical_cov, 4),
         "experience_match": round(experience_match, 4),

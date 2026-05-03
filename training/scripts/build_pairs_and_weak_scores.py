@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-import math
 import pandas as pd
-from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -15,88 +13,13 @@ OUT_DIR = ROOT / "outputs" / "pairs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_PATH = OUT_DIR / "job_candidate_pairs.csv"
 
-
-# ----------------------------
-# Helpers
-# ----------------------------
-def parse_skill_str(s: str) -> set[str]:
-    if not isinstance(s, str) or not s.strip():
-        return set()
-    return {x.strip().lower() for x in s.split(",") if x.strip()}
-
-
-def jaccard(a: set[str], b: set[str]) -> float:
-    if not a and not b:
-        return 0.0
-    inter = len(a & b)
-    union = len(a | b)
-    return inter / union if union else 0.0
-
-
-def overlap_ratio(job: set[str], cand: set[str]) -> float:
-    # % of job skills covered by candidate
-    if not job:
-        return 0.0
-    return len(job & cand) / len(job)
-
-
-def clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
-    return max(lo, min(hi, x))
-
-
-def exp_score(cand_years: float | int | None, job_min: float | int | None) -> float:
-    """
-    Simple experience scoring:
-    - if job doesn't specify -> neutral 0.5
-    - if candidate meets/exceeds -> near 1
-    - if below -> scaled down
-    """
-    if job_min is None or (isinstance(job_min, float) and math.isnan(job_min)):
-        return 0.5
-
-    try:
-        jm = float(job_min)
-    except:
-        return 0.5
-
-    if cand_years is None or (isinstance(cand_years, float) and math.isnan(cand_years)):
-        return 0.0
-
-    cy = float(cand_years)
-    if cy >= jm:
-        return 1.0
-    # partial credit if close
-    return clamp(cy / jm)
-
-
-EDU_RANK = {"any": 0, "intermediate": 1, "bachelors": 2, "masters": 3, "phd": 4}
-
-def edu_score(cand_deg: str, job_req: str) -> float:
-    jr = (job_req or "any").strip().lower()
-    cd = (cand_deg or "").strip().lower()
-
-    # if job doesn't care
-    if jr not in EDU_RANK or jr == "any":
-        return 0.5
-
-    # if candidate unknown
-    if cd not in EDU_RANK:
-        return 0.0
-
-    return 1.0 if EDU_RANK[cd] >= EDU_RANK[jr] else 0.0
-
-
-def weak_score(job_skills: set[str], cand_skills: set[str], exp_s: float, edu_s: float) -> float:
-    """
-    Weighted scoring (transparent + viva-friendly):
-    - skills matter most
-    """
-    skill_cov = overlap_ratio(job_skills, cand_skills)      # main
-    skill_jac = jaccard(job_skills, cand_skills)            # secondary
-    skills_final = 0.75 * skill_cov + 0.25 * skill_jac
-
-    score = 0.70 * skills_final + 0.20 * exp_s + 0.10 * edu_s
-    return clamp(score)
+from src.matching.weak_score import (  # noqa: E402
+    edu_score,
+    exp_score,
+    overlap_ratio,
+    parse_skill_str,
+    weak_score,
+)
 
 
 def main():
