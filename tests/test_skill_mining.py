@@ -91,6 +91,25 @@ React
     assert "conversion rate optimization" not in skills
 
 
+def test_sidebar_name_and_help_center_stripped_from_linkedin_blob():
+    blob = """
+People also viewed
+Kamran Azmat
+M Muzammal
+
+Skills: Python, SQL, React
+
+Visit our Help Center · Settings
+"""
+    cleaned = sanitize_text_for_skill_extraction(blob)
+    assert "Kamran Azmat" not in cleaned
+    assert "M Muzammal" not in cleaned
+    assert "Visit our Help" not in cleaned
+    skills = extract_skill_candidates(blob)
+    assert "kamran azmat" not in " ".join(skills).lower()
+    assert "python" in skills
+
+
 def test_inline_junk_in_comma_list_filtered():
     # If ad copy lands on the same section line as real tokens, is_noise should drop the junk fragment.
     skills = extract_skill_candidates("Skills: Figma, Don't want to see this, React\n")

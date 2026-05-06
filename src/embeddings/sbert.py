@@ -28,6 +28,15 @@ def get_device() -> str:
 
 
 def load_sbert(config: SbertConfig | None = None) -> SentenceTransformer:
+    # Hugging Face downloads can be slow on first run; keep generous timeouts so
+    # SBERT refresh (stage-1 pool) doesn't silently degrade to all-zero vectors.
+    import os
+
+    os.environ.setdefault("HF_HUB_CONNECT_TIMEOUT", "30")
+    os.environ.setdefault("HF_HUB_READ_TIMEOUT", "120")
+    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
     cfg = config or SbertConfig()
     device = get_device()
     model = SentenceTransformer(cfg.model_name, device=device)

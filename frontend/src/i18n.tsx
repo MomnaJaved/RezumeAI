@@ -169,6 +169,8 @@ export type Translations = {
   "matching.compareTop": string;
   "matching.compareCandidates": string;
   "matching.topInsight": string;
+  "matching.columnSbert": string;
+  "matching.columnSbertHelp": string;
 };
 
 export type TranslationKey = keyof Translations;
@@ -331,6 +333,9 @@ const ENGLISH: Translations = {
   "matching.compareTop": "Compare top",
   "matching.compareCandidates": "Compare Candidates",
   "matching.topInsight": "Top candidate insight",
+  "matching.columnSbert": "SBERT",
+  "matching.columnSbertHelp":
+    "Semantic similarity (résumé embedding vs job). Match uses the cross-encoder plus skills and experience — so it can stay high even when this number looks low.",
 };
 
 const URDU: Translations = {
@@ -487,6 +492,9 @@ const URDU: Translations = {
   "matching.compareTop": "ٹاپ موازنہ کریں",
   "matching.compareCandidates": "امیدواروں کا موازنہ کریں",
   "matching.topInsight": "ٹاپ امیدوار بصیرت",
+  "matching.columnSbert": "SBERT",
+  "matching.columnSbertHelp":
+    "میعاری مشابہت (ریزیومے کا امبیڈنگ ملازمت کے ساتھ)۔ میچ فیصد کراس اینکوڈر اور مہارتوں سے بنتا ہے؛ یہ نمبر کم ہو سکتا ہے جبکہ میٹچ اچھا رہے۔",
 };
 
 const ARABIC: Translations = {
@@ -643,6 +651,9 @@ const ARABIC: Translations = {
   "matching.compareTop": "مقارنة أفضل",
   "matching.compareCandidates": "مقارنة المرشحين",
   "matching.topInsight": "رؤية المرشح الأول",
+  "matching.columnSbert": "SBERT",
+  "matching.columnSbertHelp":
+    "تشابه دلالي (تضمين السيرة مقابل الوظيفة). نسبة التطابق تعتمد على النموذج الثنائي والمهارات؛ قد يبقى التطابق مرتفعًا رغم انخفاض هذا الرقم.",
 };
 
 const FRENCH: Translations = {
@@ -801,6 +812,9 @@ const FRENCH: Translations = {
   "matching.compareTop": "Comparer le top",
   "matching.compareCandidates": "Comparer les candidats",
   "matching.topInsight": "Aperçu du meilleur candidat",
+  "matching.columnSbert": "SBERT",
+  "matching.columnSbertHelp":
+    "Similarité sémantique (embedding CV vs offre). Le % Match combine le cross-encodeur et l’expérience — il peut rester élevé même si ce nombre est bas.",
 };
 
 const TRANSLATIONS: Record<Lang, Translations> = {

@@ -23,7 +23,9 @@ RE_EDU_LINE = re.compile(
 # Lines that leaked in from other resume sections (whole-line filter).
 _RE_EDU_LEAK = re.compile(
     r"\b(work experience|employment history|professional experience|career history|"
-    r"^skills\s*:|\bskills\s+and\b|\btechnical skills\b|activities\s+and\s+societies)\b",
+    r"skills\s*:|\bskills\s+and\b|\btechnical skills\b|"
+    r"\bprojects?\b|\bportfolio\b|\bachievements?\b|\breferences?\s*(?:available)?|\blanguages?\s*(?:known)?|"
+    r"\binterests?\b|\bhobbies\b|\bawards?\b|\bhonou?rs?\b|\bpublications?\b)\b",
     re.IGNORECASE,
 )
 # LinkedIn-style lines that are not education records.

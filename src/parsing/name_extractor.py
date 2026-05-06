@@ -189,6 +189,12 @@ _PHRASE_NOT_A_NAME = frozenset(
         "aws certified",
         "azure certified",
         "google certified",
+        # Team / collaboration phrases sometimes appear near the top (or in OCR merges)
+        # and can match the name heuristics if not blocked.
+        "frontend and backend teams",
+        "frontend and backend team",
+        "backend and frontend teams",
+        "backend and frontend team",
     }
 )
 
@@ -210,6 +216,13 @@ _TOKEN_NOT_A_NAME = frozenset(
         "automation",
         "development",
         "engineering",
+        # Role / org tokens that should never constitute a person's name.
+        "frontend",
+        "backend",
+        "fullstack",
+        "full-stack",
+        "team",
+        "teams",
         "database",
         "databases",
         "security",

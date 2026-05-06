@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from api.database import get_db
 from api.dependencies import get_current_user_optional
 from api.errors import RezumeAPIError
-from api.models import Candidate, User
+from api.models import Candidate, RecruiterCandidateHidden, User
 from api.schemas import CandidateRead, OcrScanSavePayload, ResumeUploadResponse
 from api.services.resume_ingest import ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, parse_upload, parse_upload_from_ocr_preview
 from api.services.workspace_scope import ensure_workspace_for_recruiter
@@ -155,6 +155,13 @@ def upload_resume(
             # their is_public=True so the candidate can still manage their profile.
             if not existing_has_portal_link and not existing_is_public:
                 existing.is_public = False
+        # If this recruiter previously "deleted" (soft-hid) this candidate from their pool,
+        # and they are explicitly uploading the candidate again, unhide it so it reappears.
+        if recruiter_workspace_id is not None:
+            db.query(RecruiterCandidateHidden).filter(
+                RecruiterCandidateHidden.workspace_id == recruiter_workspace_id,
+                RecruiterCandidateHidden.candidate_id == existing.id,
+            ).delete(synchronize_session=False)
         db.commit()
         db.refresh(existing)
         cand = existing

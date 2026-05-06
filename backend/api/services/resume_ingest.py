@@ -163,6 +163,54 @@ def _is_placeholder_full_name(name: str) -> bool:
     return False
 
 
+def _resolve_full_name_reextracted_from_file(filename: str, content: bytes) -> str:
+    """
+    Run the same text extraction + name resolution as ``parse_upload`` (multi-line
+    Tesseract), ignoring ``payload.raw_text`` when it was truncated or
+    one-line-wrapped. Used only when the scan form did not provide a real name
+    and resolution from the client preview is still empty.
+    """
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        return UNKNOWN_CANDIDATE
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+    try:
+        try:
+            raw = extract_text_any(tmp_path) or ""
+        except Exception:
+            return UNKNOWN_CANDIDATE
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    raw = (raw or "").strip()
+    if len(raw) < MIN_TEXT_CHARS:
+        return UNKNOWN_CANDIDATE
+    raw = preprocess_resume_text(raw)
+    raw_clean2 = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
+    em2 = extract_primary_email(raw_clean2)
+    n, _ = resolve_candidate_full_name(raw_clean2, em2)
+    return n
+
+
+def _is_placeholder_full_name(name: str) -> bool:
+    """
+    If the scan form still has the default from a failed name parse, re-run
+    ``resolve_candidate_full_name`` on save (with line-preserving raw_text) instead of
+    persisting a placeholder string.
+    """
+    t = (name or "").strip().casefold()
+    if not t:
+        return True
+    # Legacy / mistaken UI values — treat as missing so we re-resolve
+    if t in ("unknown candidate", "unknown", "candidate"):
+        return True
+    return False
+
+
 def external_id_from_content(content: bytes) -> str:
     """Stable id for deduplicating identical uploads (prefix u_ vs dataset hex ids)."""
     return "u_" + hashlib.sha256(content).hexdigest()[:14]

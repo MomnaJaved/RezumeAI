@@ -228,8 +228,9 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
     # A candidate who explicitly applied via the portal should ALWAYS appear in
     # the recruiter's matching results — even if their resume is too sparse for
     # the semantic filters (e.g. empty skills field after NLP extraction).
-    # We append them at the end with score 0.0 so the cross-encoder can still
-    # rank them; they won't crowd out better-scoring candidates.
+    # Still record their *true* embedding cosine vs the job (not a hard-coded 0)
+    # so the Matching table "SBERT" column matches what the model sees; Match %
+    # comes from cross-encoder + skill/experience blending.
     top_ext_ids = {ext for ext, _ in top}
     applicant_rows = (
         db.query(JobApplicant, Candidate)
@@ -238,12 +239,29 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
         .all()
     )
     forced_applicants: list[tuple[str, float]] = []
+    forced_ext_seen: set[str] = set()
+    np = __import__("numpy")
     for _app, ac in applicant_rows:
-        if ac.external_id not in top_ext_ids:
-            # Compute embedding if missing so the cross-encoder has something to work with
-            ensure_candidate_embedding(db, ac)
-            forced_applicants.append((ac.external_id, 0.0))
-            by_ext[ac.external_id] = ac
+        ext = str(ac.external_id or "").strip()
+        # Dedupe: duplicate JobApplicant rows (same job + candidate) would otherwise
+        # write multiple JobCandidateSbertScore rows and duplicate Matching table rows.
+        if not ext or ext in top_ext_ids or ext in forced_ext_seen:
+            continue
+        forced_ext_seen.add(ext)
+        ensure_candidate_embedding(db, ac)
+        forced_sim = 0.0
+        b_emb = getattr(ac, "embedding_sbert", None)
+        if b_emb:
+            try:
+                vv = bytes_to_vec(b_emb)
+                if vv.size == qv.size:
+                    dden = float((np.linalg.norm(vv) + 1e-12) * qn)
+                    if dden > 0:
+                        forced_sim = float(vv.dot(qv) / dden)
+            except Exception:
+                forced_sim = 0.0
+        forced_applicants.append((ext, forced_sim))
+        by_ext[ext] = ac
     if forced_applicants:
         _log.debug(
             "Force-including %d applicant(s) excluded by SBERT/skills filters for job %s",
@@ -252,7 +270,19 @@ def refresh_sbert_for_job(db: Session, job: Job, top_k: int = 200) -> int:
         )
         diag["applicants_force_included"] = len(forced_applicants)
 
-    combined = top + forced_applicants
+    def _dedupe_shortlist(pairs: list[tuple[str, float]]) -> list[tuple[str, float]]:
+        """One row per external_id — keeps first occurrence (best SBERT rank first)."""
+        seen: set[str] = set()
+        out: list[tuple[str, float]] = []
+        for cand_ext, sim in pairs:
+            ce = str(cand_ext or "").strip()
+            if not ce or ce in seen:
+                continue
+            seen.add(ce)
+            out.append((ce, float(sim)))
+        return out
+
+    combined = _dedupe_shortlist(list(top) + forced_applicants)
 
     db.query(JobCandidateSbertScore).filter(JobCandidateSbertScore.job_id == job.id).delete()
     db.commit()

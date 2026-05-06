@@ -19,8 +19,12 @@ from api.dependencies import get_current_user_optional, require_user_if_auth_ena
 from api.models import Candidate, Client, Job, JobApplicant, JobCandidateRanking, JobCandidateSbertScore, RecruiterCandidateHidden, User
 from api.schemas import CandidateCreate, CandidateRead, CandidateReadWithScores, CandidateUpdate
 from api.services.activity_log import log_activity
-from api.services.candidate_best_job_cache import refresh_candidate_best_job_cache, workspace_best_scores
-from api.services.candidate_competition_score import compute_competition_payloads_for_list
+from api.services.candidate_best_job_cache import workspace_best_scores
+from api.services.candidate_competition_score import (
+    compute_competition_payload_for_one_in_cohort,
+    compute_competition_payloads_for_list,
+)
+from api.services.candidate_best_job_cache import refresh_candidate_best_job_cache
 from api.services.candidate_serialization import candidate_read_dict, resolve_candidate_headline
 from api.services.applicant_status_effective import STORAGE_APPLICANT_STATUSES, effective_applicant_status, sync_candidate_status_from_applicants
 from api.services.workspace_scope import candidate_query_filtered_for_workspace, ensure_workspace_for_recruiter

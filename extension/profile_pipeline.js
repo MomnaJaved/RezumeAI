@@ -6,7 +6,7 @@
 (function initRezumeProfilePipeline() {
   if (typeof globalThis.__rezumeRunProfilePipeline === 'function') return;
 
-  const PIPELINE_VERSION = '2.2.13';
+  const PIPELINE_VERSION = '2.2.14';
 
   /** ── XPath (fallback when CSS misses) ─────────────────────────────── */
   function xpathFirst(expression, contextNode) {
@@ -451,6 +451,31 @@
     return false;
   }
 
+  /**
+   * LinkedIn sidebars (“People also viewed”, recommendations) often deserialize as Title Case
+   * name chips. Drop when it looks like a person, not a competency phrase.
+   */
+  function looksLinkedInProbablyPersonName(raw) {
+    const t = String(raw || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/[.!?…]+$/g, '');
+    if (!t || t.length < 4 || t.length > 72) return false;
+    if (/[\d@/&+]/.test(t)) return false;
+    const skillish = /\b(requirements|management|development|learning|analytics|marketing|engineering|software|architecture|applications|technologies|operations|strategy|research|planning|testing|delivery|systems|experience|generation|consulting|relations|sales|business|digital|content|communication|communications|negotiation|training|security|network|networking|cloud|data|growth|science|design|interface|interfaces|processing|integration|optimization|forecasting|recruitment|compliance|governance|innovation|transformation|thinking|building|insights|migration|recovery|computing|automation|collaboration|functional|stakeholders?|mapping|discovery|tech|enablement)\b/i;
+    if (skillish.test(t)) return false;
+    const words = t.split(/\s+/);
+    if (!words.length || words.length > 3) return false;
+    if (/^[A-Z]{2,6}$/.test(words[0])) return false;
+    const titleWord = /^[A-Z][a-z]{1,24}$/;
+    if (words.length === 2) {
+      if (words[0].length === 1 && /^[A-Z]$/.test(words[0]) && titleWord.test(words[1])) return true;
+      if (titleWord.test(words[0]) && titleWord.test(words[1])) return true;
+      return false;
+    }
+    return words.every(w => titleWord.test(w));
+  }
+
   /** When merging classifier "skills" fragments into out.skills — drop experience/job blobs. */
   function classifierSkillTokenOk(s) {
     const t = String(s || '')
@@ -581,6 +606,9 @@
     if (/^\d+\s+endorsements?$/i.test(t)) return true;
     if (/^(follow|message|connect)$/i.test(t)) return true;
     if (/\s+at\s+/i.test(t)) return true;
+    if (/@[A-Za-z0-9_]/.test(t)) return true; /* Employer chip: “Developer @Acme” — not a standalone skill. */
+    if (/\bvisit\s+our\s+help\b/i.test(low)) return true;
+    if (looksLinkedInProbablyPersonName(t)) return true;
     {
       const open = t.lastIndexOf('(');
       if (open >= 0 && t.indexOf(')', open) < 0) {
@@ -1067,7 +1095,17 @@
       const src = Array.isArray(arr) ? arr : typeof arr === 'string' && arr ? arr.split(/\n+|,+/) : [];
       return [
         ...new Set(
-          src.map(s => String(s ?? '').trim()).filter(s => s && !noiseLine.test(s) && s.length < 500),
+          src
+            .map(s => String(s ?? '').trim())
+            .filter(
+              s =>
+                s &&
+                !noiseLine.test(s) &&
+                s.length < 500 &&
+                !looksLinkedInProbablyPersonName(s) &&
+                !/\bvisit\s+our\s+help\b/i.test(s) &&
+                !/@[A-Za-z0-9_]/.test(s),
+            ),
         ),
       ];
     };

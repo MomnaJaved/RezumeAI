@@ -58,6 +58,28 @@ def normalize_skill_token(s: str) -> str:
     return tok
 
 
+def clean_skill_fragment(s: str) -> str:
+    """
+    Lightweight cleanup for one skill chunk before normalization.
+
+    This exists primarily for the backend `smart_filter` stage, which parses
+    job/candidate skills from pasted text and OCR where bullets/odd separators
+    are common.
+    """
+    if not isinstance(s, str):
+        return ""
+    t = s.strip()
+    if not t:
+        return ""
+    # Remove common bullet / dash prefixes and stray separators.
+    t = re.sub(r"^[\s\u2022\u25CF\u25AA\u25A0\u2212\u2013\u2014\-\*\+•]+", "", t).strip()
+    # Collapse internal whitespace.
+    t = re.sub(r"\s+", " ", t).strip()
+    # Trim trailing punctuation noise.
+    t = t.strip(" \t\r\n.,;:|/\\")
+    return t
+
+
 # --- Skill normalization / matching -----------------------------------------
 #
 # Goal: avoid "false mismatches" caused by surface-form differences.
