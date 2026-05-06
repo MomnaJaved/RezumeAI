@@ -26,7 +26,6 @@ _RE_EDU_LEAK = re.compile(
     r"skills\s*:|\bskills\s+and\b|\btechnical skills\b|"
     r"\bprojects?\b|\bportfolio\b|\bachievements?\b|\breferences?\s*(?:available)?|\blanguages?\s*(?:known)?|"
     r"\binterests?\b|\bhobbies\b|\bawards?\b|\bhonou?rs?\b|\bpublications?\b)\b",
-    r"^skills\s*:|\bskills\s+and\b|\btechnical skills\b|activities\s+and\s+societies)\b",
     re.IGNORECASE,
 )
 # LinkedIn-style lines that are not education records.

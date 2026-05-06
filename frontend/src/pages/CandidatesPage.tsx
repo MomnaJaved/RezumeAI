@@ -11,7 +11,6 @@ import {
   normalizedBestJobMatchPercent,
   type CandidateDto,
 } from "../api";
-import { candidateListProfileScore } from "../candidateListScore";
 import { useToast } from "../toast";
 import { getCandidatesPerPage, getDefaultCandidateSortKey } from "../settings";
 
@@ -510,7 +509,7 @@ export default function CandidatesPage() {
                   <th style={{ width: "18%" }}>Role</th>
                   <th
                     style={{ width: "11%" }}
-                    title="Best saved cross-encoder match vs a job (0–100). If none yet, shows an estimated score from résumé fields (same red style as a low match) until you run matching or use “Save & match to job” in the extension."
+                    title="Best saved cross-encoder match vs a job (0–100). Only shown after you run matching / ranking and save scores."
                   >
                     Match
                   </th>
@@ -521,7 +520,6 @@ export default function CandidatesPage() {
               <tbody>
                 {pageRows.map((c) => {
                   const m = bestMatchFor(c);
-                  const profileFallback = m == null ? candidateListProfileScore(c) : null;
                   const st = (c.status || "new").toLowerCase();
                   const isSel = selectionMode && selectedIds.has(c.id);
                   return (
@@ -598,15 +596,15 @@ export default function CandidatesPage() {
                               : m >= 65
                                 ? "cand-score mid"
                                 : "cand-score low"
-                            : "cand-score low"
+                            : "cand-score"
                         }
                         title={
                           m != null
                             ? "Best saved job match (cross-encoder)."
-                            : "No saved job match yet — estimated from résumé fields. Use Matching or extension “Save & match to job” to store a real score."
+                            : "No saved job match yet. Run Matching to store a real score."
                         }
                       >
-                        {m != null ? `${m}%` : `${profileFallback}%`}
+                        {m != null ? `${m}%` : "—"}
                       </td>
                       <td>{formatCandidateExperience(c)}</td>
                       <td>

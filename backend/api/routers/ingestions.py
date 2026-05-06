@@ -17,7 +17,7 @@ from sqlalchemy.orm import sessionmaker
 from api.database import get_db
 from api.dependencies import get_current_user_optional, require_user_if_auth_enabled
 from api.errors import RezumeAPIError
-from api.models import Candidate, ResumeIngestion, User
+from api.models import Candidate, RecruiterCandidateHidden, ResumeIngestion, User
 from api.schemas import (
     IngestionBatchOut,
     IngestionCreateText,
@@ -160,6 +160,13 @@ def _process_one_ingestion(ingestion_id: UUID, engine: Engine) -> None:
                 existing.workspace_id = ing_workspace_id
                 if not existing_has_portal_link and not existing_is_public:
                     existing.is_public = False
+            # If this workspace previously hid this candidate, but they're re-uploading it,
+            # unhide so it shows up again.
+            if ing_workspace_id is not None:
+                db.query(RecruiterCandidateHidden).filter(
+                    RecruiterCandidateHidden.workspace_id == ing_workspace_id,
+                    RecruiterCandidateHidden.candidate_id == existing.id,
+                ).delete(synchronize_session=False)
             cand = existing
         else:
             cand = Candidate(
