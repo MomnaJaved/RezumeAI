@@ -265,21 +265,67 @@ def stage1_pool(
     NEVER returns SBERT scores to the UI.
     """
     job = _require_job_in_workspace(db, external_job_id, user)
+    recruiter_ws = None
+    if user is not None and (getattr(user, "account_role", "recruiter") or "recruiter").strip().lower() != "candidate":
+        recruiter_ws = ensure_workspace_for_recruiter(db, user)
     lim = max(1, min(int(limit or 50), 500))
-    rows = (
-        db.query(JobCandidateSbertScore, Candidate)
-        .join(Candidate, Candidate.id == JobCandidateSbertScore.candidate_id)
-        .filter(JobCandidateSbertScore.job_id == job.id)
-        .order_by(JobCandidateSbertScore.rank_position.asc())
-        .limit(lim)
-        .all()
-    )
+    def _query_rows():
+        return (
+            db.query(JobCandidateSbertScore, Candidate)
+            .join(Candidate, Candidate.id == JobCandidateSbertScore.candidate_id)
+            .filter(JobCandidateSbertScore.job_id == job.id)
+            .order_by(JobCandidateSbertScore.rank_position.asc())
+            .limit(lim)
+            .all()
+        )
+
+    rows = _query_rows()
     shortlisted = {
         str(cid)
         for (cid,) in db.query(JobShortlistedCandidate.candidate_id)
         .filter(JobShortlistedCandidate.job_id == job.id)
         .all()
     }
+    # If SBERT cache is empty for this job (common for brand-new jobs / fresh DB),
+    # compute it on-demand so the Matching UI can show retrieval scores BEFORE the
+    # user clicks "Match" (cross-encoder). If SBERT refresh fails, fall back to a
+    # plain candidate list (sbert_score=0.0) rather than claiming the pool is empty.
+    if not rows:
+        try:
+            from api.services.sbert_cache import refresh_sbert_for_job
+
+            refresh_sbert_for_job(db, job, top_k=max(200, lim))
+            rows = _query_rows()
+        except Exception:
+            rows = []
+
+    if not rows:
+        cand_q = db.query(Candidate).order_by(Candidate.created_at.desc())
+        if recruiter_ws is not None:
+            cand_q = candidate_query_filtered_for_workspace(cand_q, recruiter_ws)
+        cands = cand_q.limit(lim).all()
+        items = []
+        for cand in cands:
+            meta = meta_from_candidate(cand, cand.external_id)
+            items.append(
+                {
+                    "candidate_id": cand.external_id,
+                    "candidate_uuid": str(cand.id),
+                    "candidate_name": meta.get("candidate_name", "") or (cand.full_name or ""),
+                    "candidate_title": meta.get("candidate_title", "") or (cand.title or ""),
+                    "candidate_role": meta.get("candidate_role", "") or (cand.role_label or ""),
+                    "years_experience": meta.get("years_experience", cand.years_experience),
+                    "highest_degree": meta.get("highest_degree", cand.highest_degree or ""),
+                    "certifications": meta.get("certifications", "") or (getattr(cand, "certifications", "") or ""),
+                    "skills_summary": meta.get("skills_summary", "") or (cand.skills or ""),
+                    "sbert_score": 0.0,
+                    "is_shortlisted": str(cand.id) in shortlisted,
+                    "candidate_status": str(cand.status or "new").strip().lower(),
+                    "is_public": bool(getattr(cand, "is_public", False)),
+                }
+            )
+        return {"job_external_id": external_job_id, "items": items}
+
     items = []
     for srow, cand in rows:
         meta = meta_from_candidate(cand, cand.external_id)
