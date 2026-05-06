@@ -4,6 +4,8 @@ import os
 import re
 from dataclasses import dataclass
 
+from src.matching.weak_score import clean_skill_fragment
+
 
 _SPLIT = re.compile(r"[,\n;/|]+")
 _WORD = re.compile(r"[a-z0-9][a-z0-9+\-#.]*")
@@ -97,7 +99,10 @@ def skills_canonical_and_bag(raw: str) -> tuple[list[set[str]], set[str]]:
     canonical: list[set[str]] = []
     bag: set[str] = set()
     for chunk in _SPLIT.split(raw or ""):
-        t = _norm(chunk)
+        cleaned = clean_skill_fragment(chunk)
+        if not cleaned:
+            continue
+        t = _norm(cleaned)
         if not t or t in {"none", "n/a", "na", "null", "-", "—"}:
             continue
         t = " ".join(t.split())

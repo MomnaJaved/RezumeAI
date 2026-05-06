@@ -1,11 +1,26 @@
-# Start FastAPI from repository root (Windows). Loads backend/ on PYTHONPATH.
+# Run FastAPI from repository root (same as run_api.sh: PYTHONPATH, .venv, port 8000).
+#
+# If you see "not digitally signed" / execution policy errors on .\run_api.ps1, use either:
+#   .\run_api.cmd --reload
+#   powershell -NoProfile -ExecutionPolicy Bypass -File .\run_api.ps1 --reload
+#
 # Usage: .\run_api.ps1
-# Optional: .\run_api.ps1 --port 8001
+#        .\run_api.ps1 --reload
 $ErrorActionPreference = "Stop"
-Set-Location $PSScriptRoot
-$env:PYTHONPATH = (Join-Path $PWD "backend")
-$py = Join-Path $PWD ".venv\Scripts\python.exe"
-if (-not (Test-Path $py)) {
-    Write-Error "Missing $py. From repo root: python -m venv .venv; .\.venv\Scripts\pip install -r requirements.txt (see docs/HOW_TO_RUN.md)"
+$root = $PSScriptRoot
+Set-Location $root
+$backend = Join-Path $root "backend"
+if ($env:PYTHONPATH) {
+    $env:PYTHONPATH = "$backend;$env:PYTHONPATH"
+} else {
+    $env:PYTHONPATH = $backend
 }
-& $py -m uvicorn api.main:app --reload --host 0.0.0.0 --port 8000 @args
+$py = Join-Path $root ".venv\Scripts\python.exe"
+if (-not (Test-Path $py)) {
+    $py = Join-Path $root "backend\.venv\Scripts\python.exe"
+}
+if (-not (Test-Path $py)) {
+    Write-Error "No venv at .venv or backend\.venv. Create one and: pip install -r backend\requirements.txt"
+}
+Write-Host "Open in browser: http://127.0.0.1:8000/health (not 0.0.0.0 - invalid in browsers)"
+& $py -m uvicorn api.main:app --host 0.0.0.0 --port 8000 @args

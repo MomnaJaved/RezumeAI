@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
-import { healthCheck } from "../api";
 import LandingPlexusBackdrop from "../LandingPlexusBackdrop";
 
 function IconUploadResumes() {
@@ -107,20 +106,7 @@ const WHY_ITEMS = [
 ] as const;
 
 export default function HomePage() {
-  const [status, setStatus] = useState<string>("checking…");
-  const [err, setErr] = useState<string | null>(null);
-
-  const apiOk = useMemo(() => status === "ok", [status]);
   const whyMarqueeItems = useMemo(() => [...WHY_ITEMS, ...WHY_ITEMS], []);
-
-  useEffect(() => {
-    healthCheck()
-      .then((r) => setStatus(r.status))
-      .catch((e: Error) => {
-        setErr(e.message);
-        setStatus("unreachable");
-      });
-  }, []);
 
   return (
     <div className="landing">
@@ -155,12 +141,6 @@ export default function HomePage() {
                 Watch Demo
               </a>
             </div>
-
-            <p className="landing-health">
-              API health:{" "}
-              <strong className={apiOk ? "ok" : "bad"}>{status}</strong>
-              {err ? <span className="bad"> — {err}</span> : null}
-            </p>
           </div>
         </div>
       </section>

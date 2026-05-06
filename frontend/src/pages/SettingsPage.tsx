@@ -124,7 +124,7 @@ const DEFAULT_ACCOUNT: AccountSettings = {
 const DEFAULT_SCREENING: ScreeningSettings = {
   minMatchScore: "70%",
   showOnlyTopMatches: "ON",
-  autoRankCandidates: "ON",
+  autoRankCandidates: "OFF",
   autoRejectLowMatches: "OFF",
 };
 
@@ -660,7 +660,7 @@ export default function SettingsPage() {
 
 
               <SectionTitle>{t("screening.automation")}</SectionTitle>
-              <Panel hint="Auto Rank: when ON, matching runs automatically as soon as you select a job on the Matching page — no need to click Match manually. Auto Reject: when ON, any ranked candidate whose match score is below the Minimum Match Score is hidden from results.">
+              <Panel hint="Auto Rank: when ON, selecting a job on the Matching page immediately runs full matching and saves scores to the database for the whole candidate pool (up to Top matches), not only one profile. Leave OFF unless you want that. Auto Reject: when ON, ranked candidates below the Minimum Match Score are hidden from the list.">
                 <SettingsRow label={t("screening.autoRank")}>
                   <StSelect value={screening.autoRankCandidates} onChange={(v) => setScreening((s) => ({ ...s, autoRankCandidates: v }))}
                     options={["ON", "OFF"]} />

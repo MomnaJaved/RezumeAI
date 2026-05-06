@@ -1,26 +1,15 @@
 import { getStoredToken } from "./auth";
 
 /**
- * API origin for fetch(). Empty string = same origin (Vite dev proxy → backend).
- *
- * If VITE_API_BASE is http://localhost:8000 (or 127.0.0.1) but the UI is opened from
- * another host (e.g. phone via http://192.168.x.x:5173), requests would hit the wrong
- * machine's loopback. Clear base so /health and /api/* go through the dev server proxy.
+ * Empty string = same-origin requests (Vite dev/preview proxy forwards `/api` and `/health` to the API).
+ * If set, must be a URL the **browser** can open — never `http://0.0.0.0:...` (invalid in Chrome); use `127.0.0.1`.
  */
 function resolveApiBase(): string {
-  const raw = String(import.meta.env.VITE_API_BASE ?? "").trim().replace(/\/+$/, "");
+  let raw = String(import.meta.env.VITE_API_BASE ?? "").trim();
   if (!raw) return "";
-  if (typeof window === "undefined") return raw;
-  try {
-    const u = new URL(raw);
-    const pageHost = window.location.hostname;
-    const apiIsLoopback = u.hostname === "localhost" || u.hostname === "127.0.0.1";
-    const pageIsLoopback = pageHost === "localhost" || pageHost === "127.0.0.1";
-    if (apiIsLoopback && !pageIsLoopback && pageHost) {
-      return "";
-    }
-  } catch {
-    return raw;
+  raw = raw.replace(/\/+$/, "");
+  if (raw.includes("0.0.0.0")) {
+    raw = raw.replace(/0\.0\.0\.0/g, "127.0.0.1");
   }
   return raw;
 }

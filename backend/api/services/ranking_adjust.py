@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import logging
+import os
 import re
 from typing import Any
 
 from src.matching.weak_score import (
-    classify_job_skills,
-    exp_score,
     parse_skill_str,
-    weighted_overlap_ratio,
+    compute_experience_score,
+    compute_skill_overlap,
 )
+
+_log = logging.getLogger("rezume.api")
 
 
 def _clamp01(x: float) -> float:
@@ -74,43 +77,67 @@ def _cert_boost(job: Any, cand: Any, critical_skills: set[str]) -> float:
 
 def adjusted_match_score(job: Any, cand: Any, *, raw_cross_encoder_score: float, sbert_similarity: float | None = None) -> dict[str, Any]:
     """
-    Compute a final score in [0..1] that better reflects hiring priorities:
-    - base: raw cross-encoder
-    - skill: weighted total coverage + critical coverage penalty
-    - experience: years vs min (light)
-    - role quality: title relevance (assistant/support vs exec/etc.)
-    - certs: small relevance boost
-    - semantic: optional SBERT similarity as mild stabilizer
+    Calibrated additive match score (no multiplicative penalties):
+
+      final_score =
+        0.4 * raw_cross_encoder_score
+      + 0.3 * semantic_similarity   (SBERT cosine)
+      + 0.2 * skill_overlap         (normalized + synonym-aware)
+      + 0.1 * experience_score      (step-wise calibration)
+
+    `raw_cross_encoder_score` remains included in the response for transparency.
     """
-    base = _clamp01(raw_cross_encoder_score)
+    raw = _clamp01(raw_cross_encoder_score)
+    sem = _clamp01(float(sbert_similarity or 0.0))
 
     job_skills = parse_skill_str(getattr(job, "skills", None) or "")
     cand_skills = parse_skill_str(getattr(cand, "skills", None) or "")
-    all_s, critical_s, weights = classify_job_skills(job_skills)
-    total_cov = _clamp01(weighted_overlap_ratio(all_s, cand_skills, weights)) if all_s else 0.0
-    critical_cov = _clamp01(len((critical_s & cand_skills)) / len(critical_s)) if critical_s else 0.0
+    skill_overlap = _clamp01(compute_skill_overlap(job_skills, cand_skills))
 
-    # Penalize missing critical skills strongly (multiplicative).
-    critical_pen = 0.55 + 0.45 * critical_cov  # 0.55..1.0
+    exp_s = _clamp01(
+        compute_experience_score(
+            getattr(cand, "years_experience", None),
+            getattr(job, "min_experience", None),
+            getattr(job, "max_experience", None) if hasattr(job, "max_experience") else None,
+        )
+    )
 
-    exp_fit = _clamp01(exp_score(getattr(cand, "years_experience", None), getattr(job, "min_experience", None)))
-    title_rel = _title_role_relevance(getattr(job, "title", "") or "", getattr(cand, "title", "") or "")
-    cert = _cert_boost(job, cand, critical_s)
-    sem = _clamp01(float(sbert_similarity or 0.0))
+    blended = _clamp01((0.4 * raw) + (0.3 * sem) + (0.2 * skill_overlap) + (0.1 * exp_s))
+    # Guardrail: never show a final Match % lower than the model's raw score.
+    # This preserves "100% stays 100%" behavior when cross-encoder is perfect.
+    final = max(raw, blended)
 
-    # Combine: cross-encoder still primary, but corrected by critical skill penalty and structured signals.
-    shaped = (0.78 * base) + (0.12 * total_cov) + (0.06 * exp_fit) + (0.04 * sem)
-    shaped = _clamp01(shaped + title_rel + cert)
-    final = _clamp01(shaped * critical_pen)
+    # UI calibration: models rarely output 1.0 even for excellent matches, which makes
+    # "obviously perfect" resumes look artificially low (e.g. 60–70%). Apply a monotonic
+    # curve that preserves ranking order but expands the top-end.
+    #
+    # final := 1 - (1 - final)^gamma, with gamma > 1 boosting high scores.
+    try:
+        gamma = float((os.environ.get("REZUME_MATCH_CALIBRATION_GAMMA") or "").strip() or "2.0")
+    except Exception:
+        gamma = 2.0
+    if gamma and gamma > 1.0:
+        final = _clamp01(1.0 - ((1.0 - float(final)) ** gamma))
+
+    if (os.environ.get("REZUME_MATCH_DEBUG") or "").strip().lower() in ("1", "true", "yes", "on"):
+        _log.info(
+            "match_debug %s",
+            {
+                "job": getattr(job, "external_id", None) or getattr(job, "id", None),
+                "candidate": getattr(cand, "external_id", None) or getattr(cand, "id", None),
+                "semantic_similarity": round(sem, 4),
+                "skill_overlap": round(skill_overlap, 4),
+                "experience_score": round(exp_s, 4),
+                "final_score": round(final, 4),
+                "raw_cross_encoder_score": round(raw, 4),
+            },
+        )
 
     return {
         "final_score": final,
-        "raw_cross_encoder_score": base,
-        "total_skill_coverage": total_cov,
-        "critical_skill_coverage": critical_cov,
-        "critical_penalty": critical_pen,
-        "role_relevance_adjust": title_rel,
-        "cert_boost": cert,
         "semantic_similarity": sem,
+        "skill_overlap": skill_overlap,
+        "experience_score": exp_s,
+        "raw_cross_encoder_score": raw,
     }
 

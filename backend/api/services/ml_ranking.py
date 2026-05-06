@@ -80,11 +80,14 @@ def build_cand_text_from_row(cand_row: pd.Series) -> str:
 
 
 def build_job_text_from_db(job) -> str:
-    return " ".join([job.title or "", job.description or "", job.skills or ""]).strip()
+    # DB columns may be non-str (e.g. legacy numeric); str.join requires str elements.
+    return " ".join(
+        [str(job.title or ""), str(job.description or ""), str(job.skills or "")]
+    ).strip()
 
 
 def build_cand_text_from_db(cand) -> str:
     from api.services.candidate_title_db import resolved_display_title
 
     t = resolved_display_title(cand)
-    return " ".join([t, cand.skills or "", cand.raw_text or ""]).strip()
+    return " ".join([t, str(cand.skills or ""), str(cand.raw_text or "")]).strip()

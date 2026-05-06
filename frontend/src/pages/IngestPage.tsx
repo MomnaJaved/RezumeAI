@@ -4,6 +4,7 @@ import DashFrame from "../DashFrame";
 import {
   fetchIngestionBatchStatus,
   ingestBulkResumes,
+  ingestResumeText,
   deleteCandidateByExternalId,
   type IngestionBatchStatus,
 } from "../api";
@@ -22,6 +23,8 @@ function rowStatusClass(s: string): string {
   return "add-cand-row-status add-cand-row-status--muted";
 }
 
+const MIN_PASTE_CHARS = 80;
+
 export default function IngestPage() {
   const toast = useToast();
   const [files, setFiles] = useState<File[]>([]);
@@ -31,6 +34,9 @@ export default function IngestPage() {
   const [polling, setPolling] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState<Record<string, boolean>>({});
   const [deleteNote, setDeleteNote] = useState<Record<string, string>>({});
+  const [pasteText, setPasteText] = useState("");
+  const [pasteFilename, setPasteFilename] = useState("linkedin-profile.txt");
+  const [pasteBusy, setPasteBusy] = useState(false);
 
   const totalBytes = useMemo(() => files.reduce((a, f) => a + f.size, 0), [files]);
 
@@ -62,6 +68,32 @@ export default function IngestPage() {
       toast.error((e as Error).message);
     } finally {
       setBulkBusy(false);
+    }
+  }
+
+  async function startPasteIngest() {
+    const text = pasteText.trim();
+    if (text.length < MIN_PASTE_CHARS) {
+      toast.error(`Paste at least ${MIN_PASTE_CHARS} characters (API needs enough text to parse skills and experience).`);
+      return;
+    }
+    setPasteBusy(true);
+    try {
+      const item = await ingestResumeText({
+        text,
+        source: "web_ui",
+        filename: (pasteFilename || "profile.txt").trim() || "profile.txt",
+      });
+      setBatchId(item.batch_id);
+      const st = await fetchIngestionBatchStatus(item.batch_id);
+      setStatus(st);
+      setPolling(true);
+      setPasteText("");
+      toast.success("Text ingestion queued — status updates below.");
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setPasteBusy(false);
     }
   }
 
@@ -116,8 +148,51 @@ export default function IngestPage() {
       <div className="add-candidate-pro">
         <header className="add-candidate-pro-head">
           <h1 className="add-candidate-pro-title">Add candidates</h1>
-          <p className="add-candidate-pro-sub">PDF, Word, plain text, or images · up to multiple files per batch</p>
+          <p className="add-candidate-pro-sub">
+            Upload résumés (PDF, Word, images) or paste LinkedIn / profile text — both use the same RezumeAI parser,
+            embeddings, and jobs pipeline. The Chrome extension is optional.
+          </p>
         </header>
+
+        <section className="add-candidate-pro-card">
+          <h2 className="add-candidate-pro-field-label" style={{ marginBottom: "0.35rem" }}>
+            Paste profile or résumé text
+          </h2>
+          <p className="muted" style={{ margin: "0 0 0.65rem", fontSize: "0.88rem", lineHeight: 1.5 }}>
+            From LinkedIn: open the profile, select from <strong>Name</strong> through <strong>Skills</strong> (and
+            Experience if you can), copy, and paste here. Include every skill line after &quot;Show all&quot; if you
+            need the full list. Minimum <strong>{MIN_PASTE_CHARS} characters</strong> so parsing succeeds.
+          </p>
+          <textarea
+            className="add-candidate-textarea"
+            value={pasteText}
+            onChange={(e) => setPasteText(e.target.value)}
+            placeholder={`Example lines the parser likes:\nName: …\nCurrent Title: …\nSkills: Python, SQL, …\nWORK EXPERIENCE\n  …`}
+            rows={10}
+            disabled={pasteBusy}
+            spellCheck={false}
+          />
+          <div className="add-candidate-pro-row" style={{ marginTop: "0.75rem" }}>
+            <label htmlFor="paste-filename" className="add-candidate-pro-field-label">
+              Label (saved as filename)
+            </label>
+            <input
+              id="paste-filename"
+              className="add-candidate-pro-input"
+              value={pasteFilename}
+              onChange={(e) => setPasteFilename(e.target.value)}
+              disabled={pasteBusy}
+            />
+          </div>
+          <div className="add-candidate-pro-actions">
+            <button type="button" className="dash-btn" disabled={pasteBusy} onClick={() => void startPasteIngest()}>
+              {pasteBusy ? "Sending…" : "Ingest pasted text"}
+            </button>
+            <span className="muted" style={{ fontSize: "0.85rem" }}>
+              {pasteText.trim().length.toLocaleString()} / {MIN_PASTE_CHARS}+ chars
+            </span>
+          </div>
+        </section>
 
         <section className="add-candidate-pro-card">
           <div className="add-candidate-pro-drop">

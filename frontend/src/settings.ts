@@ -54,7 +54,7 @@ export function getScreeningSettings(): ScreeningSettings {
   return getLS("rezume.settings.screening", {
     minMatchScore: "70%",
     showOnlyTopMatches: "ON",
-    autoRankCandidates: "ON",
+    autoRankCandidates: "OFF",
     autoRejectLowMatches: "OFF",
   });
 }
@@ -76,8 +76,8 @@ export function getAutoRejectLowMatches(): boolean {
 }
 
 /**
- * When ON, matching is triggered automatically as soon as a job is selected
- * on the Matching page (no need to click the Match button manually).
+ * When ON, opening the Matching page with a job runs full matching and persists
+ * scores for the retrieval pool (same as clicking Match). Default OFF to avoid surprise DB writes.
  */
 export function getAutoRankCandidates(): boolean {
   return getScreeningSettings().autoRankCandidates === "ON";

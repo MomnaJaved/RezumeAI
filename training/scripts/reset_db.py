@@ -29,6 +29,7 @@ from sqlalchemy import create_engine  # noqa: E402
 
 from api.config import get_settings  # noqa: E402
 from api.database import Base  # noqa: E402
+import api.models  # noqa: E402,F401  # Register ORM tables on Base.metadata
 
 
 def main() -> None:

@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RezumeAI</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+  <header class="header">
+    <div class="header-brand">
+      <div class="logo">R</div>
+      <span class="brand-name">RezumeAI</span>
+    </div>
+    <div class="header-right">
+      <div class="api-status">
+        <span id="status-dot" class="status-dot checking"></span>
+        <span id="status-text" class="status-text">…</span>
+      </div>
+      <button id="btn-settings" class="icon-btn" title="Settings">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div id="view-login" class="view hidden">
+    <div class="login-inner">
+      <h2>Sign in to RezumeAI</h2>
+      <p class="login-sub">Recruiter account credentials</p>
+      <div class="field">
+        <label>Email</label>
+        <input id="l-email" type="email" placeholder="you@company.com" autocomplete="email">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input id="l-pass" type="password" placeholder="••••••••" autocomplete="current-password">
+      </div>
+      <div id="l-err" class="alert alert-error hidden"></div>
+      <button id="btn-login" class="btn btn-primary btn-full">
+        <span class="btn-label">Sign In</span>
+        <span class="spinner hidden"></span>
+      </button>
+    </div>
+  </div>
+
+  <div id="view-main" class="view hidden">
+
+    <div class="user-bar">
+      <span id="user-email" class="user-email-text"></span>
+      <button id="btn-logout" class="link-btn danger-hover">Sign out</button>
+    </div>
+
+    <div class="product-banner">
+      <p class="product-banner-title">LinkedIn → classify → match</p>
+    </div>
+
+    <div id="step-workbench" class="step-panel active">
+
+      <div id="auto-extract-banner" class="auto-banner hidden">
+        <span class="spinner" style="border-top-color:#5c6ef8; border-color:rgba(92,110,248,.25); border-top-color:#5c6ef8;"></span>
+        <span id="auto-extract-msg">Scraping page &amp; classifying sections…</span>
+      </div>
+
+      <div id="pipeline-ready" class="pipeline-ready hidden">
+        <span class="pipeline-dot"></span>
+        <span id="pipeline-ready-text">Profile ready</span>
+      </div>
+
+      <div class="grab-row hidden" aria-hidden="true">
+        <button id="btn-grab-linkedin" type="button" class="btn btn-secondary btn-sm" disabled title="Manual refresh (optional)">Refresh scrape</button>
+        <button id="btn-clear" type="button" class="btn btn-ghost btn-sm">✕ Clear</button>
+      </div>
+
+      <div id="dup-preview" class="dup-preview hidden" role="status"></div>
+
+      <div id="dup-banner" class="dup-banner hidden">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span id="dup-text">Candidate already exists</span>
+        <button id="dup-view" class="link-btn small">View</button>
+      </div>
+
+      <p class="section-kicker">Candidate preview</p>
+      <div class="cand-summary">
+        <div class="cand-avatar" id="cand-avatar">?</div>
+        <div class="cand-info">
+          <div id="cand-name-disp" class="cand-name">—</div>
+          <div id="cand-title-disp" class="cand-title">—</div>
+          <div id="cand-meta-disp" class="cand-meta"></div>
+        </div>
+      </div>
+
+      <div id="classified-panel" class="classified-panel hidden">
+        <p class="classified-title">Extracted &amp; classified</p>
+        <div id="role-pills" class="role-pills"></div>
+        <div class="role-grid role-grid-classified">
+          <div class="role-card">
+            <h4 class="role-card-h">About</h4>
+            <div id="sec-about" class="role-card-body"></div>
+          </div>
+          <div class="role-card">
+            <h4 class="role-card-h">Education</h4>
+            <div id="sec-education" class="role-card-body"></div>
+          </div>
+          <div class="role-card role-card-wide">
+            <h4 class="role-card-h">Experience &amp; skills</h4>
+            <div id="sec-exp-skills" class="role-card-body"></div>
+          </div>
+        </div>
+      </div>
+
+      <details class="field-details">
+        <summary>Edit fields &amp; raw text</summary>
+      <div class="candidate-card">
+        <div class="card-row two-col">
+          <div class="field">
+            <label>Full Name</label>
+            <input id="c-name" type="text" placeholder="John Smith">
+          </div>
+          <div class="field">
+            <label>Email</label>
+            <input id="c-email" type="email" placeholder="john@example.com" autocomplete="off">
+            <p id="c-email-hint" class="field-hint" hidden></p>
+          </div>
+        </div>
+        <div class="card-row two-col">
+          <div class="field">
+            <label>Current Title</label>
+            <input id="c-title" type="text" placeholder="Senior Engineer">
+          </div>
+          <div class="field">
+            <label>Location</label>
+            <input id="c-location" type="text" placeholder="New York, NY">
+          </div>
+        </div>
+        <div class="card-row two-col">
+          <div class="field">
+            <label>Years Exp.</label>
+            <input id="c-years" type="number" min="0" max="50" step="0.5" placeholder="5">
+          </div>
+          <div class="field">
+            <label>Degree</label>
+            <select id="c-degree">
+              <option value="">Unknown</option>
+              <option value="bachelors">Bachelor's</option>
+              <option value="masters">Master's</option>
+              <option value="phd">PhD</option>
+              <option value="intermediate">Diploma / A-Level</option>
+            </select>
+          </div>
+        </div>
+        <input type="hidden" id="c-skills" value="" aria-hidden="true" />
+        <div class="field">
+          <label>
+            Experience, summary &amp; skills
+            <span id="char-count" class="hint-label">0 chars</span>
+          </label>
+          <textarea id="c-text" rows="8" placeholder="Built from the page (About, work history, skills). Edit if needed — use a &quot;Skills:&quot; line for comma-separated skills, or rely on the scrape."></textarea>
+          <button type="button" id="btn-parse-fields" class="btn btn-secondary btn-sm btn-full parse-fields-btn">
+            Re-parse headers from text
+          </button>
+        </div>
+        <div class="field">
+          <label>Profile URL <span class="hint-label">(optional)</span></label>
+          <input id="c-url" type="url" placeholder="https://linkedin.com/in/…">
+        </div>
+      </div>
+      </details>
+
+      <div id="step1-err" class="alert alert-error hidden"></div>
+
+      <p class="section-kicker">Job &amp; save</p>
+      <div class="field">
+        <label>Select job</label>
+        <div class="job-select-wrap">
+          <select id="job-select" class="job-select">
+            <option value="">Loading jobs…</option>
+          </select>
+          <button id="btn-reload-jobs" class="icon-btn" title="Refresh jobs">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <button id="btn-match-save" class="btn btn-primary btn-full match-save-cta">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        <span id="match-save-label">Match &amp; save to dashboard</span>
+        <span id="match-save-spinner" class="spinner hidden"></span>
+      </button>
+      <p class="cta-hint">Computes job match, ingests the profile, and attaches the score to the selected job.</p>
+
+      <button id="btn-analyze" class="btn btn-accent btn-full analyze-cta">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <span id="analyze-label">Preview match only</span>
+        <span id="analyze-spinner" class="spinner hidden"></span>
+      </button>
+
+      <div id="analyze-err" class="alert alert-error hidden"></div>
+
+      <div id="results-card" class="results-card hidden">
+        <div class="score-section">
+          <div class="score-ring-wrap">
+            <svg class="score-ring" viewBox="0 0 80 80">
+              <circle class="ring-bg" cx="40" cy="40" r="34" />
+              <circle class="ring-fill" cx="40" cy="40" r="34" id="ring-fill" />
+            </svg>
+            <div class="score-center">
+              <span id="score-pct" class="score-num">—</span>
+              <span class="score-unit">%</span>
+            </div>
+          </div>
+          <div class="score-right">
+            <span id="score-headline" class="score-headline">Match score</span>
+            <span id="score-badge" class="score-badge">—</span>
+            <div id="rank-info" class="rank-info">—</div>
+            <div id="job-name-disp" class="job-name-disp"></div>
+          </div>
+        </div>
+
+        <div class="breakdown">
+          <p class="breakdown-title">Match breakdown</p>
+          <div class="bar-row">
+            <span class="bar-label">Skills overlap</span>
+            <div class="bar-track"><div class="bar-fill" id="bar-skills"></div></div>
+            <span class="bar-val" id="val-skills">—</span>
+          </div>
+          <div class="bar-row">
+            <span class="bar-label">Critical skills</span>
+            <div class="bar-track"><div class="bar-fill" id="bar-critical"></div></div>
+            <span class="bar-val" id="val-critical">—</span>
+          </div>
+          <div class="bar-row">
+            <span class="bar-label">Experience</span>
+            <div class="bar-track"><div class="bar-fill" id="bar-exp"></div></div>
+            <span class="bar-val" id="val-exp">—</span>
+          </div>
+          <div class="bar-row">
+            <span class="bar-label">Education</span>
+            <div class="bar-track"><div class="bar-fill" id="bar-edu"></div></div>
+            <span class="bar-val" id="val-edu">—</span>
+          </div>
+          <div class="bar-row">
+            <span class="bar-label">Title relevance</span>
+            <div class="bar-track"><div class="bar-fill" id="bar-title"></div></div>
+            <span class="bar-val" id="val-title">—</span>
+          </div>
+        </div>
+
+        <div class="skill-lists">
+          <div class="skill-col">
+            <p class="skill-list-title match">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              Matching skills
+            </p>
+            <div id="matching-skills" class="skill-chips"></div>
+          </div>
+          <div class="skill-col">
+            <p class="skill-list-title missing">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              Missing skills
+            </p>
+            <div id="missing-skills" class="skill-chips"></div>
+          </div>
+        </div>
+
+        <div id="critical-skills-block" class="critical-skills-block hidden">
+          <p class="skill-list-title missing">Critical skill gaps</p>
+          <div id="critical-skills" class="skill-chips"></div>
+        </div>
+
+        <button id="btn-reanalyze" class="btn btn-ghost btn-sm btn-full reanalyze-btn">
+          ↻ Clear result &amp; pick another job
+        </button>
+      </div>
+
+      <div id="save-actions" class="save-actions hidden">
+        <button id="btn-save-only" class="btn btn-secondary btn-full">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          Save candidate
+        </button>
+        <button id="btn-save-match" class="btn btn-primary btn-full">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          Save &amp; match to job
+        </button>
+        <button id="btn-skip" class="link-btn center-link">Skip — don’t save</button>
+      </div>
+    </div>
+
+    <div id="step-3" class="step-panel hidden">
+      <div class="confirm-wrap">
+        <div class="confirm-icon">✓</div>
+        <h3 id="confirm-title">Candidate Saved</h3>
+        <p id="confirm-msg" class="confirm-msg"></p>
+        <div class="confirm-actions">
+          <button id="btn-new-candidate" class="btn btn-primary">+ New candidate</button>
+          <button id="btn-open-app" class="btn btn-secondary">Open RezumeAI ↗</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

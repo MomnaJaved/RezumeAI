@@ -12,7 +12,8 @@ import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.exceptions import RequestValidationError
+from fastapi.exceptions import RequestValidationError, ResponseValidationError
+from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -29,12 +30,13 @@ from api.db_migrate import backfill_workspaces, ensure_extra_columns, ensure_ind
 from api.error_handlers import (
     http_exception_handler,
     rezume_api_error_handler,
+    response_validation_exception_handler,
     unhandled_exception_handler,
     validation_exception_handler,
 )
 from api.errors import RezumeAPIError
 from api.logging_config import setup_logging
-from api.routers import auth, analytics, candidate_portal, candidates, clients, feedback, health, inbox, ingestions, jobs, legacy_ml, meta, ml, ocr, rankings, uploads
+from api.routers import auth, analytics, candidate_portal, candidates, clients, feedback, health, inbox, ingestions, jobs, legacy_ml, meta, ml, preview, ocr, rankings, uploads
 from api.slow_limiter import limiter
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -120,6 +122,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(RezumeAPIError, rezume_api_error_handler)
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(ResponseValidationError, response_validation_exception_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)
 
     async def _rate_limit_json(request, exc: RateLimitExceeded):
@@ -152,7 +155,13 @@ def create_app() -> FastAPI:
     app.include_router(feedback.router, prefix=prefix)
     app.include_router(ingestions.router, prefix=prefix)
     app.include_router(uploads.router, prefix=prefix)
+    app.include_router(preview.router, prefix=prefix)
     app.include_router(ocr.router, prefix=prefix)
+
+    @app.get("/", include_in_schema=False)
+    async def _root() -> RedirectResponse:
+        """Browser often opens / alone; there is no JSON here — use /health or /docs."""
+        return RedirectResponse(url="/docs")
 
     return app
 

@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import tempfile
 from pathlib import Path
 
 from api.paths import repo_root
 from api.schemas import OcrScanSavePayload
 from src.inference.service import classify_role
-from src.parsing.skill_mining import extract_skill_candidates
+from src.parsing.skill_mining import extract_skill_candidates, is_noise, normalize
 from src.parsing.feature_extractors import extract_certifications, extract_education, estimate_years_experience
 from src.parsing.text_cleaning import preprocess_resume_text
 from src.parsing.text_extractors import extract_text_any
@@ -30,6 +31,136 @@ ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".tif", 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 
 MIN_TEXT_CHARS = 80
+
+_RE_SKILLS_HEADER = re.compile(r"^\s*Skills:\s*(.+?)\s*$", re.IGNORECASE)
+
+# LinkedIn / profile paste: experience prose, locations, and UI fragments merged into `Skills:` lines.
+_RE_RESUME_PROSE_IN_SKILL = re.compile(
+    r"on-?site|self-?employed|zero\s+limit|achieving\s+up|cross-?functional|data-?driven|"
+    r"hospital\s+data|integrating\s+ai|supporting\s+data|modules,\s*power|"
+    r"and\s+\+\d+\s+skills|with\s+python\s*\(|,\s*accuracy\b|business\s+operations\s*$|"
+    r"â·|·\s*on-?site",
+    re.IGNORECASE,
+)
+_RE_LOCATIONISH_SKILL = re.compile(
+    r"^(?:[\s,·]*)(?:riyadh|jeddah|dubai|doha|kuwait|manama|muscat|"
+    r"pk\b|pakistan|india|saudi\s+arabia|uae|usa|uk\b|united\s+states|united\s+kingdom)\b",
+    re.IGNORECASE,
+)
+
+
+def _mojibake_fix_skills_line(s: str) -> str:
+    return (s or "").replace("â·", "·").replace("â€™", "'").replace("â€œ", '"')
+
+
+def _sanitize_skills_list_tokens(parts: list[str], *, max_items: int = 80) -> list[str]:
+    """
+    Dedupe + drop resume prose / locations / LinkedIn UI that leaked into comma-separated skills.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in parts:
+        p = _mojibake_fix_skills_line((raw or "").strip())
+        if not p or len(p) > 160:
+            continue
+        if p.lower().startswith("skills ") and len(p) > 8:
+            p = p[7:].strip()
+        if _RE_RESUME_PROSE_IN_SKILL.search(p):
+            continue
+        if len(p) < 60 and _RE_LOCATIONISH_SKILL.match(p):
+            continue
+        n = normalize(p)
+        if not n or is_noise(n):
+            continue
+        k = n.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(n)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _skills_from_explicit_skills_headers(text: str) -> list[str]:
+    """
+    Chrome extension and paste flows prepend `Skills: a, b, c` above the profile blob.
+    Skill mining may return few or no tokens on noisy LinkedIn text — preserve the explicit list.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in (text or "").splitlines():
+        m = _RE_SKILLS_HEADER.match(line.strip())
+        if not m:
+            continue
+        chunk = _mojibake_fix_skills_line((m.group(1) or "").strip())
+        if not chunk:
+            continue
+        for part in re.split(r"[,;|]\s*|\s{2,}", chunk):
+            p = part.strip()
+            if not p:
+                continue
+            if _RE_RESUME_PROSE_IN_SKILL.search(p):
+                continue
+            if len(p) < 60 and _RE_LOCATIONISH_SKILL.match(p):
+                continue
+            pn = normalize(p)
+            if not pn or is_noise(pn) or len(pn) > 160:
+                continue
+            k = pn.lower()
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(pn)
+    return out[:80]
+
+
+def _resolve_full_name_reextracted_from_file(filename: str, content: bytes) -> str:
+    """
+    Run the same text extraction + name resolution as ``parse_upload`` (multi-line
+    Tesseract), ignoring ``payload.raw_text`` when it was truncated or
+    one-line-wrapped. Used only when the scan form did not provide a real name
+    and resolution from the client preview is still empty.
+    """
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        return UNKNOWN_CANDIDATE
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+    try:
+        try:
+            raw = extract_text_any(tmp_path) or ""
+        except Exception:
+            return UNKNOWN_CANDIDATE
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    raw = (raw or "").strip()
+    if len(raw) < MIN_TEXT_CHARS:
+        return UNKNOWN_CANDIDATE
+    raw = preprocess_resume_text(raw)
+    raw_clean2 = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
+    em2 = extract_primary_email(raw_clean2)
+    n, _ = resolve_candidate_full_name(raw_clean2, em2)
+    return n
+
+
+def _is_placeholder_full_name(name: str) -> bool:
+    """
+    If the scan form still has the default from a failed name parse, re-run
+    ``resolve_candidate_full_name`` on save (with line-preserving raw_text) instead of
+    persisting a placeholder string.
+    """
+    t = (name or "").strip().casefold()
+    if not t:
+        return True
+    # Legacy / mistaken UI values — treat as missing so we re-resolve
+    if t in ("unknown candidate", "unknown", "candidate"):
+        return True
+    return False
 
 
 def _resolve_full_name_reextracted_from_file(filename: str, content: bytes) -> str:
@@ -176,7 +307,10 @@ def parse_upload(filename: str, content: bytes, *, skip_heavy_ml: bool = False) 
     contact_email = extract_primary_email(raw_clean)
     stripped = strip_pii(raw_clean)
     pii_safe_structural = strip_pii_keep_newlines(raw_clean)
-    skills_list = merge_skill_candidates(extract_skill_candidates(stripped), nlp, max_total=80)
+    skills_list = extract_skill_candidates(stripped)[:120]
+    header_skills = _skills_from_explicit_skills_headers(raw_clean)
+    merged_in_order = header_skills + skills_list
+    skills_list = _sanitize_skills_list_tokens(merged_in_order, max_items=80)
     skills = ", ".join(skills_list)
 
     # Years first: drives Fresher vs inferred title and seniority polish.
@@ -218,6 +352,28 @@ def parse_upload(filename: str, content: bytes, *, skip_heavy_ml: bool = False) 
 
     full_name, _name_src = resolve_candidate_full_name(raw_clean, contact_email)
     full_name = suggest_name_from_nlp(full_name, nlp)
+
+    # Extension / paste often omits a "Name:" line (e.g. LinkedIn starts with About). Use .txt stem as hint.
+    stem = Path(filename).stem.strip()
+    stem_l = stem.lower()
+    _bad_filename_stems = frozenset(
+        {
+            "resume",
+            "candidate",
+            "cv",
+            "document",
+            "text",
+            "untitled",
+            "unknown",
+            "unknown candidate",
+            "file",
+            "export",
+            "profile",
+        }
+    )
+    if stem and len(stem) >= 2 and stem_l not in _bad_filename_stems:
+        if not (full_name or "").strip() or (full_name or "").strip() == UNKNOWN_CANDIDATE:
+            full_name = stem.replace("_", " ").replace("-", " ").strip()
 
     edu = extract_education(pii_safe_structural)
     certs = extract_certifications(pii_safe_structural)

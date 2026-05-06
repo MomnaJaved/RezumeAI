@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from fastapi import Request, status
-from fastapi.exceptions import RequestValidationError
+from fastapi.exceptions import RequestValidationError, ResponseValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -51,9 +52,25 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
-async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    _log.exception("Unhandled error: %s", exc)
+async def response_validation_exception_handler(
+    request: Request, exc: ResponseValidationError
+) -> JSONResponse:
+    errs = exc.errors()
+    msg = errs[0].get("msg", "response validation error") if errs else "response validation error"
+    _log.warning("Response validation failed %s %s: %s", request.method, request.url.path, errs)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content=_body(False, "Internal server error", "INTERNAL_ERROR"),
+        content=_body(False, msg, "RESPONSE_VALIDATION", extra={"errors": errs}),
+    )
+
+
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    _log.exception("Unhandled error %s %s: %s", request.method, request.url.path, exc)
+    msg = "Internal server error"
+    if os.environ.get("REZUME_API_ERROR_DETAIL", "").strip().lower() in ("1", "true", "yes"):
+        hint = f"{type(exc).__name__}: {exc}"
+        msg = hint[:500] + ("…" if len(hint) > 500 else "")
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content=_body(False, msg, "INTERNAL_ERROR"),
     )
