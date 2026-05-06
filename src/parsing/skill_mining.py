@@ -449,7 +449,13 @@ def sanitize_text_for_skill_extraction(text: str) -> str:
         if n in _SOCIAL_CHROME_EXACT_LINES:
             continue
         low = _ascii_quotes(raw).lower()
-        if re.search(r"·\s*on-?site\b|on-?site\b", low):
+        # LinkedIn experience cards often include a standalone "· On-site" / "On-site"
+        # line. Do NOT drop long résumé lines that merely contain "(On-site)" as part
+        # of an experience entry — some OCR/PDF extraction collapses the entire
+        # document into one line, and dropping it would erase all skill signals.
+        if re.search(r"(?:^|\s)·\s*on-?site\b|^on-?site\b", low) or (
+            "on-site" in low and len(raw) <= 120
+        ):
             continue
         if any(s in low for s in _SOCIAL_CHROME_LINE_CONTAINS):
             continue
