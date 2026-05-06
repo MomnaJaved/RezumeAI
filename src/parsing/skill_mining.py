@@ -317,6 +317,18 @@ def _ascii_quotes(s: str) -> str:
 def _linkedin_ui_blob_heuristic(text: str) -> bool:
     """True when paste looks like LinkedIn profile + footer + ad feedback (not a normal CV)."""
     t = _ascii_quotes(text).lower()
+    # Strong single-hit signals (sidebar / skills page / paste chrome) — often appear without ad copy.
+    strong = (
+        "people also viewed",
+        "people you may know",
+        "similar profiles",
+        "visit our help center",
+        "skills (from page)",
+        "endorsed by",
+        "endorsements",
+    )
+    if any(s in t for s in strong):
+        return True
     needles = (
         "don't want to see this",
         "your feedback will help",
@@ -348,6 +360,8 @@ _LINKEDIN_STANDALONE_CHIP_LINES = frozenset(
 )
 
 RE_TWO_WORD_HUMAN_NAME_LINE = re.compile(r"^[A-Z][a-z]{1,22}\s+[A-Z][a-z]{1,22}$")
+# Single-letter first name + surname (scraped endorsement cards / “People also viewed”).
+RE_INITIAL_SURNAME_LINE = re.compile(r"^[A-Z]\s+[A-Z][a-z]{1,23}$")
 RE_SHOUTCASE_BRAND_LINE = re.compile(r"^[A-Z0-9][A-Z0-9!\.]{1,18}$")
 RE_YEARS_MARKETING_LINE = re.compile(
     r"(?:\d+\+?\s*(?:yrs?|years)\b.*\b(?:design|designing|dashboard|cro|clicks|customers)\b)"
@@ -422,9 +436,12 @@ _SOCIAL_CHROME_LINE_CONTAINS = (
     "get the linkedin app",
     "people also viewed",
     "people you may know",
+    "similar profiles",
     "you might like",
     "promoted",
     "sponsored",
+    # Partial match: “Visit our Help Center …” glued to other UI glue text.
+    "visit our help",
 )
 
 
@@ -470,8 +487,10 @@ def sanitize_text_for_skill_extraction(text: str) -> str:
             continue
         if ui_blob and _linkedin_standalone_chip_line(raw):
             continue
-        if ui_blob and RE_TWO_WORD_HUMAN_NAME_LINE.match(raw.strip()) and not RE_SECTION_LINE.match(raw.strip()):
-            continue
+        if ui_blob and not RE_SECTION_LINE.match(raw.strip()):
+            rs = raw.strip()
+            if RE_TWO_WORD_HUMAN_NAME_LINE.match(rs) or RE_INITIAL_SURNAME_LINE.match(rs):
+                continue
         if ui_blob and RE_SHOUTCASE_BRAND_LINE.match(raw.strip()) and not RE_SECTION_LINE.match(raw.strip()):
             continue
         kept.append(raw)

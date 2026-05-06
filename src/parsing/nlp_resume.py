@@ -28,6 +28,46 @@ _ROLEISH = re.compile(
     re.IGNORECASE,
 )
 
+# Reject noun-chunks that look like person names scraped from LinkedIn sidebars (“Kamran Azmat”, “M Muzammal”).
+_SKILLISH_GUARD = re.compile(
+    r"\b("
+    r"requirements|management|development|learning|analytics|marketing|engineering|software|architecture|applications|"
+    r"technologies|operations|strategy|research|planning|testing|delivery|systems|experience|generation|consulting|relations|"
+    r"sales|business|digital|content|communications?|negotiation|training|security|network|networking|cloud|data|growth|"
+    r"science|design|interfaces?|processing|integration|optimization|forecasting|recruitment|compliance|governance|"
+    r"innovation|transformation|thinking|building|insights?|migration|recovery|computing|automation|"
+    r"stakeholders?|mapping|discovery|tech|enablement"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_probable_person_name(phrase: str) -> bool:
+    s = " ".join(phrase.split()).strip().strip(".").strip()
+    if not s or len(s) > 80:
+        return False
+    if any(ch in s for ch in "@/&+<0123456789"):
+        return False
+    if _SKILLISH_GUARD.search(s):
+        return False
+    words = s.split()
+    if words and re.fullmatch(r"[A-Z]{2,6}", words[0]):
+        return False
+
+    def _title_token(tok: str) -> bool:
+        tok = tok.rstrip(".").strip()
+        return bool(re.fullmatch(r"[A-Z][a-z]{1,24}", tok))
+
+    if len(words) == 2:
+        if len(words[0]) == 1 and words[0].isupper() and _title_token(words[1]):
+            return True
+        if _title_token(words[0]) and _title_token(words[1]):
+            return True
+        return False
+    if len(words) == 3 and all(_title_token(w.rstrip(".")) for w in words):
+        return True
+    return False
+
 
 @dataclass
 class ResumeNlpEnrichment:
@@ -161,10 +201,17 @@ def enrich_resume_text(text: str, *, max_chars: int = 12000) -> ResumeNlpEnrichm
 
     skills: list[str] = []
     seen: set[str] = set()
+    pn_lower = {" ".join(p.split()).strip().lower() for p in persons}
+
     for nc in doc.noun_chunks:
         if _chunk_overlaps_any_span(nc.start_char, nc.end_char, person_spans):
             continue
         t = nc.text.strip()
+        if _looks_like_probable_person_name(t):
+            continue
+        nk = " ".join(t.split()).strip().lower()
+        if nk and nk in pn_lower:
+            continue
         if not _skill_like_chunk(t):
             continue
         key = t.lower()
@@ -205,7 +252,10 @@ def merge_skill_candidates(
         seen.add(k)
         out.append((s or "").strip())
     for s in nlp.skill_like_chunks:
-        k = s.strip().lower()
+        st = (s or "").strip()
+        if _looks_like_probable_person_name(st):
+            continue
+        k = st.lower()
         if not k or k in seen:
             continue
         seen.add(k)
