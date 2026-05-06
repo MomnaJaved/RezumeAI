@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
@@ -32,6 +33,9 @@ ROLE_DIR = ROOT / "artifacts" / "role_classifier"
 MATCH_DIR = ROOT / "artifacts" / "match_ranker"
 MAX_LENGTH = 256
 _ml_log = logging.getLogger("rezume.ml")
+
+# Single-flight model forwards: concurrent extension + API calls otherwise stress PyTorch (segfaults / 500s on CPU).
+_TORCH_EXEC_LOCK = threading.Lock()
 
 
 def _infer_device() -> torch.device:
@@ -75,19 +79,20 @@ def _fallback_to_cpu(which: str) -> None:
 def _role_forward(enc: dict[str, torch.Tensor]) -> torch.Tensor:
     """Single forward; autocast on CUDA only."""
     assert _role_model is not None
-    dev = _role_device or torch.device("cpu")
-    if dev.type == "cuda":
-        with torch.autocast(device_type="cuda", dtype=torch.float16):
+    with _TORCH_EXEC_LOCK:
+        dev = _role_device or torch.device("cpu")
+        if dev.type == "cuda":
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                return _role_model(**enc).logits.squeeze(0).float()
+        try:
             return _role_model(**enc).logits.squeeze(0).float()
-    try:
-        return _role_model(**enc).logits.squeeze(0).float()
-    except RuntimeError as e:
-        if dev.type == "mps" and _is_mps_oom(e):
-            _ml_log.warning("MPS OOM in role classifier; falling back to CPU.")
-            _fallback_to_cpu("role")
-            enc_cpu = {k: v.to(torch.device("cpu")) for k, v in enc.items()}
-            return _role_model.to(torch.device("cpu"))(**enc_cpu).logits.squeeze(0).float()
-        raise
+        except RuntimeError as e:
+            if dev.type == "mps" and _is_mps_oom(e):
+                _ml_log.warning("MPS OOM in role classifier; falling back to CPU.")
+                _fallback_to_cpu("role")
+                enc_cpu = {k: v.to(torch.device("cpu")) for k, v in enc.items()}
+                return _role_model.to(torch.device("cpu"))(**enc_cpu).logits.squeeze(0).float()
+            raise
 
 
 def _warmup_role_forward() -> None:
@@ -163,22 +168,23 @@ def _load_role_model():
 def _match_forward_logits(enc: dict[str, torch.Tensor]) -> torch.Tensor:
     """Batch logits [batch] from cross-encoder; autocast on CUDA only."""
     assert _match_model is not None
-    dev = _match_device or torch.device("cpu")
-    if dev.type == "cuda":
-        with torch.autocast(device_type="cuda", dtype=torch.float16):
-            logits = _match_model(**enc).logits
-    else:
-        try:
-            logits = _match_model(**enc).logits
-        except RuntimeError as e:
-            if dev.type == "mps" and _is_mps_oom(e):
-                _ml_log.warning("MPS OOM in match ranker; falling back to CPU.")
-                _fallback_to_cpu("match")
-                enc_cpu = {k: v.to(torch.device("cpu")) for k, v in enc.items()}
-                logits = _match_model.to(torch.device("cpu"))(**enc_cpu).logits
-            else:
-                raise
-    return logits.reshape(-1).float()
+    with _TORCH_EXEC_LOCK:
+        dev = _match_device or torch.device("cpu")
+        if dev.type == "cuda":
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                logits = _match_model(**enc).logits
+        else:
+            try:
+                logits = _match_model(**enc).logits
+            except RuntimeError as e:
+                if dev.type == "mps" and _is_mps_oom(e):
+                    _ml_log.warning("MPS OOM in match ranker; falling back to CPU.")
+                    _fallback_to_cpu("match")
+                    enc_cpu = {k: v.to(torch.device("cpu")) for k, v in enc.items()}
+                    logits = _match_model.to(torch.device("cpu"))(**enc_cpu).logits
+                else:
+                    raise
+        return logits.reshape(-1).float()
 
 
 def _warmup_match_forward() -> None:

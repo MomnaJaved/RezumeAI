@@ -1,6 +1,20 @@
 import { getStoredToken } from "./auth";
 
-const base = import.meta.env.VITE_API_BASE ?? "";
+/**
+ * Empty string = same-origin requests (Vite dev/preview proxy forwards `/api` and `/health` to the API).
+ * If set, must be a URL the **browser** can open — never `http://0.0.0.0:...` (invalid in Chrome); use `127.0.0.1`.
+ */
+function resolveApiBase(): string {
+  let raw = String(import.meta.env.VITE_API_BASE ?? "").trim();
+  if (!raw) return "";
+  raw = raw.replace(/\/+$/, "");
+  if (raw.includes("0.0.0.0")) {
+    raw = raw.replace(/0\.0\.0\.0/g, "127.0.0.1");
+  }
+  return raw;
+}
+
+const base = resolveApiBase();
 
 async function authedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
   const token = getStoredToken();

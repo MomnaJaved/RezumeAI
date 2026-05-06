@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RezumeAI — Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="page">
+    <header class="header">
+      <div class="logo">R</div>
+      <div>
+        <h1>RezumeAI Settings</h1>
+        <p class="subtitle">Extension configuration</p>
+      </div>
+    </header>
+
+    <main class="card">
+      <h2 class="section-title">API Connection</h2>
+
+      <div class="form-group">
+        <label for="api-base">API Base URL</label>
+        <p class="hint">The URL where your RezumeAI backend is running.</p>
+        <input id="api-base" type="url" placeholder="http://127.0.0.1:8000">
+      </div>
+
+      <div class="btn-row">
+        <button id="btn-test" class="btn btn-secondary">Test Connection</button>
+        <button id="btn-save" class="btn btn-primary">Save</button>
+      </div>
+
+      <div id="test-result" class="msg hidden"></div>
+      <div id="save-result" class="msg hidden"></div>
+    </main>
+
+    <div class="card">
+      <h2 class="section-title">Compliance &amp; fair use</h2>
+      <p class="hint" style="line-height: 1.5">
+        This extension reads <strong>only what LinkedIn renders</strong> in your browser on pages you already opened.
+        It does not bypass paywalls, log in as another user, or scrape at rates that violate the
+        <a href="https://www.linkedin.com/legal/user-agreement" target="_blank" rel="noopener">LinkedIn User Agreement</a>.
+        You are responsible for using extracted data in line with LinkedIn’s terms, applicable privacy laws (e.g. GDPR where relevant),
+        and your own company policies. RezumeAI matching runs against <strong>your</strong> RezumeAI backend and job data you control.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2 class="section-title">Session</h2>
+      <p class="hint">You are currently signed in as: <strong id="current-email">—</strong></p>
+      <div class="btn-row" style="margin-top: 12px">
+        <button id="btn-clear-session" class="btn btn-danger">Sign Out</button>
+      </div>
+    </div>
+
+    <footer class="footer">
+      RezumeAI Chrome Extension v1.0.0
+    </footer>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

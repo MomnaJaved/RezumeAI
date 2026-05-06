@@ -85,6 +85,18 @@ See **[docs/TESTING.md](docs/TESTING.md)**.
 
 Legacy unprefixed routes: `/classify_role`, `/match_score`, `/rank_candidates_for_job`.
 
+## Recruiter workflow: LinkedIn or profile text (no extension required)
+
+RezumeAI ingests candidates the same way whether text comes from a **file** or from **paste**:
+
+1. Run the **API** and **frontend** (see [How to run](docs/HOW_TO_RUN.md)).
+2. Sign in as a recruiter, open **Add candidate**: `/candidates/add`.
+3. **Paste** copied LinkedIn (or any) profile / résumé text into **Paste profile or résumé text**, then **Ingest pasted text**.  
+   Include enough content (**≥ ~80 characters** after strip; more is better): name, title, **full skills** (copy after *Show all* on LinkedIn), and experience if visible. The backend uses `POST /api/v1/ingestions/text` and the same `parse_upload` / skill mining path as file uploads.
+4. Wait for the batch status table to show **done**, then use **Jobs → rank / match** as usual.
+
+The **Chrome extension** under `extension/` is an optional shortcut to pre-format text; the supported source of truth is the **web app + API** above.
+
 ## Docs
 
 - [Repository layout](docs/REPO_LAYOUT.md)  

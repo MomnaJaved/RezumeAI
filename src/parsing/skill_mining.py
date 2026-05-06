@@ -279,6 +279,198 @@ SOFT_NOISE_SUBSTR = [
     "well-","real-time","real-world","fast-paced","self-motivated",
 ]
 
+# Substrings that sometimes appear inside pasted profile blobs (ads / LinkedIn chrome)
+# but should never be emitted as a skill token/phrase.
+INLINE_JUNK_SUBSTR = [
+    "don't want to see this",
+    "do not want to see this",
+    "your feedback will help us improve",
+    "it's annoying or not interesting",
+    "it is annoying or not interesting",
+    "i've seen the same ad too often",
+    "i have seen the same ad too often",
+    "same ad too often",
+    "please let us know",
+    "tell us why",
+    "not relevant",
+    "report this ad",
+    "and many more",
+]
+
+# Curly / typographic quotes → ASCII so substring checks match pasted LinkedIn / iOS text.
+_UNICODE_TO_ASCII = str.maketrans(
+    {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u2032": "'",
+        "\u00b4": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+    }
+)
+
+
+def _ascii_quotes(s: str) -> str:
+    return (s or "").translate(_UNICODE_TO_ASCII)
+
+
+def _linkedin_ui_blob_heuristic(text: str) -> bool:
+    """True when paste looks like LinkedIn profile + footer + ad feedback (not a normal CV)."""
+    t = _ascii_quotes(text).lower()
+    needles = (
+        "don't want to see this",
+        "your feedback will help",
+        "same ad too often",
+        "talent solutions",
+        "community guidelines",
+        "visit our help center",
+        "manage your account",
+        "ad choices",
+        "marketing solutions",
+    )
+    return sum(1 for n in needles if n in t) >= 2
+
+
+# Standalone lines common in LinkedIn “skills” / profile chrome; dropped only when _linkedin_ui_blob_heuristic.
+_LINKEDIN_STANDALONE_CHIP_LINES = frozenset(
+    {
+        "web design",
+        "mobile interface design",
+        "user interface design",
+        "user experience design (ued)",
+        "user experience design",
+        "adobe photoshop",
+        "adobe illustrator",
+        "figma (software)",
+        "figma",
+        "adobe xd",
+    }
+)
+
+RE_TWO_WORD_HUMAN_NAME_LINE = re.compile(r"^[A-Z][a-z]{1,22}\s+[A-Z][a-z]{1,22}$")
+RE_SHOUTCASE_BRAND_LINE = re.compile(r"^[A-Z0-9][A-Z0-9!\.]{1,18}$")
+RE_YEARS_MARKETING_LINE = re.compile(
+    r"(?:\d+\+?\s*(?:yrs?|years)\b.*\b(?:design|designing|dashboard|cro|clicks|customers)\b)"
+    r"|(?:\bturning\s+clicks\s+into\b)"
+    r"|(?:\bhigh[-\s]?conversion\b)",
+    re.IGNORECASE,
+)
+
+# Lines that are typically LinkedIn (or similar) nav, footers, settings — not résumé skills.
+# Matched on stripped line, lowercased, trailing .!? removed.
+_SOCIAL_CHROME_LINE_NORMALIZE = re.compile(r"[\s\.!?]+$")
+
+
+def _norm_chrome_line(line: str) -> str:
+    s = _ascii_quotes(line.strip()).lower()
+    s = _SOCIAL_CHROME_LINE_NORMALIZE.sub("", s)
+    return s
+
+
+def _linkedin_standalone_chip_line(raw: str) -> bool:
+    """LinkedIn skill chips / endorsements (one per line) when paste is mostly UI noise."""
+    s = _ascii_quotes(raw.strip()).lower()
+    s = re.sub(r"\s+", " ", s).rstrip(".!?")
+    if s in _LINKEDIN_STANDALONE_CHIP_LINES:
+        return True
+    s = re.sub(r"\s*\(software\)\s*$", "", s, flags=re.IGNORECASE).strip()
+    if s in _LINKEDIN_STANDALONE_CHIP_LINES:
+        return True
+    s = re.sub(r"\s*\(ued\)\s*$", "", s, flags=re.IGNORECASE).strip()
+    return s in _LINKEDIN_STANDALONE_CHIP_LINES
+
+
+_SOCIAL_CHROME_EXACT_LINES = frozenset(
+    {
+        "about",
+        "accessibility",
+        "talent solutions",
+        "community guidelines",
+        "careers",
+        "marketing solutions",
+        "ad choices",
+        "advertising",
+        "sales solutions",
+        "mobile",
+        "small business",
+        "safety center",
+        "visit our help center",
+        "go to your settings",
+        "manage your account and privacy",
+        "manage your account",
+        "questions?",
+        "help center",
+        "privacy policy",
+        "user agreement",
+        "cookie policy",
+        "ad preferences",
+        "select language",
+        "sign out",
+        "join now",
+        "sign in",
+    }
+)
+
+# Drop a line if it contains any of these (case-insensitive). Kept narrow to avoid résumé prose.
+_SOCIAL_CHROME_LINE_CONTAINS = (
+    "linkedin.com/",
+    "© linkedin",
+    "(linkedin)",
+    "linkedin corporation",
+    "linkedin talent solutions",
+    "linkedin learning",
+    "get the linkedin app",
+    "people also viewed",
+    "people you may know",
+    "you might like",
+    "promoted",
+    "sponsored",
+)
+
+
+def sanitize_text_for_skill_extraction(text: str) -> str:
+    """
+    Remove lines dominated by social-network chrome, footers, and ad-feedback UI.
+
+    Taxonomy phrase matching (extract_general) runs over the whole document; without this,
+    items like standalone footer links ('Accessibility', 'Careers') still match legitimate
+    multi-word skills. Stripping obvious non-resume lines first cuts those false positives.
+    """
+    if not (text or "").strip():
+        return text
+    ui_blob = _linkedin_ui_blob_heuristic(text)
+    kept: List[str] = []
+    for line in text.splitlines():
+        raw = line.rstrip()
+        if not raw.strip():
+            kept.append(raw)
+            continue
+        n = _norm_chrome_line(raw)
+        if n in _SOCIAL_CHROME_EXACT_LINES:
+            continue
+        low = _ascii_quotes(raw).lower()
+        if re.search(r"·\s*on-?site\b|on-?site\b", low):
+            continue
+        if any(s in low for s in _SOCIAL_CHROME_LINE_CONTAINS):
+            continue
+        # Do not drop whole skill section lines; comma-split + is_noise removes embedded ad fragments.
+        if any(j in low for j in INLINE_JUNK_SUBSTR) and not RE_SECTION_LINE.match(raw.strip()):
+            continue
+        if "clients include" in low:
+            continue
+        if ui_blob and "boom!" in low:
+            continue
+        if ui_blob and RE_YEARS_MARKETING_LINE.search(raw):
+            continue
+        if ui_blob and _linkedin_standalone_chip_line(raw):
+            continue
+        if ui_blob and RE_TWO_WORD_HUMAN_NAME_LINE.match(raw.strip()) and not RE_SECTION_LINE.match(raw.strip()):
+            continue
+        if ui_blob and RE_SHOUTCASE_BRAND_LINE.match(raw.strip()) and not RE_SECTION_LINE.match(raw.strip()):
+            continue
+        kept.append(raw)
+    return "\n".join(kept)
+
 
 def normalize(s: str) -> str:
     s = s.strip().lower()
@@ -315,6 +507,9 @@ def is_noise(s: str) -> bool:
     if looks_like_ocr_junk(s):
         return True
     if any(x in s for x in SOFT_NOISE_SUBSTR):
+        return True
+    sn = _ascii_quotes(s.lower())
+    if any(j in sn for j in INLINE_JUNK_SUBSTR):
         return True
     if s.endswith("-") or s.startswith("-"):
         return True
@@ -358,7 +553,7 @@ def extract_from_skills_heavy_lines(text: str) -> List[str]:
 
 
 def extract_general(text: str) -> List[str]:
-    t = text.lower()
+    t = _ascii_quotes(text).lower()
     t = RE_URL.sub(" ", t)
 
     phrases = [normalize(x) for x in RE_PHRASES.findall(t)]
@@ -385,6 +580,7 @@ def extract_general(text: str) -> List[str]:
 
 
 def extract_skill_candidates(text: str) -> List[str]:
+    text = sanitize_text_for_skill_extraction(text)
     sec = extract_from_section_lines(text)
     heavy = extract_from_skills_heavy_lines(text)
     gen = extract_general(text)

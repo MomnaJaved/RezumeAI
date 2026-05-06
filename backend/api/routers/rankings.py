@@ -31,6 +31,64 @@ _log = logging.getLogger("rezume.api")
 router = APIRouter(prefix="/jobs", tags=["rankings"])
 
 
+def _sbert_semantic_similarity(db: Session, job: Job, cand: Candidate) -> float:
+    """
+    Best-effort SBERT cosine similarity for one (job, candidate) pair.
+    Prefer the cached DB value when present; fall back to on-the-fly compute.
+    """
+    try:
+        row = (
+            db.query(JobCandidateSbertScore.cosine_similarity)
+            .filter(JobCandidateSbertScore.job_id == job.id, JobCandidateSbertScore.candidate_id == cand.id)
+            .first()
+        )
+        if row and row[0] is not None:
+            return float(row[0] or 0.0)
+    except Exception:
+        pass
+    try:
+        from api.services.sbert_cache import ensure_candidate_embedding
+        from api.services.sbert_shortlist import bytes_to_vec, embed_text
+        import numpy as np
+
+        job_text = (ml_ranking.build_job_text_from_db(job) or "").strip()
+        if not job_text:
+            return 0.0
+        q = embed_text(job_text).astype("float32", copy=False)
+        qn = float(np.linalg.norm(q) + 1e-12)
+        if not ensure_candidate_embedding(db, cand):
+            return 0.0
+        b = getattr(cand, "embedding_sbert", None)
+        if not b:
+            return 0.0
+        v = bytes_to_vec(b).astype("float32", copy=False)
+        denom = float((np.linalg.norm(v) + 1e-12) * qn)
+        if denom <= 0:
+            return 0.0
+        return float(v.dot(q) / denom)
+    except Exception:
+        return 0.0
+
+
+def _normalize_rankings_by_match_score(rows: list[StoredRankingRow]) -> list[StoredRankingRow]:
+    """
+    Order by final match score (cross_encoder) descending and assign rank 1 = highest.
+    Use on read so the UI always sees rank aligned with the Match % even if older DB
+    rows were written before match-score ordering was fixed.
+    """
+    if not rows:
+        return rows
+    ordered = sorted(
+        rows,
+        key=lambda r: (
+            -float(r.cross_encoder_score or 0.0),
+            -float(r.sbert_similarity or 0.0),
+            (r.candidate_external_id or ""),
+        ),
+    )
+    return [r.model_copy(update={"rank_position": i}) for i, r in enumerate(ordered, start=1)]
+
+
 def _require_job_in_workspace(db: Session, external_job_id: str, user: Optional[User]) -> Job:
     """
     Load job and enforce workspace ownership for recruiter accounts.
@@ -117,23 +175,42 @@ def rank_and_save(
     out_rows: list[StoredRankingRow] = []
     ranking_notify: list[tuple[Candidate, int, float]] = []
 
-    for pos, r in enumerate(rows, start=1):
+    # Apply job/candidate adjustments, then rank by the *persisted* match score. Without this
+    # reorder, rank_position follows raw cross-encoder order while the UI + top insight sort by
+    # adjusted scores — producing "ranked #1" text for someone stored as rank 3.
+    enriched: list[tuple[float, float, dict, Candidate]] = []
+    for r in rows:
         cand = db.query(Candidate).filter(Candidate.external_id == r["candidate_id"]).first()
         if not cand:
             continue
+        r_work = dict(r)
+        raw = float(r_work.get("cross_encoder_score_raw") or r_work["cross_encoder_score"])
+        r_work["cross_encoder_score_raw"] = raw
+        adj = adjusted_match_score(
+            job,
+            cand,
+            raw_cross_encoder_score=raw,
+            sbert_similarity=float(r_work.get("sbert_similarity", 0.0) or 0.0),
+        )
+        final = float(adj["final_score"])
+        r_work["cross_encoder_score"] = final
+        sbert = float(r_work.get("sbert_similarity", 0.0) or 0.0)
+        enriched.append((final, sbert, r_work, cand))
+
+    enriched.sort(key=lambda t: (-t[0], -t[1]))
+
+    for pos, (final, _sbert, r, cand) in enumerate(enriched, start=1):
         snap_role = _snapshot_role(cand, r)
         raw = float(r.get("cross_encoder_score_raw") or r["cross_encoder_score"])
-        adj = adjusted_match_score(job, cand, raw_cross_encoder_score=raw, sbert_similarity=float(r.get("sbert_similarity", 0.0) or 0.0))
-        r["cross_encoder_score"] = float(adj["final_score"])
-        ranking_notify.append((cand, pos, float(adj["final_score"])))
-        expl_raw = build_ranking_explanation(job, cand, float(adj["final_score"]), raw_cross_encoder_score=raw)
+        ranking_notify.append((cand, pos, final))
+        expl_raw = build_ranking_explanation(job, cand, final, raw_cross_encoder_score=raw)
         expl = RankingExplanationOut(**expl_raw)
         jr = JobCandidateRanking(
             job_id=job.id,
             candidate_id=cand.id,
             workspace_id=recruiter_ws,
             rank_position=pos,
-            cross_encoder_score=float(adj["final_score"]),
+            cross_encoder_score=final,
             sbert_similarity=r["sbert_similarity"],
             candidate_name=r.get("candidate_name") or "",
             candidate_title=r.get("candidate_title") or "",
@@ -147,7 +224,7 @@ def rank_and_save(
         db.add(jr)
         row = StoredRankingRow(
             rank_position=pos,
-            cross_encoder_score=float(adj["final_score"]),
+            cross_encoder_score=final,
             sbert_similarity=r["sbert_similarity"],
             candidate_external_id=cand.external_id,
             candidate_name=r.get("candidate_name") or "",
@@ -162,7 +239,7 @@ def rank_and_save(
 
     db.commit()
 
-    refresh_candidate_best_job_cache(db, [c.id for c in db.query(Candidate).filter(Candidate.external_id.in_([r["candidate_id"] for r in rows])).all()])
+    refresh_candidate_best_job_cache(db, [c.id for _, _, _, c in enriched])
 
     notify_applicants_ranking_updated(db, job, ranking_notify)
 
@@ -170,7 +247,7 @@ def rank_and_save(
     insight = refresh_job_ranking_top_insight(db, job)
     return JobRankingsResponse(
         job_external_id=external_job_id,
-        rankings=out_rows,
+        rankings=_normalize_rankings_by_match_score(out_rows),
         run_at=run_at,
         top_candidate_insight=insight,
     )
@@ -390,23 +467,28 @@ def rank_shortlist(
     if not payloads:
         raise HTTPException(status_code=422, detail="No candidate text could be extracted for scoring.")
 
-    scores = match_scores_batch(job_text, texts)
-    scored = [{**p, "cross_encoder_score_raw": float(s), "cross_encoder_score": float(s)} for s, p in zip(scores, payloads)]
-    for r in scored:
-        cand = db.query(Candidate).filter(Candidate.external_id == r["candidate_id"]).first()
-        if not cand:
-            continue
-        adj = adjusted_match_score(job, cand, raw_cross_encoder_score=float(r["cross_encoder_score_raw"]))
-        r["cross_encoder_score"] = float(adj["final_score"])
-    scored.sort(key=lambda x: x["cross_encoder_score"], reverse=True)
-
-    # Map SBERT similarity from cache (still not shown in UI)
+    # SBERT similarity (for final score) from cache when available.
     sbert_map = {
         str(cid): float(sim or 0.0)
         for cid, sim in db.query(JobCandidateSbertScore.candidate_id, JobCandidateSbertScore.cosine_similarity)
         .filter(JobCandidateSbertScore.job_id == job.id)
         .all()
     }
+
+    scores = match_scores_batch(job_text, texts)
+    scored = [{**p, "cross_encoder_score_raw": float(s), "cross_encoder_score": float(s)} for s, p in zip(scores, payloads)]
+    for r in scored:
+        cand = db.query(Candidate).filter(Candidate.external_id == r["candidate_id"]).first()
+        if not cand:
+            continue
+        adj = adjusted_match_score(
+            job,
+            cand,
+            raw_cross_encoder_score=float(r["cross_encoder_score_raw"]),
+            sbert_similarity=float(sbert_map.get(str(cand.id), 0.0)),
+        )
+        r["cross_encoder_score"] = float(adj["final_score"])
+    scored.sort(key=lambda x: x["cross_encoder_score"], reverse=True)
 
     # Only delete rankings for this job+workspace so other recruiters' scores are untouched.
     ranking_q = db.query(JobCandidateRanking).filter(JobCandidateRanking.job_id == job.id)
@@ -473,7 +555,7 @@ def rank_shortlist(
     insight = refresh_job_ranking_top_insight(db, job)
     return JobRankingsResponse(
         job_external_id=external_job_id,
-        rankings=out_rows,
+        rankings=_normalize_rankings_by_match_score(out_rows),
         run_at=run_at,
         top_candidate_insight=insight,
     )
@@ -510,20 +592,22 @@ def match_one_candidate(
         raise HTTPException(status_code=422, detail="No candidate text could be extracted for scoring.")
 
     try:
-        score = float(match_scores_batch(job_text, [ct])[0])
+        score_raw = float(match_scores_batch(job_text, [ct])[0])
     except Exception as e:
         _log.exception("match_scores_batch failed: %s", e)
         raise HTTPException(status_code=503, detail="Model inference failed for match") from e
 
-    adj = adjusted_match_score(job, cand, raw_cross_encoder_score=float(score))
+    sem = _sbert_semantic_similarity(db, job, cand)
+    adj = adjusted_match_score(job, cand, raw_cross_encoder_score=float(score_raw), sbert_similarity=float(sem))
     return {
         "job_external_id": external_job_id,
         "candidate_id": cand_external_id,
         "rank_position": 1,
         "cross_encoder_score": float(adj["final_score"]),
         "cross_encoder_score_raw": float(adj["raw_cross_encoder_score"]),
-        "critical_skill_coverage": float(adj["critical_skill_coverage"]),
-        "total_skill_coverage": float(adj["total_skill_coverage"]),
+        "semantic_similarity": float(adj.get("semantic_similarity", 0.0) or 0.0),
+        "skill_overlap": float(adj.get("skill_overlap", 0.0) or 0.0),
+        "experience_score": float(adj.get("experience_score", 0.0) or 0.0),
     }
 
 
@@ -577,19 +661,46 @@ def match_batch_candidates(
         _log.exception("match_scores_batch failed: %s", e)
         raise HTTPException(status_code=503, detail="Model inference failed for match") from e
 
+    sems = {}
+    # Compute job embedding once; derive per-candidate similarity from stored embeddings.
+    try:
+        from api.services.sbert_shortlist import embed_text, bytes_to_vec
+        from api.services.sbert_cache import ensure_candidate_embedding
+        import numpy as np
+
+        q = embed_text(job_text).astype("float32", copy=False)
+        qn = float(np.linalg.norm(q) + 1e-12)
+        for cid in kept_ids:
+            cand = by_ext.get(cid)
+            if not cand:
+                continue
+            if not ensure_candidate_embedding(db, cand):
+                sems[cid] = 0.0
+                continue
+            b = getattr(cand, "embedding_sbert", None)
+            if not b:
+                sems[cid] = 0.0
+                continue
+            v = bytes_to_vec(b).astype("float32", copy=False)
+            denom = float((np.linalg.norm(v) + 1e-12) * qn)
+            sems[cid] = float(v.dot(q) / denom) if denom > 0 else 0.0
+    except Exception:
+        sems = {}
+
     scored = []
     for cid, s in zip(kept_ids, scores):
         cand = by_ext.get(cid)
         if not cand:
             continue
-        adj = adjusted_match_score(job, cand, raw_cross_encoder_score=float(s))
+        adj = adjusted_match_score(job, cand, raw_cross_encoder_score=float(s), sbert_similarity=float(sems.get(cid, 0.0)))
         scored.append(
             {
                 "candidate_id": cid,
                 "cross_encoder_score": float(adj["final_score"]),
                 "cross_encoder_score_raw": float(adj["raw_cross_encoder_score"]),
-                "critical_skill_coverage": float(adj["critical_skill_coverage"]),
-                "total_skill_coverage": float(adj["total_skill_coverage"]),
+                "semantic_similarity": float(adj.get("semantic_similarity", 0.0) or 0.0),
+                "skill_overlap": float(adj.get("skill_overlap", 0.0) or 0.0),
+                "experience_score": float(adj.get("experience_score", 0.0) or 0.0),
             }
         )
     scored.sort(key=lambda x: x["cross_encoder_score"], reverse=True)
@@ -818,6 +929,7 @@ def rank_database_candidates(
         out_rows.append(row)
         insight_pairs.append((row, cand))
 
+    ranked_out = _normalize_rankings_by_match_score(out_rows)
     if persist:
         db.commit()
         refresh_candidate_best_job_cache(db, [c.id for c in cands if c])
@@ -825,13 +937,18 @@ def rank_database_candidates(
         db.refresh(job)
         insight = refresh_job_ranking_top_insight(db, job)
     else:
-        sid = shortlisted_candidate_ids(db, job.id)
-        peer = "shortlisted candidates" if sid else "ranked candidates for this job"
-        insight = build_top_candidate_insight_paragraph(job, insight_pairs, peer_scope=peer) if insight_pairs else None
+        ext_to_cand = {c.external_id: c for _, c in insight_pairs} if insight_pairs else {}
+        peer_rows = [
+            (r, ext_to_cand[r.candidate_external_id])
+            for r in ranked_out
+            if r.candidate_external_id in ext_to_cand
+        ]
+        peer_scope = "shortlisted candidates" if shortlisted_candidate_ids(db, job.id) else "ranked candidates for this job"
+        insight = build_top_candidate_insight_paragraph(job, peer_rows, peer_scope=peer_scope) if peer_rows else None
 
     return JobRankingsResponse(
         job_external_id=external_job_id,
-        rankings=out_rows,
+        rankings=ranked_out,
         run_at=run_at,
         top_candidate_insight=insight,
     )
@@ -923,6 +1040,7 @@ def get_saved_rankings(
         rankings.append(row)
     db.refresh(job)
     insight = refresh_job_ranking_top_insight(db, job)
+    rankings = _normalize_rankings_by_match_score(rankings)
     return JobRankingsResponse(
         job_external_id=external_job_id,
         rankings=rankings,

@@ -33,3 +33,9 @@ def test_extract_primary_email_mailto():
     # Avoid reserved example.* domains — those are skipped as placeholder addresses.
     t = "See also <mailto:hire_me@acme.jobs> for contact."
     assert extract_primary_email(t) == "hire_me@acme.jobs"
+
+
+def test_extract_primary_email_reach_me_at_not_obfuscation():
+    """Literal ' at ' before an address must not become a false @ (regression guard)."""
+    t = "Reach me at ahmad.ali@acme.jobs for references."
+    assert extract_primary_email(t) == "ahmad.ali@acme.jobs"

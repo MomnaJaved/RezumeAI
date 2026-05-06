@@ -9,10 +9,16 @@ We store candidate embeddings in DB (`candidates.embedding_sbert`) so ranking ca
 3) cross-encoder rerank only top-K
 """
 
+import logging
 from functools import lru_cache
 from typing import Iterable, Optional, Tuple
 
 import numpy as np
+
+_log = logging.getLogger("rezume.api.sbert")
+
+# Default model `all-MiniLM-L6-v2` embedding size (used only for offline / failure fallback).
+_SBERT_DIM_DEFAULT = 384
 
 
 @lru_cache(maxsize=1)
@@ -24,11 +30,23 @@ def _load_model(model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
 
 
 def embed_text(text: str, model_name: str = "sentence-transformers/all-MiniLM-L6-v2") -> np.ndarray:
+    """
+    Encode one text to a float32 vector. On Hugging Face / network / disk errors, returns a
+    zero vector so API routes (e.g. match preview) still respond instead of HTTP 500.
+    """
     from src.embeddings.sbert import encode_texts  # lazy import
 
-    model = _load_model(model_name=model_name)
-    emb = encode_texts(model, [text], batch_size=1)
-    return emb[0].astype(np.float32, copy=False)
+    try:
+        model = _load_model(model_name=model_name)
+        emb = encode_texts(model, [text], batch_size=1)
+        return emb[0].astype(np.float32, copy=False)
+    except Exception as e:
+        _log.warning(
+            "embed_text failed (%s); using zero vector. "
+            "Ensure Hugging Face is reachable once to cache the model, or work offline with HF_HOME populated.",
+            e,
+        )
+        return np.zeros(_SBERT_DIM_DEFAULT, dtype=np.float32)
 
 
 def bytes_to_vec(b: bytes) -> np.ndarray:

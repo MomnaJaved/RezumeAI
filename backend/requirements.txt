@@ -1,0 +1,13 @@
+# RezumeAI backend (FastAPI + SQLAlchemy + resume parsing + torch/transformers inference).
+#
+# Install (from repository root):
+#   python -m venv .venv
+#   .\.venv\Scripts\activate          # Windows
+#   pip install -r backend/requirements.txt
+#
+# Or from this directory:
+#   pip install -r requirements.txt
+#
+# Includes: ../requirements.txt (parsing, PDFs, spaCy, sklearn, …) and
+# ../requirements-train.txt (FastAPI, uvicorn, torch, transformers, sentence-transformers, …).
+-r ../requirements-train.txt

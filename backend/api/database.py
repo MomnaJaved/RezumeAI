@@ -43,7 +43,14 @@ elif ".supabase.co" in _db_url and "pooler" not in _db_url:
 
 engine = create_engine(settings.database_url, **_engine_kwargs)
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# expire_on_commit=False: routes such as match preview call ensure_workspace_for_recruiter(),
+# which commits mid-request; without this, ORM instances loaded earlier can expire and break.
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+    expire_on_commit=False,
+)
 
 Base = declarative_base()
 

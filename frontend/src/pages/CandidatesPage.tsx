@@ -11,6 +11,7 @@ import {
   normalizedBestJobMatchPercent,
   type CandidateDto,
 } from "../api";
+import { candidateListProfileScore } from "../candidateListScore";
 import { useToast } from "../toast";
 import { getCandidatesPerPage, getDefaultCandidateSortKey } from "../settings";
 
@@ -509,7 +510,7 @@ export default function CandidatesPage() {
                   <th style={{ width: "18%" }}>Role</th>
                   <th
                     style={{ width: "11%" }}
-                    title="Best cross-encoder match vs jobs in the database (0–100)."
+                    title="Best saved cross-encoder match vs a job (0–100). If none yet, shows an estimated score from résumé fields (same red style as a low match) until you run matching or use “Save & match to job” in the extension."
                   >
                     Match
                   </th>
@@ -520,6 +521,7 @@ export default function CandidatesPage() {
               <tbody>
                 {pageRows.map((c) => {
                   const m = bestMatchFor(c);
+                  const profileFallback = m == null ? candidateListProfileScore(c) : null;
                   const st = (c.status || "new").toLowerCase();
                   const isSel = selectionMode && selectedIds.has(c.id);
                   return (
@@ -588,8 +590,23 @@ export default function CandidatesPage() {
                           </div>
                         ) : null}
                       </td>
-                      <td className={m != null ? (m >= 80 ? "cand-score good" : m >= 65 ? "cand-score mid" : "cand-score low") : ""}>
-                        {m != null ? `${m}%` : "—"}
+                      <td
+                        className={
+                          m != null
+                            ? m >= 80
+                              ? "cand-score good"
+                              : m >= 65
+                                ? "cand-score mid"
+                                : "cand-score low"
+                            : "cand-score low"
+                        }
+                        title={
+                          m != null
+                            ? "Best saved job match (cross-encoder)."
+                            : "No saved job match yet — estimated from résumé fields. Use Matching or extension “Save & match to job” to store a real score."
+                        }
+                      >
+                        {m != null ? `${m}%` : `${profileFallback}%`}
                       </td>
                       <td>{formatCandidateExperience(c)}</td>
                       <td>
