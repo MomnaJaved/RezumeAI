@@ -216,6 +216,7 @@ export default function CandidateProfilePage() {
   /* ── Edit-profile state ── */
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState("");
+  const [editEmail, setEditEmail] = useState("");
   const [editTitle, setEditTitle] = useState("");
   const [editSkills, setEditSkills] = useState("");
   const [editYoe, setEditYoe] = useState<string>("");
@@ -248,6 +249,7 @@ export default function CandidateProfilePage() {
 
   const openEdit = useCallback(() => {
     setEditName(dto?.full_name || me?.full_name || "");
+    setEditEmail((dto?.contact_email || me?.email || "").trim());
     setEditTitle(dto?.title || me?.title || "");
     const rawSkills = dto?.skills ? dto.skills.split(",").map((s) => s.trim()).filter(Boolean).join(", ") : "";
     setEditSkills(rawSkills);
@@ -258,8 +260,17 @@ export default function CandidateProfilePage() {
   const saveEdit = useCallback(async () => {
     setEditBusy(true);
     try {
+      const em = editEmail.trim();
+      if (em) {
+        const ok = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em);
+        if (!ok) {
+          toast.error("Enter a valid email or leave it empty.");
+          return;
+        }
+      }
       const patch: Record<string, unknown> = {
         full_name: editName.trim(),
+        contact_email: em || "",
         title: editTitle.trim(),
         skills: editSkills.trim(),
       };
@@ -282,7 +293,7 @@ export default function CandidateProfilePage() {
     } finally {
       setEditBusy(false);
     }
-  }, [editName, editTitle, editSkills, editYoe, reload, toast]);
+  }, [editName, editEmail, editTitle, editSkills, editYoe, reload, toast]);
 
   const closeResumePreview = useCallback(() => {
     if (resumeBlobUrlRef.current) {
@@ -524,6 +535,24 @@ export default function CandidateProfilePage() {
                   className="dash-inbox-dir-input"
                   style={{ width: "100%" }}
                 />
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: "0.78rem", fontWeight: 600, color: "rgba(255,255,255,0.55)", marginBottom: "0.3rem" }}>
+                  Email <span style={{ fontWeight: 400, color: "rgba(255,255,255,0.35)" }}>(shown to recruiters)</span>
+                </label>
+                <input
+                  type="email"
+                  autoComplete="email"
+                  value={editEmail}
+                  onChange={(e) => setEditEmail(e.target.value)}
+                  placeholder="your.email@example.com"
+                  className="dash-inbox-dir-input"
+                  style={{ width: "100%" }}
+                />
+                <p style={{ margin: "0.35rem 0 0", fontSize: "0.72rem", color: "rgba(255,255,255,0.38)", lineHeight: 1.45 }}>
+                  This is the email recruiters see on your profile. It does not change the address you use to sign in.
+                </p>
               </div>
 
               {/* Title */}

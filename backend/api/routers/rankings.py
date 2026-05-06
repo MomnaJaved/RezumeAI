@@ -327,7 +327,14 @@ def stage1_pool(
         return {"job_external_id": external_job_id, "items": items}
 
     items = []
+    seen_cand_uuid: set[str] = set()
     for srow, cand in rows:
+        cid = str(cand.id)
+        # Defensive: DB may contain duplicate JobCandidateSbertScore rows per (job, candidate).
+        # Keep the first query row (lowest rank_position due to ORDER BY).
+        if cid in seen_cand_uuid:
+            continue
+        seen_cand_uuid.add(cid)
         meta = meta_from_candidate(cand, cand.external_id)
         items.append(
             {

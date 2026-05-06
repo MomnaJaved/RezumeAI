@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any, Optional
 import uuid as uuid_lib
@@ -18,6 +19,9 @@ from api.routers.auth import _get_auth_user
 _log = logging.getLogger("rezume.api")
 
 router = APIRouter(prefix="/candidate", tags=["candidate"])
+
+# Minimal practical check (not full RFC 5322); empty string clears the field.
+_RE_CONTACT_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _require_candidate(request: Request, db: Session) -> User:
@@ -323,19 +327,30 @@ def update_candidate_profile(
         raise HTTPException(status_code=404, detail="No profile linked. Upload a resume first.")
 
     changed = False
+    embedding_dirty = False
 
-    def _set(field: str, value: Any, strip: bool = True) -> None:
-        nonlocal changed
+    def _set(field: str, value: Any, *, strip: bool = True, touches_embedding: bool = False) -> None:
+        nonlocal changed, embedding_dirty
         if field not in body:
             return
         v = (str(value or "").strip()) if strip else value
         if getattr(cand, field, None) != v:
             setattr(cand, field, v)
             changed = True
+            if touches_embedding:
+                embedding_dirty = True
 
     _set("full_name", body.get("full_name"))
-    _set("title", body.get("title"))
-    _set("skills", body.get("skills"))
+    _set("title", body.get("title"), touches_embedding=True)
+    _set("skills", body.get("skills"), touches_embedding=True)
+
+    if "contact_email" in body:
+        em = str(body.get("contact_email") or "").strip()[:320]
+        if em and not _RE_CONTACT_EMAIL.match(em):
+            raise HTTPException(status_code=422, detail="Invalid email address.")
+        if cand.contact_email != em:
+            cand.contact_email = em
+            changed = True
 
     yoe = body.get("years_experience")
     if "years_experience" in body:
@@ -346,17 +361,19 @@ def update_candidate_profile(
         if cand.years_experience != parsed_yoe:
             cand.years_experience = parsed_yoe
             changed = True
+            embedding_dirty = True
 
     if not changed:
         return {"status": "no_change"}
 
-    # Clear cached SBERT embedding so it is recomputed with the updated skills/text.
-    cand.embedding_sbert = None
+    if embedding_dirty:
+        # Skill/title/YoE edits affect SBERT résumé text; contact_email does not.
+        cand.embedding_sbert = None
     db.commit()
     db.refresh(cand)
 
-    # Recompute SBERT embedding in the background so matching results stay fresh.
-    background_tasks.add_task(_refresh_candidate_embedding, cand.id)
+    if embedding_dirty:
+        background_tasks.add_task(_refresh_candidate_embedding, cand.id)
 
     _log.info("Candidate profile updated by user %s (candidate %s)", user.id, cand.external_id)
     return {"status": "updated"}

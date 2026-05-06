@@ -259,8 +259,18 @@ export default function MatchingPage() {
           if (Boolean(r.is_public) !== wantPublic) return false;
         }
         return true;
-      })
-      .sort((a, b) => {
+      });
+    /* Defensive dedupe — pool API should not emit duplicates per candidate_uuid. */
+    {
+      const seen = new Set<string>();
+      rows = rows.filter((r) => {
+        const k = `${r.candidate_id}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    }
+    rows.sort((a, b) => {
         if (sortBy === "name_asc") return (a.candidate_name || "").localeCompare(b.candidate_name || "");
         if (sortBy === "rank_asc") {
           const ra = rankByCandidateId.get(a.candidate_id)?.rank_position ?? Number.POSITIVE_INFINITY;
@@ -584,7 +594,12 @@ export default function MatchingPage() {
                     <tr>
                       <th style={{ width: "6%" }}>Rank</th>
                       <th style={{ width: "20%" }}>Name</th>
-                      <th style={{ width: "9%" }}>Score</th>
+                      <th
+                        style={{ width: "9%" }}
+                        title={t("matching.columnSbertHelp")}
+                      >
+                        {t("matching.columnSbert")}
+                      </th>
                       <th style={{ width: "12%" }}>Experience</th>
                       <th>Certifications</th>
                       <th style={{ width: "10%" }}>Match</th>
@@ -596,11 +611,26 @@ export default function MatchingPage() {
                         const rr = rankByCandidateId.get(r.candidate_id);
                         const pos = rr?.rank_position ?? null;
                         const ce = rr?.cross_encoder_score ?? null;
+                        const poolS = Number(r.sbert_score);
+                        const rankS = rr?.sbert_similarity != null ? Number(rr.sbert_similarity) : NaN;
+                        const sem =
+                          Number.isFinite(poolS) && Number.isFinite(rankS)
+                            ? Math.max(poolS, rankS)
+                            : Number.isFinite(rankS)
+                              ? rankS
+                              : Number.isFinite(poolS)
+                                ? poolS
+                                : 0;
                         return (
                           <tr key={r.candidate_id}>
                             <td className="muted">{pos ?? "—"}</td>
                             <td>{r.candidate_name || r.candidate_id}</td>
-                            <td style={{ color: "rgba(148, 163, 184, 0.95)", fontWeight: 800 }}>{sbertPct(r.sbert_score)}</td>
+                            <td
+                              style={{ color: "rgba(148, 163, 184, 0.95)", fontWeight: 800 }}
+                              title={t("matching.columnSbertHelp")}
+                            >
+                              {sbertPct(sem)}
+                            </td>
                             <td className="muted">{r.years_experience != null ? `${r.years_experience} Years` : "—"}</td>
                             <td className="muted">{(() => {
                                 const raw = (r.certifications || "").trim();

@@ -1432,6 +1432,8 @@ export async function fetchCandidateApplications(): Promise<{ items: CandidateAp
 export type CandidateProfilePatch = {
   full_name?: string;
   title?: string;
+  /** Contact email stored on the candidate row (what recruiters see); not the same as login email. */
+  contact_email?: string | null;
   skills?: string;
   years_experience?: number | null;
 };
